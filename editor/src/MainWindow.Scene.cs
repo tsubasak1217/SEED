@@ -614,6 +614,8 @@ public partial class MainWindow
                 ContinuePendingAndroidRun(saved: true);
                 // 保存→端末の写しを表示（「保存して表示」。MainWindow.AndroidSnapshot.cs。§20.17）
                 ContinuePendingSnapshotSave(saved: true);
+                // 保存→プロジェクトの形式をアップグレード（「保存してから」。MainWindow.Migration.cs。レビュー #8）
+                ContinuePendingUpgrade(saved: true);
             }
             else
             {
@@ -625,6 +627,8 @@ public partial class MainWindow
                 ContinuePendingAndroidRun(saved: false);
                 // 「保存して表示」の続きも取りやめる（未保存の変更を守るため写しは出さない）
                 ContinuePendingSnapshotSave(saved: false);
+                // 「保存してからアップグレード」も取りやめる（未保存のまま実行させない）
+                ContinuePendingUpgrade(saved: false);
                 EditorLog.Write($"OnSaveCompleted — 保存失敗: {errorMsg}");
                 SEEDEditor.Headless.EditorDialogs.Show(
                     $"保存に失敗しました:\n{DescribeSaveError(errorMsg)}", "SEED Editor",

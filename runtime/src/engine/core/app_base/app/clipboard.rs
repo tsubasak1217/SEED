@@ -13,9 +13,35 @@ use crate::engine::core::app_base::scene::build_actor;
 use super::{
     App, find_actor_by_dfs, actor_subtree_size, insert_actors_after_dfs, ClipboardItem,
 };
-use super::editor_preview::is_dfs_in_preview;
+use super::editor_preview::{format_preview_error, is_dfs_in_preview};
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::editor_preview::strip_editor_previews;
+
+/// プレビューだけを選んでコピーしたときの知らせ（`PREVIEW_ERROR:` の文言。エディタはトーストで出す）。
+const PREVIEW_COPY_REFUSED: &str =
+    "プレビューはコピーできません（保存されない表示用のアクタです。クリップボードは空にしました）";
+
+/// アクタのコピーの結果（クリップボードをどうするか）。
+#[derive(Debug, PartialEq, Eq)]
+enum CopyOutcome {
+    /// 1 つ以上コピーできた（クリップボードを差し替える）
+    Copied,
+    /// 選択がプレビューだけだった（クリップボードを空にして知らせる）
+    OnlyPreviews,
+    /// 何もコピーできず、プレビューも無かった（選択の番号が木に無い。何もしない）
+    Nothing,
+}
+
+/// コピーできた数とプレビューで飛ばした数から結果を決める（純粋な判定）。
+fn copy_outcome(copied: usize, skipped_previews: usize) -> CopyOutcome {
+    if copied > 0 {
+        CopyOutcome::Copied
+    } else if skipped_previews > 0 {
+        CopyOutcome::OnlyPreviews
+    } else {
+        CopyOutcome::Nothing
+    }
+}
 
 impl App {
     /// 選択アクター / 選択インスタンスをクリップボードへコピーする。
@@ -33,10 +59,13 @@ impl App {
             // 表示順）に並べてからコピーする。選択順（クリック順）に依存させない。
             let mut src_dfs_ids = self.selected_actor_dfs_ids.clone();
             src_dfs_ids.sort_unstable();
+            // プレビューだったので飛ばした数（選択がプレビューだけだったかの判定に使う）
+            let mut skipped_previews = 0usize;
             for &dfs_id in &src_dfs_ids {
                 // プレビューの中身はコピーしない（保存されない表示用のアクタ。根もその中も
                 // 貼り付けると保存されるアクタになってしまう。docs/editor_screen_preview.md）
                 if is_dfs_in_preview(&scene.actors, wl, dfs_id as u32) {
+                    skipped_previews += 1;
                     continue;
                 }
                 let mut c = 0u32;
@@ -47,10 +76,24 @@ impl App {
                     new_clipboard.push(data);
                 }
             }
-            if !new_clipboard.is_empty() {
-                self.actor_clipboard = new_clipboard;
-                // MC クリップボードはクリアしておく（混在防止）
-                self.clipboard.clear();
+            match copy_outcome(new_clipboard.len(), skipped_previews) {
+                CopyOutcome::Copied => {
+                    self.actor_clipboard = new_clipboard;
+                    // MC クリップボードはクリアしておく（混在防止）
+                    self.clipboard.clear();
+                }
+                CopyOutcome::OnlyPreviews => {
+                    // プレビューだけを選んだコピー: 前にコピーした別のもの（別のタブ・別のシーンのアクタ）を
+                    // 次の Ctrl+V で黙って貼らせないよう、クリップボードを空にして知らせる（レビュー #15）
+                    self.actor_clipboard.clear();
+                    self.clipboard.clear();
+                    eprintln!("[Clipboard] {PREVIEW_COPY_REFUSED}");
+                    if let Some(ipc) = &self.ipc {
+                        ipc.send(&format_preview_error(PREVIEW_COPY_REFUSED));
+                    }
+                }
+                // 選択の番号がどれも木に無かった（従来どおり何もしない）
+                CopyOutcome::Nothing => {}
             }
             return;
         }
@@ -194,8 +237,13 @@ impl App {
             self.actor_virtual_selected_idx = self.selected_actor_dfs_ids.last().copied();
             self.selected_instances.clear();
 
+            // 選択（貼り付けたアクタの新しい番号）はヒエラルキーの **後** に送る（2026-10-03）。
+            // エディタは SELECTED の番号を手元の木で引くので、先に送ると古い木の別の行を選び、
+            // 続くヒエラルキーの同期でその行のアクタへ選択とインスペクタを移してしまう
+            // （HierarchyPanel.RestoreSelectionAfterSync。レビュー #1 の直しで番号の移動をインスペクタへも知らせるようにした）。
+            // ヒエラルキーは間引きで遅らせると順番が逆になるので即時に送る（Ctrl+V の連打でも順番を守る）。
+            self.send_hierarchy_now();
             self.send_selected();
-            self.send_hierarchy();
             if let Some(ipc) = &self.ipc { ipc.send("SCENE_MODIFIED"); }
             return;
         }
@@ -248,5 +296,33 @@ impl App {
         self.selected_instances = new_indices;
         self.send_selected();
         self.send_hierarchy();
+    }
+}
+
+// ============================================================
+//  テスト — コピーの結果の判定（レビュー #15）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// プレビューだけを選んだコピーは「空にして知らせる」、1 つでも実アクタがあれば普通のコピー、
+    /// どちらも無ければ何もしない（従来どおり前のクリップボードを残す）。
+    #[test]
+    fn copy_outcome_clears_only_when_the_selection_was_previews_only() {
+        assert_eq!(copy_outcome(0, 1), CopyOutcome::OnlyPreviews, "プレビューの根だけ");
+        assert_eq!(copy_outcome(0, 3), CopyOutcome::OnlyPreviews, "プレビューの中のノードだけ（複数）");
+        assert_eq!(copy_outcome(1, 2), CopyOutcome::Copied, "実アクタとプレビューの混在は実アクタだけコピー");
+        assert_eq!(copy_outcome(2, 0), CopyOutcome::Copied);
+        assert_eq!(copy_outcome(0, 0), CopyOutcome::Nothing, "番号が木に無い");
+    }
+
+    /// 知らせの文言は 1 行（IPC は 1 行 = 1 通）で、「コピーできません」を含む。
+    #[test]
+    fn preview_copy_message_is_single_line() {
+        assert!(!PREVIEW_COPY_REFUSED.contains('\n'));
+        assert!(PREVIEW_COPY_REFUSED.contains("コピーできません"));
+        assert!(format_preview_error(PREVIEW_COPY_REFUSED).starts_with("PREVIEW_ERROR:"));
     }
 }

@@ -115,6 +115,18 @@ const JOB_DEADLINE_SECONDS: u64 = 30;
 /// 被写体が 1 ピクセルも写っていなかったときのエラーメッセージ。
 const ERROR_EMPTY_RENDER: &str = "アクタが 1 ピクセルも描画されませんでした（モデルが無い／読み込みに失敗した可能性）";
 
+/// 3D のシーンを描かない描画の構成（scene_3d=false。例: ui）でサムネイルを頼まれたときの文言（レビュー #11）。
+///
+/// この構成ではサムネイルの世界線のモデルも描かない（frame_renderer.rs が all_mcs を空にする）ので、
+/// 撮影まで進めても被写体は写らない（以前は誤った理由で失敗するか、被写体の無い絵を成功として書いていた）。
+const ERROR_SCENE_3D_DISABLED: &str =
+    "この描画の構成（render.profile が 3D のシーンを描かない＝scene_3d=false。例: ui）ではモデル／アクタのサムネイルを撮影できません（project_settings.json の render.profile を full にしてください）";
+
+/// 描画の構成がサムネイルを撮れるか（純関数）。撮れなければ理由。
+fn thumbnail_profile_refusal(scene_3d: bool) -> Option<&'static str> {
+    (!scene_3d).then_some(ERROR_SCENE_3D_DISABLED)
+}
+
 /// モデル 1 体だけの仮アクタに付けるコンポーネントスロット名。
 ///
 /// 実ファイルには保存されない（撮影のあいだメモリ上にだけ存在する）ので
@@ -457,9 +469,14 @@ impl App {
 
     /// 被写体を隔離ワールド線へ読み込み、状態を退避してジョブを開始する。
     fn begin_thumbnail_job(&mut self, plan: ThumbnailPlan) -> Result<(), String> {
+        // ── 0. 撮れる描画の構成か（3D を描かない構成では被写体が写らない。ID バッファを作る前に断る）──
+        if let Some(reason) = thumbnail_profile_refusal(self.render_profile.flags.scene_3d) {
+            return Err(reason.to_string());
+        }
         // 背景を抜くマスク（ID パス）を描くので ID バッファが要る。エディタに接続していない Play では
         // 起動時に作っていないので、ここで作る（id_buffer_ops.rs。構図の大きさもこれの寸法から決める）。
-        self.ensure_id_buffer();
+        // 作らない構成（picking=false）・作れなかったときは、30 秒待たずにすぐ理由を返す（レビュー #12）
+        self.prepare_id_buffer_for_capture().map_err(str::to_string)?;
         let Some(draw_ctx) = self.draw_ctx.as_ref() else {
             return Err("レンダラーが初期化されていません".to_string());
         };
@@ -1012,6 +1029,15 @@ fn despawn_world_line(scene: &mut Scene, world_line: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// レビュー #11: 3D を描かない構成（scene_3d=false）では撮影へ進まず、構成の理由で断る。
+    #[test]
+    fn thumbnails_are_refused_when_the_profile_does_not_draw_3d() {
+        assert_eq!(thumbnail_profile_refusal(true), None, "3D を描く構成（full など）は撮れる");
+        let reason = thumbnail_profile_refusal(false).expect("ui の構成は断る");
+        assert!(reason.contains("scene_3d=false"), "どの旗が止めているかを書く: {reason}");
+        assert_ne!(reason, ERROR_EMPTY_RENDER, "空の描画の理由と取り違えない");
+    }
 
     /// 隔離ワールド線 ID は、エディタが払い出すアクタ編集タブの値と衝突しないこと。
     ///

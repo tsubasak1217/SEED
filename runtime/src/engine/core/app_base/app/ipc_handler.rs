@@ -287,8 +287,11 @@ impl App {
                         self.undo_history.undo(scene)
                     } else { None };
                     if let Some((structural, sel)) = result {
-                        // アクターツリー再構築
-                        if let Some((wl, actors_data)) = self.undo_history.peek_undone_actor_rebuild() {
+                        // アクターツリー再構築。組み直すと entity も DFS 番号も変わるので、
+                        // 組み直す前に選択を名前の道筋の鍵で控えておく（undo_selection.rs。レビュー #1）
+                        let tree_rebuild = self.undo_history.peek_undone_actor_rebuild();
+                        let saved_selection = tree_rebuild.as_ref().map(|_| self.capture_selection_path_keys());
+                        if let Some((wl, actors_data)) = tree_rebuild {
                             self.rebuild_actors_for_wl(wl, actors_data);
                         }
                         // コンポーネントスロット再構築
@@ -314,21 +317,26 @@ impl App {
                             self.selected_instances = ids;
                             self.send_selected();
                         }
-                        // アクター DFS 選択の復元（ActorDfsSelectionCommand）
-                        if let Some((dfs_ids, primary)) = self.undo_history.peek_undone_actor_dfs_selection() {
+                        // アクター DFS 選択の復元（ActorDfsSelectionCommand）。こちらは戻した先の木の番号で
+                        // 記録されているので、あれば道筋の鍵での引き直しより優先する
+                        let explicit_selection = self.undo_history.peek_undone_actor_dfs_selection();
+                        let has_explicit_selection = explicit_selection.is_some();
+                        if let Some((dfs_ids, primary)) = explicit_selection {
                             self.selected_actor_dfs_ids     = dfs_ids;
                             self.actor_virtual_selected_idx = primary;
                             self.selected_instances.clear();
                             self.send_selected();
                         }
                         if structural {
-                            // エディタのプレビューの出し入れ（保存されるシーンを変えない操作）を戻したときは、
-                            // 未保存にしない知らせ付きで送る（app/editor_preview/。それ以外は従来どおり）
-                            if self.undo_history.peek_undone_is_scene_neutral() {
-                                self.send_hierarchy_quiet();
-                            } else {
-                                self.send_hierarchy();
-                            }
+                            // エディタのプレビューの出し入れ（保存されるシーンを変えない操作）を戻したときは
+                            // 未保存にしない知らせ付き、木を組み直したときは即時、それ以外は従来どおり（undo_selection.rs）
+                            let neutral = self.undo_history.peek_undone_is_scene_neutral();
+                            self.send_hierarchy_after_undo(neutral, saved_selection.is_some());
+                        }
+                        // 組み直した木で選択を同じアクタへ引き直し、SELECTED と ACTOR_COMPONENTS を送る
+                        // （ヒエラルキーの後。消えたアクタは選択から外し、何も残らなければ SELECTED:-1）
+                        if let Some(saved) = saved_selection.filter(|_| !has_explicit_selection) {
+                            self.restore_selection_from_path_keys(saved);
                         }
                         // シーン設定ウィンドウの「シェーダ」行（SceneShadingCommand）は
                         // ACTOR_COMPONENTS に載らないので、専用に送り直す。
@@ -343,8 +351,10 @@ impl App {
                         self.undo_history.redo(scene)
                     } else { None };
                     if let Some((structural, sel)) = result {
-                        // アクターツリー再構築
-                        if let Some((wl, actors_data)) = self.undo_history.peek_redone_actor_rebuild() {
+                        // アクターツリー再構築（Undo 側と同じく、組み直す前に選択を名前の道筋の鍵で控える）
+                        let tree_rebuild = self.undo_history.peek_redone_actor_rebuild();
+                        let saved_selection = tree_rebuild.as_ref().map(|_| self.capture_selection_path_keys());
+                        if let Some((wl, actors_data)) = tree_rebuild {
                             self.rebuild_actors_for_wl(wl, actors_data);
                         }
                         // コンポーネントスロット再構築
@@ -368,20 +378,23 @@ impl App {
                             self.selected_instances = ids;
                             self.send_selected();
                         }
-                        // アクター DFS 選択の復元（ActorDfsSelectionCommand）
-                        if let Some((dfs_ids, primary)) = self.undo_history.peek_redone_actor_dfs_selection() {
+                        // アクター DFS 選択の復元（ActorDfsSelectionCommand。あれば道筋の鍵での引き直しより優先）
+                        let explicit_selection = self.undo_history.peek_redone_actor_dfs_selection();
+                        let has_explicit_selection = explicit_selection.is_some();
+                        if let Some((dfs_ids, primary)) = explicit_selection {
                             self.selected_actor_dfs_ids     = dfs_ids;
                             self.actor_virtual_selected_idx = primary;
                             self.selected_instances.clear();
                             self.send_selected();
                         }
                         if structural {
-                            // Undo 側と同じく、プレビューの出し入れをやり直したときは未保存にしない知らせ付きで送る
-                            if self.undo_history.peek_redone_is_scene_neutral() {
-                                self.send_hierarchy_quiet();
-                            } else {
-                                self.send_hierarchy();
-                            }
+                            // Undo 側と同じ規則（プレビューの出し入れは未保存にしない印付き・組み直しは即時）
+                            let neutral = self.undo_history.peek_redone_is_scene_neutral();
+                            self.send_hierarchy_after_undo(neutral, saved_selection.is_some());
+                        }
+                        // 組み直した木で選択を同じアクタへ引き直して送る（Undo 側と同じ。ヒエラルキーの後）
+                        if let Some(saved) = saved_selection.filter(|_| !has_explicit_selection) {
+                            self.restore_selection_from_path_keys(saved);
                         }
                         // Undo 側と同じ理由でシーン設定のシェーダ行を送り直す。
                         self.send_scene_shading_params();

@@ -39,10 +39,10 @@ use super::super::{
     find_actor_by_entity, find_actor_by_entity_mut, validate_reparent_kind,
 };
 use super::tree::{
-    clear_links_recursive, find_child_by_names, find_child_by_names_mut, find_child_by_path,
-    find_child_by_path_mut, group_roots_by_world_line, locate_in_parent, matching_preview_roots,
-    nested_previews, outermost_preview_roots, preview_root_of_dfs, walk_child_path, NestedPreview,
-    TreeLocation,
+    clear_links_recursive, entity_or_ancestor_matches, find_child_by_names, find_child_by_names_mut,
+    find_child_by_path, find_child_by_path_mut, group_roots_by_world_line, locate_in_parent,
+    matching_preview_roots, nested_previews, outermost_preview_roots, preview_root_of_dfs, walk_child_path,
+    NestedPreview, TreeLocation,
 };
 use super::undo::EditorPreviewTreeCommand;
 use super::wire::{format_added, format_cleared, format_error, format_refreshed, LOG_PREFIX};
@@ -68,6 +68,8 @@ const UNDER_NOT_FOUND: &str = "プレビューの差し込み先が見つかり�
 const PREFAB_LOAD_FAILED: &str = "プレビューのプレハブを読めませんでした";
 /// 根に CanvasLayoutItem が無く、レイヤーの底上げを付けられなかったとき（ログだけ。失敗にはしない）。
 const LAYER_BIAS_NOT_APPLIED: &str = "根に CanvasLayoutItem が無いので底上げを付けられません（重なって見えることがあります）";
+/// 差し込み先が地形ルートかその部分木の中のとき（Undo・Play の写しが地形を現物のまま残すため。レビュー #7）。
+const INSIDE_TERRAIN_REFUSED: &str = "地形の中にはプレビューを出せません（地形のノードの外へ出してください）";
 /// 組み立てたプレビューの差し込み先が消えていたとき（通常は起きない）。
 const INSERT_TARGET_LOST: &str = "プレビューの差し込み先が見つかりませんでした";
 /// 追加したプレビューの位置（DFS）を引けなかったとき（通常は起きない）。
@@ -164,6 +166,10 @@ impl App {
     }
 
     /// 親（DFS）と `under` の名前のパスから差し込み先を決める（木には触らない）。
+    ///
+    /// 差し込み先が地形ルートか、その部分木の中なら断る（レビュー #7）。Undo の写しは地形ルートを
+    /// 位置の印だけにして現物を Keep する（actor_ops.rs の snapshot_actors / rebuild_actors_for_wl）ので、
+    /// 地形の中のプレビューは Ctrl+Z でも消えずに残って DFS をずらし、前に積んだ Undo が別のアクタへ当たる。
     fn resolve_insert_target(&self, world_line: u32, parent_dfs: u32, under: &str) -> Result<InsertTarget, String> {
         let scene = self.scene.as_ref().ok_or(NO_SCENE)?;
         let mut counter = 0u32;
@@ -171,6 +177,9 @@ impl App {
             .ok_or_else(|| format!("{PARENT_NOT_FOUND}（世界線 {world_line}・DFS {parent_dfs}）"))?;
         let target = walk_child_path(parent, under)
             .map_err(|missing| format!("{UNDER_NOT_FOUND}（「{}」の下に「{missing}」がありません）", parent.name))?;
+        if entity_or_ancestor_matches(&scene.actors, target.entity, App::is_terrain_root) {
+            return Err(format!("{INSIDE_TERRAIN_REFUSED}（差し込み先「{}」）", target.name));
+        }
         Ok(InsertTarget { entity: target.entity, kind: actor_kind_info(target) })
     }
 
@@ -512,12 +521,8 @@ impl App {
             .and_then(|entity| to_dfs(&[entity]).first().copied())
             .or_else(|| all.last().copied());
 
-        self.selected_actor_dfs_ids = all;
-        self.actor_virtual_selected_idx = primary;
-        self.send_selected();
-        if let Some(primary) = primary {
-            self.send_actor_components(primary as u32, self.actor_virtual_selected_slot_idx);
-        }
+        // 書き換えて送る（SELECTED と主の ACTOR_COMPONENTS。Undo/Redo の引き直しと共用。undo_selection.rs）
+        self.apply_actor_selection(all, primary);
     }
 
     /// 応答をエディタへ送る（IPC が無ければ何もしない）。

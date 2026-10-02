@@ -168,7 +168,7 @@ MCP サーバーを掴んでいる間ずっと `bin\Debug\net10.0\SeedMcpServer.
 | `seed_save_set` | `key`, `value`, `type?`（int/float/string）, `flush?` | `{ok, result:{op,key,type,value}(,flushed)}`（進行状態を作ってから Play する用） |
 | `seed_save_delete` | `key` | `{ok, result:{op,key,deleted}}` |
 | `seed_save_flush` | なし | `{ok, result:{op,saved}}`（メモリ上の内容をディスクへ書き出す） |
-| `seed_find_actor` | `name`（名前 or `Root/Child` パス）, `components?`（既定 true） | `{ok, name, found, dfs_id, components}`（選択は変えない） |
+| `seed_find_actor` | `name`（名前 or `Root/Child` パス）, `components?`（既定 true） | `{ok, name, found, dfs_id, is_preview, components}`（選択は変えない。`is_preview`=true はエディタの画面プレビュー〈保存されない〉の中で、値の編集・コンポーネントの追加・移動・削除・ロジック配置はランタイムが `PREVIEW_ERROR` で断る。2026-10-03） |
 | `seed_input` | `keys?`（キー名の配列）, `click?`（`{x,y,button?}`）, `hold_ms?`（既定 80） | 各操作の `{ok, sent, reply}` を改行区切り（Play 中のみ） |
 | `game_input_key` | `key`（KeyCode 名）, `down`（bool） | `{ok, sent, reply}`（Play 中のみ。9 章） |
 | `game_input_mouse` | `button?`+`down?` / `dx?`,`dy?` / `x?`,`y?` / `scroll?` のいずれか 1 種 | `{ok, sent, reply}` |
@@ -219,7 +219,7 @@ MCP サーバーを掴んでいる間ずっと `bin\Debug\net10.0\SeedMcpServer.
 | `seed_profile` | `profile` | `IEditorAiHost.ProfileDumpAsync`（IPC `PROFILE_DUMP:{秒}` → `PROFILE_DUMP_DONE:{パス}`） |
 | `seed_generate_fish_thumbnails` | `generate_fish_thumbnails` | `IEditorAiHost.RenderActorThumbnailAsync`（IPC `RENDER_ACTOR_THUMBNAIL:...` → `RENDER_ACTOR_THUMBNAIL_DONE\|_ERROR`）を魚 prefab ごとに逐次 |
 | `seed_save_get` / `seed_save_set` / `seed_save_delete` / `seed_save_flush` | `save_data`（`op` 違い） | `EditorCommandExecutor.SaveData.cs` → IPC `SAVE_DATA:{json}` → `SAVE_DATA_OK:{json}` / `SAVE_DATA_ERROR:{msg}`（実装は `runtime/.../app/save_data_ops.rs`） |
-| `seed_find_actor` | `find_actor` | 同上 → `HierarchyPanel.ActorDfsIdByPath`（名前／パス → DFS ID）＋ `IEditorAiHost.GetActorComponentsAsync`（`GET_ACTOR_COMPONENTS:` のみ。`SELECT:` は送らない） |
+| `seed_find_actor` | `find_actor` | 同上 → `HierarchyPanel.ActorDfsIdByPath`（名前／パス → DFS ID）＋ `HierarchyPanel.IsPreviewNode`（`is_preview`）＋ `IEditorAiHost.GetActorComponentsAsync`（`GET_ACTOR_COMPONENTS:` のみ。`SELECT:` は送らない） |
 | `seed_input` | （なし／MCP サーバー内で `game_input_*` を連続実行） | `SeedMcpServer/Program.cs::ExecInputAsync` |
 | `game_input_key` | `game_input_key` | `EditorCommandExecutor.GameInput.cs` → IPC `INPUT_KEY:{key},{down\|up}` |
 | `game_input_mouse` | `game_input_mouse` | 同上 → `INPUT_MOUSE_BUTTON` / `INPUT_MOUSE_MOVE` / `INPUT_MOUSE_POS` / `INPUT_SCROLL` |

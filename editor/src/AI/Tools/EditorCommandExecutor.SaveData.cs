@@ -227,13 +227,18 @@ public partial class EditorCommandExecutor
         if (dfsId is null)
             return Json(new { ok = false, name, found = false, error = $"アクタ '{name}' が見つかりません。" });
 
+        // エディタのプレビュー（保存されない表示用のアクタ）の中か（2026-10-03。レビュー #3）。
+        // 中なら値の編集・コンポーネントの追加・移動・削除・ロジック配置はランタイムが PREVIEW_ERROR で断る
+        // （editor_preview/guard.rs）。中身を変えるときはプレハブ（.actor）を編集する。
+        var isPreview = Panels.ActorRefJump.ActorIsPreviewByDfsId?.Invoke(dfsId.Value) ?? false;
+
         // components:false なら DFS ID だけ返す（軽量な問い合わせ）
         if (GetBoolOrNull(args, FindActorComponentsArg) == false)
-            return Json(new { ok = true, name, found = true, dfs_id = dfsId.Value });
+            return Json(new { ok = true, name, found = true, dfs_id = dfsId.Value, is_preview = isPreview });
 
         var host = Host;
         if (host is null)
-            return Json(new { ok = true, name, found = true, dfs_id = dfsId.Value });
+            return Json(new { ok = true, name, found = true, dfs_id = dfsId.Value, is_preview = isPreview });
 
         var json = await host.GetActorComponentsAsync(dfsId.Value, FindActorTimeoutMs);
         if (string.IsNullOrEmpty(json))
@@ -243,12 +248,14 @@ public partial class EditorCommandExecutor
                 name,
                 found      = true,
                 dfs_id     = dfsId.Value,
+                is_preview = isPreview,
                 components = (string?)null,
                 warning    = "構成（ACTOR_COMPONENTS）の取得がタイムアウトしました。",
             });
 
         // ACTOR_COMPONENTS の JSON をそのまま埋め込む（正典はランタイム側の書式）
         return $"{{\"ok\":true,\"name\":{JsonSerializer.Serialize(name)},"
-             + $"\"found\":true,\"dfs_id\":{dfsId.Value},\"components\":{json}}}";
+             + $"\"found\":true,\"dfs_id\":{dfsId.Value},"
+             + $"\"is_preview\":{(isPreview ? "true" : "false")},\"components\":{json}}}";
     }
 }

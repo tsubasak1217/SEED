@@ -78,6 +78,10 @@ public static class Program
                                                                     ProjectSettingsKeepsUnknownKeys);
         harness.Add("ランタイム exe が無いと古い .inputmap は開かない（既定値で上書きさせない）",
                                                                     GatewayBlocksWhenRuntimeIsMissing);
+        // 一括アップグレードの前後の未保存のシーンの扱い（レビュー #8。UpgradeUnsavedPolicy.cs）
+        harness.Add("未保存ならアップグレードの前に保存か破棄を選ばせ、やめれば開かない",
+                                                                    UpgradeAsksBeforeOverwritingUnsavedScene);
+        harness.Add("実行した後だけ開いているシーンを読み直す",     UpgradeReloadsSceneOnlyAfterExecution);
 
         // ── 5. --migrate-json の実行（exe があるときだけ）───
         var exePath = FindRuntimeExe();
@@ -605,6 +609,27 @@ public static class Program
     /// </para>
     /// </summary>
     /// <param name="exePath">ランタイム exe の絶対パス。</param>
+    /// <summary>レビュー #8: 未保存のまま実行させない（保存してから・破棄して・やめる）。保存していなければすぐ開く。</summary>
+    private static void UpgradeAsksBeforeOverwritingUnsavedScene()
+    {
+        Check.Equal(UpgradeStartAction.OpenNow, UpgradeUnsavedPolicy.Decide(false, UpgradeUnsavedChoice.Cancel),
+            "未保存でなければ選択を見ずにすぐ開く");
+        Check.Equal(UpgradeStartAction.SaveThenOpen, UpgradeUnsavedPolicy.Decide(true, UpgradeUnsavedChoice.SaveFirst),
+            "保存してから開く（保存の完了を待つ）");
+        Check.Equal(UpgradeStartAction.OpenNow, UpgradeUnsavedPolicy.Decide(true, UpgradeUnsavedChoice.Discard),
+            "破棄なら開く（実行したら読み直して捨てる）");
+        Check.Equal(UpgradeStartAction.Abort, UpgradeUnsavedPolicy.Decide(true, UpgradeUnsavedChoice.Cancel),
+            "やめるなら開かない");
+    }
+
+    /// <summary>レビュー #8: ディスクが書き換わったとき（実行した）だけ、パスのあるシーンを読み直す。</summary>
+    private static void UpgradeReloadsSceneOnlyAfterExecution()
+    {
+        Check.True(UpgradeUnsavedPolicy.ShouldReloadScene(executed: true, hasScenePath: true), "実行した → 読み直す");
+        Check.True(!UpgradeUnsavedPolicy.ShouldReloadScene(executed: false, hasScenePath: true), "下調べだけ・閉じただけ → 読み直さない");
+        Check.True(!UpgradeUnsavedPolicy.ShouldReloadScene(executed: true, hasScenePath: false), "保存したことの無いシーンは読み直せない");
+    }
+
     private static void UpgradeRunnerRoundTrip(string exePath)
     {
         using var temp = new TempDir();

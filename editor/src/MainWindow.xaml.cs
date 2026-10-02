@@ -649,6 +649,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         SEEDEditor.Panels.ActorRefJump.BuildActorReferencePath = PanelHierarchy.BuildActorReferencePath;
         // MCP の seed_find_actor（名前／パス → DFS ID）も Hierarchy のノードモデルへ接続する。
         SEEDEditor.Panels.ActorRefJump.ActorDfsIdByPath = PanelHierarchy.ActorDfsIdByPath;
+        // seed_find_actor の結果の is_preview（プレビューの中か）も Hierarchy のノードモデルから引く（レビュー #3）
+        SEEDEditor.Panels.ActorRefJump.ActorIsPreviewByDfsId = PanelHierarchy.IsPreviewNode;
         // .anim ファイルのダブルクリックでアニメーションタイムラインパネルを開いて読み込む
         PanelProject.AnimFileOpened     += path =>
         {

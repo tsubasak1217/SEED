@@ -1,7 +1,7 @@
 // ============================================================
 //  hierarchy_sync.rs — ヒエラルキー・アクターデータ送信
 //
-//  do_send_hierarchy / send_hierarchy / send_hierarchy_quiet / send_actor_data /
+//  do_send_hierarchy / send_hierarchy / send_hierarchy_quiet / flush_deferred_hierarchy / send_actor_data /
 //  send_world_line_info / send_selected
 // ============================================================
 
@@ -93,6 +93,18 @@ impl App {
         self.last_hierarchy_send = Some(std::time::Instant::now());
         self.hierarchy_dirty = false;
         self.do_send_hierarchy();
+    }
+
+    /// 間引きで遅らせているヒエラルキー（hierarchy_dirty）があれば、今すぐ送る。
+    ///
+    /// 木を変えた直後に新しい番号の SELECTED を送る経路で、SELECTED の **前** に呼ぶ（2026-10-03）。
+    /// エディタは SELECTED の番号を手元の木で引くので、遅らせたヒエラルキーより先に SELECTED が届くと
+    /// 古い木の別の行を選び、続くヒエラルキーの同期でその行のアクタへ選択とインスペクタを移してしまう。
+    /// 遅らせていなければ何もしない（直前に送ったヒエラルキーが最新）。
+    pub(super) fn flush_deferred_hierarchy(&mut self) {
+        if self.hierarchy_dirty {
+            self.send_hierarchy_now();
+        }
     }
 
     /// 「アクターツリーが丸ごと入れ替わった」ことをエディタへ通知し、

@@ -40,6 +40,7 @@
   - 普通のアクタの追加・削除の Undo にも同じ穴があるが、本コミットで「Ctrl+Z でプレビューが消える」が正式な消し方（docs/editor_screen_preview.md §7）になり、部分木も大きいので踏みやすくなった。
 - 確認: 済（上の 6 か所を読んで、イベントが出ないことを確かめた。実行はしていない）
 - 直し方の案: 木の組み直しを伴う Undo/Redo の後は、`selected_actor_dfs_ids` を消して `SELECTED:-1` を送る（またはプレビューの順方向と同じく entity で引き直して送る）。エディタ側は `RestoreSelectionAfterSync` で番号が変わったら `ActorDfsSelected` を上げてインスペクタを取り直す。
+- → 2026-10-03 に済（ランタイム: 木を組み直す Undo/Redo の前に、選択を「ルートからの名前の道筋＋同じ名前の兄弟の中で何番目か」（エディタの StableKey と同じ規則）で控え、組み直した木で引き直して、ヒエラルキー（組み直したときは間引かず即時）→ `SELECTED` →（主があれば）`ACTOR_COMPONENTS` の順に送る。道筋で引けなくても木の形（DFS 順の子の数の並び）が前後で同じなら同じ番号のまま残し（名前の変更の Undo/Redo）、消えた・親の変わったアクタは選択から外し、何も残らなければ `SELECTED:-1`。組み直しは entity を全部作り直すので、案の「entity で引き直す」は Undo/Redo では使えない（`app/undo_selection.rs`・`ipc_handler.rs` の Undo / Redo の腕。送り方はプレビューの順方向の `restore_selection` と共用）。エディタ: `HierarchyPanel.RestoreSelectionAfterSync` が番号の変わった選択を `ActorDfsSelected` でインスペクタへも知らせる（`Hierarchy/SelectionRestorePlan.cs`）。その副作用を防ぐため、貼り付けの `SELECTED` がヒエラルキーより先に届いていた順番（`clipboard.rs`）を入れ替え、配置の選択（`select_placed_actors`）の前に間引きで遅らせたヒエラルキーを流す（`flush_deferred_hierarchy`）。通し確認（画面外の SEED.exe・TCP の IPC）: 直す前は Ctrl+Z の後に `SELECTED` が来ず、インスペクタの古い番号 17 への `SET_VISIBLE` が別のアクタ `Lid` に当たった → 直した後は `SELECTED:999000004` と `Shell` の `ACTOR_COMPONENTS` が届き、`Shell` に当たる。Redo・プレビューの中を選んでいたとき（`SELECTED:-1`）・普通のアクタの追加の Undo・名前の変更の Undo（同じ番号のまま）も確かめた。単体テスト: undo_selection 6 件・SelectionRestorePlan 4 件。コミットは監督役が追記）
 
 ## 2. SeedTemplateThumbnails の `--work` の中身を確かめずに `assets/` を再帰削除する。実プロジェクトの assets を消せるうえ、同時に 2 つ動かすと互いを壊す  【重さ: 中】
 - 場所:
@@ -69,6 +70,7 @@
 - 根拠: ガードは「値の編集はエディタの UI が読み取り専用にしている」という前提で値を通しているが、AI ツールと MCP は UI を通らない。`git grep -i preview` で AI・SeedMcpServer に該当なし。
 - 確認: 済（拒否表・AI の腕・ロジック配置の挿入先を読んだ）
 - 直し方の案: ガードにプレビューの中への `AI_*`・`LOGIC_PLACE(_BEGIN)` の拒否を足す（できれば `SET_*` も。エディタの UI は既に送らないので害は無い）。`seed_find_actor` の結果にプレビューの印を載せ、docs §3 の前提の文を書き換える。
+- → 2026-10-03 に済（`editor_preview/guard.rs` の拒否表に `AI_SET_VALUE`・`AI_ADD_COMPONENT`・`AI_MOVE_ACTOR`・`AI_REMOVE_ACTOR`・`LOGIC_PLACE` / `LOGIC_PLACE_BEGIN`（アクタの配置は `parent_dfs`、制御点の追記は `actor_dfs_id` で判定）・インスペクタの値の編集（`field_edit.rs` の分類で対象のアクタがある `SET_*` 全部。`SET_VISIBLE`・`SET_ACTIVE` を含む）・`SET_ACTOR_TRANSFORM`・`SET_CANVAS_TRANSFORM`・コンポーネントの追加・削除・複製・制御点の書き換え・デバッグカメラの値の反映を足した（文言「プレビューの中は編集できません…」。名前の変更・削除は従来どおり通す）。`seed_find_actor` の結果に `is_preview`。エディタの AI ツール（`set_value` など 4 つ）は送る前にプレビューの中かを確かめてエラーを返す（`EditorCommandExecutor.PreviewGuard.cs`。送るだけだと「設定しました」と返り、AI には成功に見えるため）。docs §3 の前提の文を書き換えた。通し確認: 直す前は 8 種の命令がどれも `PREVIEW_ERROR` 無しで通った（`AI_REMOVE_ACTOR`・`LOGIC_PLACE(_BEGIN)`・`SET_VISIBLE` は木や表示を変え、`SCENE_MODIFIED` も来た）→ 直した後は全部 `PREVIEW_ERROR` で木も変わらず、外の実アクタへの同じ命令は通る。単体テスト 2 件。コミットは監督役が追記）
 
 ## 4. MTSDF の安全弁の落ち先（アルファ）が同じ合成の結果なので、合成の誤りでは落ちても直らない  【重さ: 中（推測を含む）】
 - 場所: runtime/src/engine/core/font/msdf/bake.rs:163-171、distance.rs:333-346（`assign_far_by_depth`）・473-483（`combine` の最初の分岐）・655-656（コミット 65951959）
@@ -104,6 +106,7 @@
 - 根拠: `snapshot_actors` は地形ルートで `terrain_marker_data` を返し、`rebuild_actors_for_wl` はマーカーが同じ位置なら現物を戻す。プレビューの印は地形の部分木の中でも `outermost_preview_roots` に拾われる。
 - 確認: 済（監督役）。地形の下に UI のプレビューを置くことはまず無いので低。
 - 直し方の案: 地形ルートの部分木の中への `PREVIEW_PREFAB` を断る（`resolve_insert_target` で祖先に地形ルートがあれば `PREVIEW_ERROR`）。
+- → 2026-10-03 に済（`editor_preview/ops.rs::resolve_insert_target` が、差し込み先か祖先に地形ルートがあれば `PREVIEW_ERROR`「地形の中にはプレビューを出せません…」で断る（`tree.rs` の `entity_or_ancestor_matches`。単体テスト 1 件）。docs/editor_screen_preview.md §9・backlog を更新。通し確認（`TERRAIN_INIT` した空のシーン）: 直す前は地形ルート・チャンクの下へ `PREVIEW_ADDED` → 直した後は断り、地形の外の 3D アクタの下へは出せる。コミットは監督役が追記）
 
 ## 8. prefab_hash の直し × 開いたままの一括アップグレード → 保存すると古い版で上書きされ、偽の「更新あり」バナーが出る  【重さ: 低】
 - 場所: runtime/src/engine/core/app_base/scene.rs:801-804（`build_actor` が `prefab_hash` を写すようになった。コミット b5ee44db）、runtime/src/engine/core/migration/upgrade/prefab_rehash.rs:53-99、editor/src/MainWindow.Migration.cs:60-74
@@ -112,6 +115,7 @@
 - 根拠: 貼り直しはディスクの `.scene` のテキストだけを書き換える（prefab_rehash.rs）。アップグレードの窓は実行後に開いているシーンへ何もせず（MigrationMessages.cs に開き直しの案内も無い）、自動再読込は未保存なら見送る（editor/src/Scene/SceneAutoReloader.cs:424-427）。
 - 確認: 済（監督役）。旧シーン（hash 無し）の扱いは変わっていない（「問題なし」の 5）。
 - 直し方の案: アップグレードの実行前に、開いているシーンが未保存なら保存か破棄を求め、実行後は開いているシーンを読み直す。
+- → 2026-10-03 に済（「プロジェクトの形式をアップグレード...」の前に、未保存なら［はい］保存してから／［いいえ］破棄して／［キャンセル］やめる、を選ばせる。保存は非同期なので完了（`OnSaveCompleted`）を待ってから窓を開き、失敗したら開かない。窓の中で実行したら（`ProjectUpgradeWindow.Executed`。失敗した実行も含む）開いているシーンをディスクから読み直す。判定は `Migration/UpgradeUnsavedPolicy.cs`（MigrationTests 2 件）、配線は `MainWindow.Migration.cs`。エディタの GUI では未確認（利用者のエディタを動かさない取り決めのため、単体テストとビルドまで）。コミットは監督役が追記）
 
 ## 9. `DialogHandle.Close(DialogResult)` が `Choose` を通らないため、`InputText` と `SelectedIndex` の約束が崩れる  【重さ: 低】
 - 場所: scripting/src/Api/UI/Navigation/ModalHandle.cs:114（a3d4280f で追加）→ :44-49 → ModalPlane.cs:113-123。比較先は Dialog.cs:190-205（`Choose`）
@@ -133,6 +137,7 @@
 - 根拠: `scene_3d=false` のとき `all_mcs` を空にする（サムネイルの世界線も対象）。構図の計算は ECS を直接引くので成功し、撮影の段まで進む。docs/rendering_profiles.md §10 の「ui で動かないもの」に記載が無い。
 - 確認: 一部済（`all_mcs` を空にする所だけ読んだ）
 - 直し方の案: `begin_thumbnail_job` の先頭で `!flags.scene_3d` なら理由を書いたエラーで返し、§10 に 1 行足す。
+- → 2026-10-03 に済（`begin_thumbnail_job` の先頭で `scene_3d=false` なら「この描画の構成（…scene_3d=false…）では…撮影できません」で断る（単体テスト 1 件）。docs/rendering_profiles.md §10 に 1 行。通し確認（ui のプロジェクトの Wake or Pay を Edit で開き、3D のアクタの `RENDER_ACTOR_THUMBNAIL`）: 直す前は撮影まで進み、被写体（BrainStem）の写っていない絵を `RENDER_ACTOR_THUMBNAIL_DONE` として書いた（レビューの予想の `ERROR_EMPTY_RENDER` ではなく、別の 2D の何かが写った 128px の絵）→ 直した後はすぐ理由つきの ERROR で、PNG は書かない。コミットは監督役が追記）
 
 ## 12. picking=false の単体の Play で `RENDER_ACTOR_THUMBNAIL` を受けると、30 秒待ってから誤った理由で失敗する  【重さ: 低】
 - 場所: runtime/src/engine/core/app_base/app/id_buffer_ops.rs:82-84（コミット 8099eca2）、thumbnail_ops.rs:462・290-297、frame_renderer.rs:8791-8792・9325-9335・9408-9423
@@ -140,6 +145,7 @@
 - 根拠: `ensure_id_buffer` は方針 Never で何も作らずに戻るが、`begin_thumbnail_job` は続行する。ID バッファが無いと読み戻しを予約しないので、`receive_id_mask(None, …)` の「次の poll で失敗させる」経路にも届かない。8099eca2 より前は ID バッファが常にあったので起きなかった。
 - 確認: 一部済（`begin_thumbnail_job` が `ensure_id_buffer` の結果を見ないことを読んだ）
 - 直し方の案: `ensure_id_buffer` の直後に `self.id_buffer.is_none()` なら「この描画の構成（picking=false）では撮影できません」で返す。
+- → 2026-10-03 に済（`ensure_id_buffer` の後に ID バッファが無ければすぐ断る: 作らない構成（picking=false）なら「この描画の構成（picking=false）では撮影できません」、作ってよい構成なのに用意できなければ準備の理由（`id_buffer_ops.rs` の `prepare_id_buffer_for_capture`・`id_buffer_unavailable_reason`。単体テスト 1 件）。docs/rendering_profiles.md §14.5 に追記。通し確認（`full`＋`picking=false` の単体の Play・TCP）: 直す前は 30.1 秒待って「30 秒以内に描画が完了しませんでした（フレームが回っていない可能性）」→ 直した後は 0.9 秒で正しい理由。picking=true（OnDemand）は今までどおり撮れる。コミットは監督役が追記）
 
 ## 13. ヒエラルキーの目アイコンはプレビューの行でも押せ、普通の編集として未保存になる  【重さ: 低】
 - 場所: editor/src/Panels/HierarchyPanel.xaml.cs:829-836、HierarchyPanel.Preview.cs:207-214（コミット b5ee44db）
@@ -147,12 +153,14 @@
 - 根拠: トグルは `node.Id` で無条件に送り、プレビューの行は薄く表示するだけ（インスペクタ側の目アイコンは無効にしてある）。
 - 確認: 済
 - 直し方の案: `node.IsPreview` のときはトグルを無効にし、理由をツールチップで出す。
+- → 2026-10-03 に済（プレビューの行の目アイコンを無効にし、理由をツールチップで出す（無効でも出す）。`HierarchyPanel.Preview.cs` の `ApplyPreviewVisibilityToggleState`。ランタイムも `SET_VISIBLE` をプレビューの中へ通さない（#3）。エディタの GUI では未確認。コミットは監督役が追記）
 
 ## 14. シーンビューの右クリック「アクタファイル化」がプレビューの中のノードにも出る（backlog の記述と食い違い）  【重さ: 低】
 - 場所: editor/src/MainWindow.Viewport.cs:535-536、editor/src/Panels/HierarchyPanel.xaml.cs:1540-1551、runtime/.../actor_ops.rs:1356-1424、docs/backlog.md（「エディタはプレビューのノードのドラッグ（＝アクタファイル化）とメニューを出さない」）
 - 何が起きるか: プレビューの中のノード（枠つきの差し込みでは中身の根も「中」）をビューポートで選ぶと `EXPORT_ACTOR` が通る（ランタイムが断るのは根だけ）。書き出す中身は `clear_links_recursive`（editor_preview/tree.rs:232-239）で入れ子のプレハブのリンクを外した写しなので、元のプレハブへ上書き保存すると入れ子のインスタンスが平坦化される。成功後はプレビューのノードに `prefab_source`・`prefab_hash` が付く（メモリの中だけ）。
 - 確認: 済（`ShowExportActorDialog` にプレビューの判定が無いことを読んだ）
 - 直し方の案: `ShowExportActorDialog` でプレビューの中なら断ってトーストを出し、backlog の文を直す。
+- → 2026-10-03 に済（`HierarchyPanel.ShowExportActorDialog` がプレビューの中なら書き出さずに false を返し、シーンビューの右クリックはトースト「プレビューの中はアクタファイル化できません…」を出す。backlog の文を直した（2026-10-02 の「メニューを出さない」はヒエラルキーだけの話だった）。ランタイムの `EXPORT_ACTOR` は中のノードをまだ断らない（MCP の `seed_send_ipc` で直接送る経路。backlog）。エディタの GUI では未確認。コミットは監督役が追記）
 
 ## 15. プレビューだけを選んだ COPY は黙って何もせず、前のクリップボードが残る  【重さ: 低】
 - 場所: runtime/src/engine/core/app_base/app/clipboard.rs:36-55（コミット b5ee44db）
@@ -160,6 +168,7 @@
 - 根拠: `if !new_clipboard.is_empty() { self.actor_clipboard = new_clipboard; … }` で、空のときは何も返さず return する。
 - 確認: 済（監督役）
 - 直し方の案: プレビューを除いて空になったら `actor_clipboard` を空にするか、`PREVIEW_ERROR`（「プレビューはコピーできません」）を返す。
+- → 2026-10-03 に済（`do_copy` で選択がプレビューだけなら `actor_clipboard` を空にし、`PREVIEW_ERROR`「プレビューはコピーできません…」を返す。実アクタとの混在は実アクタだけをコピー（従来どおり）。`clipboard.rs` の `copy_outcome`（単体テスト 2 件）。通し確認: 直す前は続く `PASTE` で前にコピーした別のアクタ（`Gap1`）が貼られた → 直した後は貼られない。コミットは監督役が追記）
 
 ## 16. MTSDF の誤差補正の距離の確かめが、符号を直す前の距離を基準にしている  【重さ: 低】
 - 場所: runtime/src/engine/core/font/msdf/error_correction.rs:159-163、distance.rs:523-532（`pseudo_distance_at` は符号を直さない）・586（`generate` だけが `correct_sign` を通る）（コミット 65951959）
@@ -187,7 +196,9 @@
 
 ## 20. docs・規約と実装の食い違い（4 件）  【重さ: 低】
 - docs/backlog.md:526（コミット b5ee44db）: 「シーンを読み込むと `prefab_hash` が落ち…（直していない）」が未完了のまま。同じコミットの scene.rs:801-804 で直してある。→ 完了にして日付と直した場所を書く。（確認: 済）
+  → 2026-10-03 に済（項目を完了にし、直したコミットと場所を書いた。通し確認: App.scene の `prefab_hash` 5 件 → 読み込んで `SAVE_SCENE_COPY` した .scene も 5 件。コミットは監督役が追記）
 - docs/editor_screen_preview.md §8（b5ee44db）: (a) `PREVIEW_REFRESH_PATH` は組み直しに失敗した根ごとに `PREVIEW_ERROR` も返す（ops.rs:314-318）のに表に無い。(b) `PREVIEW_PREFAB` の `ADDED_ROOT_LOST` の経路は、木を変え・Undo を積み・HIERARCHY を送った後で `PREVIEW_ERROR` を返す（ops.rs:155-163）ので「失敗は木が変わらない」と食い違う（通常は起きない経路）。（確認: 済）
+  → 2026-10-03 に済（§8 の表に、`PREVIEW_REFRESH_PATH` の根ごとの `PREVIEW_ERROR`（その根は古いまま。最後に必ず `PREVIEW_REFRESHED`）と、`PREVIEW_PREFAB` の `ADDED_ROOT_LOST` だけは木を変え・Undo を積み・通知した後で `PREVIEW_ERROR` を返す例外を書いた。コミットは監督役が追記）
 - .claude/rules/renderer-gpu-resources.md:11（caabe0b1）: 「ui 構成ではクラスタを作らない」とあるが、`ClusterResources::new` は構成によらず作る（drawer/mod.rs:218。docs/rendering_profiles.md §10 も「止めていない（3.4 MiB）」）。規約に従って書き足す人が誤った前提を持つ。（確認: 未）
 - docs/scripting_api.md:4146-4147（a3d4280f）: `spinner.Size = 48f` は部品が動き始めた後に書いても見た目に反映されない（ApplyLook は Refresh のときだけ。ProgressSpinner.cs:79-103）。例を `SetSize`・`SetThickness` にする。（確認: 未）
 

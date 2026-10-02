@@ -100,6 +100,13 @@ public sealed class ProjectUpgradeWindow : Window
     /// <summary>実行中か（二重起動と、実行中の×閉じを防ぐ）。</summary>
     private bool _busy;
 
+    /// <summary>
+    /// この窓の中でアップグレードを実行したか（ディスクが書き換わったか）。失敗した実行も true
+    /// （途中まで書いていることがあるため）。窓を閉じた後に MainWindow が開いているシーンを読み直すかの判断に使う
+    /// （レビュー #8。<see cref="SEEDEditor.Migration.UpgradeUnsavedPolicy.ShouldReloadScene"/>）。
+    /// </summary>
+    public bool Executed { get; private set; }
+
     // ── 生成 ─────────────────────────────────────────────────
 
     /// <summary>
@@ -259,6 +266,8 @@ public sealed class ProjectUpgradeWindow : Window
         var result = await ProjectUpgradeRunner
             .RunAsync(AssetMigrationGateway.ResolveRuntimeExePath(), _projectPath, dryRun: false)
             .ConfigureAwait(true);
+        // 結果の成否によらず「書き換えたかもしれない」ので、閉じた後に開いているシーンを読み直させる
+        Executed = true;
 
         EndBusy();
 

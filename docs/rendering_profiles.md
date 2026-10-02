@@ -309,6 +309,7 @@ APK の pak（`assets/seed/assets.pak`）の `project_settings.json` に `"rende
 | スワップチェイン | 形式（Rgba8UnormSrgb / Bgra8UnormSrgb）・枚数（フレーム遅延 2 → 3 枚を要求）は変えていない（§11） |
 | エディタ | プロジェクト設定の画面で選べる（2026-10-02。§2.1）。エディタのシーンビュー（Edit）も同じ構成で描くので、ui のプロジェクトでは 3D は出ない（警告のログが出る）。保存しても、使い回している Edit・Play のランタイムには次の起動まで効かない |
 | シェーディングアセット | デファード専用なので ui では効かない（`[SEED QUALITY][WARN]` が出る） |
+| モデル／アクタのサムネイル | `scene_3d=false` では撮らない（2026-10-03）。プロジェクトパネルのモデルのサムネイル（`THUMBNAIL:`）と図鑑の `RENDER_ACTOR_THUMBNAIL` は撮影へ進まず、すぐに「この描画の構成（…scene_3d=false…）では撮影できません」で断る（`thumbnail_ops.rs` の `begin_thumbnail_job`。以前は撮影まで進み、被写体の写らない絵を成功として書くか、誤った理由で失敗していた） |
 
 ## 11. スワップチェインの見直し（評価）
 
@@ -486,7 +487,7 @@ RT の使える PC では、最初のモデルの登録（`drawer/mod.rs` の `f
 |---|---|
 | Edit・エディタのビューポートへ埋め込み（その場の Play を含む）・エディタの Play（`--mode=play --pipe=`＝`app_env::is_editor_play`）・`SEED_ID_PASS_IN_PLAY` | 起動時から持ち、窓の大きさの知らせのたびに作り直す（従来どおり） |
 | エディタに接続していない Play（単体の `--mode=play`・パッケージ実行・Android）で構成の `picking=true`（full） | 起動時には作らない。ID パスを描くとき（図鑑のサムネイルの撮影＝`RENDER_ACTOR_THUMBNAIL` / `THUMBNAIL`）に初めて作り（`[SEED PICKING] ID バッファを作りました…`）、以後は窓の大きさに合わせる |
-| 同じく `picking=false`（ui） | 作らない（従来どおり） |
+| 同じく `picking=false`（ui） | 作らない（従来どおり）。図鑑のサムネイルの撮影を頼まれたら、すぐに「この描画の構成（picking=false）では撮影できません」で断る（2026-10-03。以前は ID バッファの無いまま撮影へ進み、30 秒の期限切れの後「フレームが回っていない可能性」という誤った理由で失敗していた。`id_buffer_ops.rs` の `prepare_id_buffer_for_capture`） |
 
 - エディタに接続していない Play で ID パスを描くのは図鑑のサムネイルの撮影だけ（`should_draw_id_pass`。一時停止のピックは名前付きパイプでつながった
   エディタの Play だけで、TCP の一時停止はゲームの見た目のまま）なので、ほかの読み手（ピック・D&D・配置・オービット・コントロールポイント）は

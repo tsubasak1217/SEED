@@ -9,7 +9,8 @@
 //      プレビューの中 → プレビューの項目だけ（既存の追加・コピー・削除・グループ・アクタファイル化は出さない）
 //      空白 → プレビューがあれば「すべてのプレビューを消す」
 //  - 読み取り専用: プレビューのノードは名前を変えない（F2・再クリック）、ドラッグを始めない（並べ替え・
-//    プロジェクトへのアクタファイル化も）、プレビューの中へ落とさせない（ランタイムも断る）。
+//    プロジェクトへのアクタファイル化も）、プレビューの中へ落とさせない（ランタイムも断る）、
+//    行頭の目アイコン（表示の切り替え）を押させない（2026-10-03。レビュー #13。ランタイムも SET_VISIBLE を断る）。
 //  - 差し込み先の引き直し（TryResolvePreviewParent）と、Delete の振り分け（PlanPreviewDeletion）を MainWindow へ公開する。
 //
 //  閲覧専用（IsReadOnlyView）のときは既存どおり右クリックのメニュー自体が出ない（OnTreeRightMouseDown）。
@@ -61,6 +62,10 @@ public partial class HierarchyPanel
 
     /// <summary>プレビューの中へ落とそうとしたときの理由。</summary>
     private const string PreviewDropRejectReason = "プレビューの中へは動かせません（プレビューは保存されません）";
+
+    /// <summary>プレビューの行の目アイコン（押せない）のツールチップ。</summary>
+    private const string PreviewVisibilityToggleToolTip =
+        "プレビュー（保存されない表示用のアクタ）の表示は切り替えられません。\n表示を変えるときは元のプレハブを編集してください";
 
     /// <summary>差し込み先のタブが切り替わっていたときの理由。</summary>
     private const string PreviewTabChangedReason = "差し込み先のタブが切り替わりました。ヒエラルキーで選び直してください";
@@ -198,6 +203,25 @@ public partial class HierarchyPanel
     /// <returns>変わったら true。</returns>
     private static bool PreviewHeaderDiffers(ActorNode a, ActorNode b) =>
         a.IsPreview != b.IsPreview || a.IsPreviewRoot != b.IsPreviewRoot;
+
+    /// <summary>
+    /// プレビューの行の目アイコン（表示の切り替え）を押せなくし、理由をツールチップで出す（レビュー #13）。
+    ///
+    /// 以前は押せて SET_VISIBLE が普通の編集として Undo に積まれ、未保存の印（*）も付いた（変更はメモリの中だけで
+    /// 作り直し・Play で戻る）。インスペクタの目アイコンと同じく読み取り専用にそろえる（docs/editor_screen_preview.md §3）。
+    /// 無効にした要素はクリックを行へ通すので、押すと行の選択になる。
+    /// </summary>
+    /// <param name="toggle">目アイコンの要素（VisibilityToggle.Create が作ったもの）。</param>
+    /// <param name="node">行のノード。</param>
+    private static void ApplyPreviewVisibilityToggleState(FrameworkElement toggle, ActorNode node)
+    {
+        if (!node.IsPreview) return;
+        toggle.IsEnabled = false;
+        toggle.Cursor    = null;
+        toggle.ToolTip   = PreviewVisibilityToggleToolTip;
+        // 無効の要素は既定ではツールチップを出さないので、理由が読めるように出す
+        ToolTipService.SetShowOnDisabled(toggle, true);
+    }
 
     /// <summary>
     /// プレビューの行を薄くし、根の名前の後に「（プレビュー）」を付ける（色は継いだまま）。

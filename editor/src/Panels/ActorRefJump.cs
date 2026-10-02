@@ -78,6 +78,16 @@ internal static class ActorRefJump
     public static Func<string, int?>? ActorDfsIdByPath;
 
     /// <summary>
+    /// 「その DFS ID のアクタがエディタのプレビュー（保存されない表示用のアクタ）の中か」を問い合わせるフック。
+    /// MainWindow が HierarchyPanel.IsPreviewNode へ接続する。
+    ///
+    /// MCP の seed_find_actor が結果に <c>is_preview</c> を載せるために使う（2026-10-03。レビュー #3）。
+    /// プレビューの中は保存されず、値の編集・コンポーネントの追加などはランタイムが PREVIEW_ERROR で断るので、
+    /// AI が DFS ID を得た時点で分かるようにする。未接続（null）のときは false 扱い。
+    /// </summary>
+    public static Func<int, bool>? ActorIsPreviewByDfsId;
+
+    /// <summary>
     /// 指定要素のダブルクリックで「アクタ名によるジャンプ」を行うよう配線する。
     /// アクタ参照を表示している行（ラベル・ドロップゾーン等）に付ける。
     /// </summary>

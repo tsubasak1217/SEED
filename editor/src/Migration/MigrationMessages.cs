@@ -143,6 +143,28 @@ public static class MigrationMessages
     public const string UPGRADE_BLOCKED_BY_LOCKS_FORMAT =
         "ほかの人が編集中のファイルがあるため、アップグレードを中止しました。\n{0}";
 
+    /// <summary>
+    /// 開いているシーンに未保存の変更があるときの確認（レビュー #8。はい＝保存してから / いいえ＝破棄して / キャンセル＝やめる）。
+    /// </summary>
+    public const string UPGRADE_UNSAVED_PROMPT =
+        "開いているシーンに未保存の変更があります。\n"
+        + "アップグレードはディスクのシーン（.scene）のプレハブの版も書き換えるため、未保存のまま後で保存すると古い版で上書きされます。\n\n"
+        + "［はい］保存してからアップグレードする\n"
+        + "［いいえ］未保存の変更を破棄してアップグレードする（実行したらシーンをディスクから読み直します）\n"
+        + "［キャンセル］アップグレードしない";
+
+    /// <summary>「保存してから」を選んだが保存を始められなかった（読み取り専用・名前を付けて保存の取り消しなど）。</summary>
+    public const string UPGRADE_SAVE_NOT_STARTED =
+        "保存を始められなかったため、アップグレードを開きませんでした。";
+
+    /// <summary>「保存してから」を選んだが保存に失敗した。</summary>
+    public const string UPGRADE_SAVE_FAILED =
+        "保存に失敗したため、アップグレードを開きませんでした。";
+
+    /// <summary>実行した後に、開いているシーンをディスクから読み直したときのトースト。</summary>
+    public const string UPGRADE_SCENE_RELOADED =
+        "アップグレードの結果を取り込むため、開いているシーンをディスクから読み直しました。";
+
     // ── プロジェクトを開いたときの案内 ───────────────────────
 
     /// <summary>
