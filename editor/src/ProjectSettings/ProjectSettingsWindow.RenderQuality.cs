@@ -223,14 +223,17 @@ public partial class ProjectSettingsWindow
         HorizontalAlignment = HorizontalAlignment.Left,
     };
 
-    /// <summary>ラベル＋入力欄の行を作る（他のパネルと同じ「ラベル列＋入力列」の Grid）。</summary>
+    /// <summary>
+    /// ラベル＋入力欄の行を作る（他のパネルと同じ「ラベル列＋入力列」の Grid。「描画の構成」「文字の描画」のパネルも使う）。
+    /// </summary>
     /// <param name="label">ラベル。</param>
     /// <param name="control">入力欄。</param>
+    /// <param name="labelColumnWidth">ラベル列の幅（省略時は <see cref="QualityLabelColumnWidth"/>。長いラベルのパネルだけ広げる）。</param>
     /// <returns>行。</returns>
-    private static Grid BuildQualityRow(string label, FrameworkElement control)
+    private static Grid BuildQualityRow(string label, FrameworkElement control, double labelColumnWidth = QualityLabelColumnWidth)
     {
         var row = new Grid { Margin = new Thickness(0, 0, 0, QualityRowBottomMargin) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(QualityLabelColumnWidth) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(labelColumnWidth) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var labelBlock = new TextBlock
         {

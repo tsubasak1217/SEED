@@ -303,6 +303,25 @@ public class ProjectSettingsData
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public RenderQualitySettings? RenderQuality { get; set; }
 
+    /// <summary>
+    /// 描画の構成（"render" 節。render.profile〈full / ui〉と旗の上書き。2026-10-02）。
+    /// null・空の節はランタイムの既定（render_profiles.json の default_profile＝full＝従来どおり）。
+    /// ランタイムは起動時に 1 回だけ読む（runtime/src/engine/core/renderer/render_profile/resolve.rs）。
+    /// 何も設定されていなければ節ごと保存しない。知らないキー・読めない値は節の ExtraData に保つ。
+    /// </summary>
+    [JsonPropertyName(RenderProfileSettings.SectionKey)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RenderProfileSettings? Render { get; set; }
+
+    /// <summary>
+    /// キャンバスの文字の距離場（"font" 節。distance_field〈mtsdf / sdf〉と msdf_coloring〈ink_trap / simple〉。2026-10-02）。
+    /// null・空の節はランタイムの既定（mtsdf・ink_trap）。ランタイムは起動時に 1 回だけ読む
+    /// （runtime/src/engine/core/font/field_settings.rs）。何も設定されていなければ節ごと保存しない。
+    /// </summary>
+    [JsonPropertyName(FontFieldSettings.SectionKey)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FontFieldSettings? Font { get; set; }
+
     // ── シーンマネージャ ─────────────────────────────────────
 
     /// <summary>
@@ -420,6 +439,9 @@ public class ProjectSettingsData
         if (Android is { IsEmpty: true }) Android = null;
         // "render_quality" 節も同じ（空ならランタイムの既定のプリセットが使われる）。
         if (RenderQuality is { IsEmpty: true }) RenderQuality = null;
+        // "render"（描画の構成）・"font"（文字の距離場）節も同じ（空ならランタイムの既定＝full・mtsdf/ink_trap）。
+        if (Render is { IsEmpty: true }) Render = null;
+        if (Font is { IsEmpty: true }) Font = null;
         var json = JsonSerializer.Serialize(this, JsonOptions);
         SEEDEditor.Assets.SafeFileWriter.WriteAllTextAtomic(
             path, json, Path.GetDirectoryName(Path.GetFullPath(path)));

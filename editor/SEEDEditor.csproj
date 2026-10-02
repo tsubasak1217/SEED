@@ -148,6 +148,15 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- 描画の構成（render profile。full / ui）の定義（ランタイムと同じファイル。2026-10-02）。                  -->
+  <!-- プロジェクト設定「描画の構成」の一覧に使う（RenderProfileCatalog.ResourceName）。ランタイムも同じファイルを埋め込む。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\runtime\config\render_profiles.json">
+      <LogicalName>SEEDEditor.render_profiles.json</LogicalName>
+      <Link>ProjectSettings\render_profiles.json</Link>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- アプリのプラットフォーム機能の表（W1-2。Android の android.features → マニフェストの断片）。                 -->
   <!-- プロジェクト設定の機能のチェックボックスと Android のビルドが同じ表を使う（AndroidPlatformFeatureCatalog.ResourceName）。 -->
   <ItemGroup>

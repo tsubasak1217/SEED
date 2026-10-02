@@ -24,6 +24,23 @@ public static class ReleasePackagingTests
         harness.Add("配布用: 中核への指定（Build・release・形式・Rust は --release・鍵は設定ファイルから・パスワードはメモリだけ）", ReleaseRequest);
         harness.Add("署名のパスワードの保護保存: 往復・パスの大小文字と別名・消す・解けない記録は無いもの・ファイルに平文を書かない", SecretStore);
         harness.Add("packaging_settings.json: 配布用の設定（variant・format・signing）の往復と、古いファイル・signing: null の既定値", PackagingDataRoundTrip);
+        harness.Add("開発用のビルドの印: パッケージ化ウィンドウの Android の表示（DebugBuildMarkPolicy）は中核の規則（AndroidRunRequest.MarksDebugBuild）と同じ", DebugBuildMarkMatchesCore);
+    }
+
+    /// <summary>
+    /// パッケージ化ウィンドウが見せる Android の「開発用のビルド」（DebugBuildMarkPolicy.ForAndroid）が、実際に pak へ印を入れるかを決める
+    /// 中核の規則（AndroidRunRequest.MarksDebugBuild）と食い違わない（画面だけが嘘をつかない）。
+    /// </summary>
+    private static void DebugBuildMarkMatchesCore()
+    {
+        foreach (var variant in Enum.GetValues<AndroidBuildVariant>())
+        {
+            var request = new AndroidRunRequest { Variant = variant };
+            Check.Equal(request.MarksDebugBuild, DebugBuildMarkPolicy.ForAndroid(variant), $"{variant}");
+        }
+        // 配布用のパッケージの要求（実際にパッケージ化ウィンドウが作るもの）も印を入れない
+        var release = AndroidEditorRunRequests.ForReleasePackage("D:/proj", new[] { "arm64-v8a" }, AndroidPackageFormat.Apk, null, null, null);
+        Check.True(!release.MarksDebugBuild && !DebugBuildMarkPolicy.ForAndroid(release.Variant), "配布用は入れない");
     }
 
     /// <summary>出力の名前。</summary>

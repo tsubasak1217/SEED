@@ -86,12 +86,36 @@
     <Compile Include="..\..\src\ProjectSettings\RenderQualityPresetCatalog.cs">
       <Link>Linked\ProjectSettings\RenderQualityPresetCatalog.cs</Link>
     </Compile>
+    <!-- 描画の構成（"render" 節）・旗の表・旗の値の組・構成の一覧（2026-10-02。いずれも WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\RenderProfileSettings.cs">
+      <Link>Linked\ProjectSettings\RenderProfileSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\RenderProfileFlagCatalog.cs">
+      <Link>Linked\ProjectSettings\RenderProfileFlagCatalog.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\RenderProfileFlagValues.cs">
+      <Link>Linked\ProjectSettings\RenderProfileFlagValues.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\RenderProfileCatalog.cs">
+      <Link>Linked\ProjectSettings\RenderProfileCatalog.cs</Link>
+    </Compile>
+    <!-- 文字の距離場（"font" 節）と値の表（2026-10-02。WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\FontFieldSettings.cs">
+      <Link>Linked\ProjectSettings\FontFieldSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\FontFieldCatalog.cs">
+      <Link>Linked\ProjectSettings\FontFieldCatalog.cs</Link>
+    </Compile>
     <!-- プロジェクトフォルダ → アセットルートの規則（SeedPak / SeedAndroid と共有） -->
     <Compile Include="..\..\src\Project\ProjectFolderResolver.cs">
       <Link>Linked\Project\ProjectFolderResolver.cs</Link>
     </Compile>
     <Compile Include="..\..\src\Packaging\PackagingData.cs">
       <Link>Linked\Packaging\PackagingData.cs</Link>
+    </Compile>
+    <!-- 開発用のビルドの印を入れるかの決め方（パッケージ化ウィンドウのチェック。2026-10-02。WPF 非依存） -->
+    <Compile Include="..\..\src\Packaging\DebugBuildMarkPolicy.cs">
+      <Link>Linked\Packaging\DebugBuildMarkPolicy.cs</Link>
     </Compile>
     <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
       <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
@@ -122,6 +146,11 @@
     <EmbeddedResource Include="..\..\..\runtime\config\render_presets.json">
       <LogicalName>SEEDEditor.render_presets.json</LogicalName>
       <Link>Linked\ProjectSettings\render_presets.json</Link>
+    </EmbeddedResource>
+    <!-- 描画の構成の定義（ランタイムと同じファイル。RenderProfileCatalog.ResourceName。2026-10-02） -->
+    <EmbeddedResource Include="..\..\..\runtime\config\render_profiles.json">
+      <LogicalName>SEEDEditor.render_profiles.json</LogicalName>
+      <Link>Linked\ProjectSettings\render_profiles.json</Link>
     </EmbeddedResource>
   </ItemGroup>
 

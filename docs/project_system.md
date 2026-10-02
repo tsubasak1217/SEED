@@ -128,7 +128,29 @@ SEED エディタは Visual Studio の `.sln` に相当する **プロジェク�
 - ランタイムは起動時に 1 回読み（Renderer の生成より前。`renderer/render_profile/resolve.rs`）、`[SEED RENDER PROFILE] profile=… flags: …` を起動ログへ出す。
   実行中には変えられない（資源は起動時に確保する）。Android は pak に入るので書き換えたら APK を作り直す。
 - 検証用に起動オプションで上書きできる（PC `--render-profile=<名前>[,キー=値…]`・Android `--es seed.render_profile …`）。
-- エディタのプロジェクト設定の画面には欄が無い（JSON を直接書く）。エディタの型に無いキーは `ProjectSettingsData.ExtraData` に保たれ、保存しても消えない。
+- エディタでは「プロジェクト設定 → グラフィックス → 描画の構成」（2026-10-02。[editor_project_settings.md](editor_project_settings.md) §2）。
+  既定の構成を選ぶと `profile` を書かず、旗は「構成のまま」（キーを書かない）/ 有効 / 無効の 3 状態。型は `RenderProfileSettings`
+  （知らないキー・読めない値は節の `ExtraData` に保ち、保存で消さない）。往復は `editor/tests/ProjectSystemTests` で固定。
+
+### project_settings.json の `font` 節（キャンバスの文字の距離場。2026-10-02）
+
+キャンバス（2D）の文字のグリフの距離場の種類と、MSDF の辺の色分けを選ぶ。**既定は MTSDF・ink trap**（キーが無ければ既定）。
+正典は [ui_components.md](ui_components.md) §12.10。
+
+```jsonc
+"font": { "distance_field": "sdf" }                              // 従来の 1 チャネルの SDF に戻す
+"font": { "distance_field": "mtsdf", "msdf_coloring": "simple" } // MTSDF のまま辺の色分けだけ変える
+```
+
+| キー | 意味 |
+|---|---|
+| `font.distance_field` | `"mtsdf"`（既定。`"msdf"` も同じ）/ `"sdf"`。大文字小文字・前後の空白は問わない。知らない値は警告して既定 |
+| `font.msdf_coloring` | `"ink_trap"`（既定。`"inktrap"`・`"ink-trap"` も同じ）/ `"simple"`。MTSDF のときだけ効く |
+
+- ランタイムは起動時に 1 回読み（`font/field_settings.rs`）、`[SEED FONT] distance_field=… msdf_coloring=… source=…` を起動ログへ出す。PC の起動オプション
+  `--font-distance-field=` が設定より優先。Android は pak に入るので書き換えたら APK を作り直す。
+- エディタでは「プロジェクト設定 → グラフィックス → 文字の描画」（[editor_project_settings.md](editor_project_settings.md) §3）。既定値を選ぶとキーを書かない。
+  型は `FontFieldSettings`（知らないキー・読めない値は保つ）。往復は `editor/tests/ProjectSystemTests` で固定。
 
 ### project_settings.json の `android` 節（Android アプリ情報。2026-09-25、アイコンは 2026-09-26・段階D、プラットフォーム機能は 2026-09-27・W1-2）
 

@@ -556,6 +556,8 @@ PC・Android のビルドが重くなる）、(3) 字形ごとの検査（§12.1
 ### 12.10 切り替えの設定とログ
 
 - `project_settings.json` の `"font": { "distance_field": "mtsdf" | "sdf", "msdf_coloring": "ink_trap" | "simple" }`（既定 mtsdf・ink_trap。キーが無ければ既定）。
+- エディタでは「プロジェクト設定 → グラフィックス → 文字の描画」で選べる（2026-10-02。既定値を選ぶとキーを書かない。SDF の間は辺の色分けを隠す。
+  [editor_project_settings.md](editor_project_settings.md) §3）。
 - 起動引数（PC。検証・A/B 用）`--font-distance-field=sdf|mtsdf` が設定より優先する（Android の起動オプションは無い）。
 - 起動時に 1 回決めてプロセスへ登録し（`App::resolve_font_field`）、キャンバスの文字の描画器（`FontConfig::canvas`）がアトラスの形式とシェーダーの入口を決める
   （実行中は変わらない）。起動ログ `[SEED FONT] distance_field=… msdf_coloring=… source=…`。読めない値は `[SEED FONT][WARN]`。

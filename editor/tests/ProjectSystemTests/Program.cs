@@ -126,6 +126,12 @@ public static class Program
         harness.Add("埋め込みのプリセット一覧に各プラットフォームの既定がある",    RenderQualityCatalogHasPlatformDefaults);
         harness.Add("プリセット定義の書式違いは空の一覧（重複・名前なしは飛ばす）", RenderQualityCatalogRejectsBrokenDefinitions);
 
+        // ── 描画の構成（render 節）・文字の距離場（font 節）。2026-10-02 ──
+        RenderFontSettingsTests.Register(harness);
+
+        // ── パッケージ化の開発用のビルドの印（packaging_settings.json の debug_build_mark）。2026-10-02 ──
+        DebugBuildMarkTests.Register(harness);
+
         return harness.Run();
     }
 

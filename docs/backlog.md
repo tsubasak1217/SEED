@@ -3853,13 +3853,29 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **ui の構成で止めていないもの** — 2026-10-02（docs/rendering_profiles.md §10）。(1) 3D のパーティクル（ParticleEmitter）と LineRenderer は `scene_3d=false` でも描く
   （2D の粒子と同じ系で 3D だけを分けていない）。(2) ModelComponent の GPU への読み込み・地形のメッシュの組み立ては止めていない（描かないだけ）。(3) 3D のパイプライン
   （メッシュ・G-Buffer・デファード・反射・AO・水…）は作る（起動時間は変わらない。実機の DrawContext 約 1 秒）。(4) クラスタの資源 3.4 MiB。(5) UI を重ねる post_ldr は
-  Rgba16Float（1080x2400 で 19.8 MiB）。スワップチェインへ直接重ねれば減るが合成の精度が変わり full と画素が一致しなくなる。(6) エディタのプロジェクト設定の画面に欄が無い（JSON を直接書く）。
+  Rgba16Float（1080x2400 で 19.8 MiB）。スワップチェインへ直接重ねれば減るが合成の精度が変わり full と画素が一致しなくなる。(6) ~~エディタのプロジェクト設定の画面に欄が無い（JSON を直接書く）~~ → 2026-10-02 に済（lane2。「プロジェクト設定 → グラフィックス → 描画の構成」。docs/editor_project_settings.md §2）。
 - [ ] **GPU メモリの計測の残り** — 2026-10-02。(1) 生存は推定（同じ場所・同じラベルで後の世代に作り直したら前のものは捨てた、とみなす）。資産ごとに作る場所（スプライトの画像・モデル）は
   作った累計で、シーンを切り替えるゲームでは多めに出る（`gpu_mem/category.rs` の `ACCUMULATING_SITES`）。(2) 新しく GPU 資源を作るコードは `GpuMemDeviceExt` の `*_tracked` を
   使わないと計測から漏れる（素の `create_texture` を検出する仕組みは無い。テストか clippy の禁止で守る案）。(3) BLAS / TLAS は追跡していない（wgpu-hal の「加速構造」の行には出る）。
   (4) MCP のツールにはしていない（IPC `GPU_MEM_REPORT` だけ。要れば `seed_batch` の enum とツール表へ）。(5) Mali の VK_EXT_memory_budget の heapUsage が GL mtrack と同じ数え方かは未確認。
 - [ ] **PC（NVIDIA・Windows）でスワップチェインを作るとヒープの使用量が約 156 MiB 増える** — 2026-10-02（低）。1080x2400 の 3 枚の論理値は 29.7 MiB。提示の仕組みの分と見る（推論）。
   Android には関係しない（EGL mtrack）。PC の配布物でメモリが問題になったら、フレーム遅延・提示モードを変えて測る。
+
+## プロジェクト設定の拡充（描画の構成・文字の描画・開発用のビルドの欄）— 2026-10-02 実装時の残件（正典: docs/editor_project_settings.md）
+
+- [ ] **起動時にしか読まない設定を保存しても、使い回しているランタイムには効かない** — 2026-10-02（lane2 の「描画の構成」「文字の描画」を足したときに確認）。
+  `render`・`font`・`shadow.resolution`・`vsync` などはランタイムの起動時に 1 回だけ読む。エディタの Edit のランタイムは開いている間ずっと同じプロセスで、
+  Play も 2 回目以降は常駐の Play プロセスへ LOAD_SCENE を送ってシーンだけ差し替える（`editor/src/Runtime/RuntimeManager.cs` の冒頭の説明）ので、保存しても
+  次の Play には効かない見込み（推論。実機の GUI では未確認）。画面には「エディタを開き直すと確実」と出しているだけ。案: 起動時の設定が変わったら常駐の Play を捨てる
+  （保存の前後で該当キーを比べる）か、保存時に「ランタイムを起動し直す」ボタンを出す。関連: `ProjectSettingsWindow.OnSave`・`RuntimeManager`（常駐の Play）。
+- [ ] **Android の開発用のビルドの印は画面から変えられない** — 2026-10-02（低）。パッケージ化ウィンドウは決まり方（開発用の APK は入れる・配布用は入れない）を
+  見せるだけ。開発用の APK から印を外して配布版の振る舞いを試すには、今は SeedPak を `--debug-build` なしで回すしかない。要れば `AndroidRunRequest` に上書きを足す
+  （配布用に入れるのは配布前の検査が止めるので足さない）。関連: `editor/src/Packaging/DebugBuildMarkPolicy.cs`・`AndroidRunRequest.MarksDebugBuild`。
+- [ ] **パッケージ化ウィンドウの Windows の「ビルド手順」の説明がビルド種別に追従しない** — 2026-10-02（低。見つけただけ）。ビルド種別が Debug でも
+  「1. cargo build --release でランタイムをコンパイル」と出る（実際の引数は `BuildArgs` が種別で決める）。関連: `PackagingWindow.xaml.cs::BuildWindowsSettings`。
+- [ ] **`editor/tests/AndroidRunUiTests` の「写し（§20.17）: 段取り — PAUSE を送れたら同じ通信路で取り出す…」が時々落ちる** — 2026-10-02（lane2 の確認中に
+  3 回中 1 回。失敗の表示は「取り出しの行:」が空）。変更の無い所のテストで、続けて 2 回は通った。時間に依る待ちの疑い（推論）。関連:
+  `editor/tests/AndroidRunUiTests/PauseSnapshotTests.cs::ControllerFetchesAfterPause`。
 
 ## full の GPU メモリの無駄の削減 — 2026-10-02（2 回目）の残件（正典: docs/rendering_profiles.md §14）
 
