@@ -62,6 +62,15 @@ public sealed partial class ScreenStack : UiWidget, INavigator
     [SerializeField(Label = "根を安全領域の中に")]
     public bool RootSafeArea = true;
 
+    /// <summary>
+    /// 根の画面として引き取る、画面を積む子（<see cref="ScreensChild"/>）の下に<b>あらかじめ置いてある子</b>の名前（空なら使わない）。
+    /// シーンにプレハブのインスタンスを置いておけば、Edit でも実行時と同じ見た目になり、
+    /// 実行時はそれを <see cref="RootPrefab"/> から新しく作る代わりに根として使う（中身は作り直さない）。
+    /// 見つからないときは従来どおり <see cref="RootPrefab"/> から作る（docs/ui_navigation.md §2.7「置いてある根」）。
+    /// </summary>
+    [SerializeField(Label = "置いてある根の子")]
+    public string RootAdoptChild = "";
+
     /// <summary>画面の枠のプレハブ。</summary>
     [SerializeField(Label = "枠のプレハブ")]
     public string FramePrefab = DefaultFramePrefab;
@@ -358,8 +367,19 @@ public sealed partial class ScreenStack : UiWidget, INavigator
                         PaintFrame(instance);
                         var body = instance.Entry.Options.SafeArea ? instance.Frame.FindChild(BodyChild) : instance.Frame;
                         var parent = body.IsValid ? body : instance.Frame;
-                        instance.Content = GameObject.Instantiate(instance.Entry.Prefab, parent);
-                        if (!instance.Content.IsValid) Debug.LogError($"{LogPrefix} 画面のプレハブを作れません: {instance.Entry.Prefab}");
+                        // 置いてある根（RootAdoptChild）があれば、作る代わりに枠の中へ移して引き取る（Edit と同じ見た目で始まる）
+                        var adopted = TakeAdoptChild(instance.Entry);
+                        if (adopted.IsValid)
+                        {
+                            adopted.SetParent(parent);
+                            instance.Content = adopted;
+                            Debug.Log($"{LogPrefix} {gameObject.Name} 置いてある根を引き取った: {RootAdoptChild}");
+                        }
+                        else
+                        {
+                            instance.Content = GameObject.Instantiate(instance.Entry.Prefab, parent);
+                            if (!instance.Content.IsValid) Debug.LogError($"{LogPrefix} 画面のプレハブを作れません: {instance.Entry.Prefab}");
+                        }
                         instance.Handle.Content = instance.Content;
                         instance.Phase = BuildPhase.ContentRequested;
                         instance.WaitFrames = 0;
@@ -379,6 +399,32 @@ public sealed partial class ScreenStack : UiWidget, INavigator
             }
         }
     }
+
+    /// <summary>
+    /// 置いてある根の子を 1 回だけ引き取る。対象は、根の画面（<see cref="RootPrefab"/> から積んだ段）だけ。
+    /// 名前が空・見つからない・既に引き取った後は無効な GameObject を返す（呼び手はプレハブから作る）。
+    /// 引き取った後に同じ段を積み直すときは、通常どおりプレハブから作る（置いてある子はもう無い）。
+    /// </summary>
+    /// <param name="entry">これから中身を作る段。</param>
+    /// <returns>引き取る子。無ければ <see cref="GameObject.IsValid"/> が false のもの。</returns>
+    private GameObject TakeAdoptChild(ScreenEntry entry)
+    {
+        if (_adoptTaken || RootAdoptChild.Length == 0 || RootPrefab.Length == 0 || entry.Prefab != RootPrefab)
+            return new GameObject(Entity.None);
+        ResolveChildren();
+        var child = _screens.FindChild(RootAdoptChild);
+        if (!child.IsValid)
+        {
+            Debug.LogWarning($"{LogPrefix} {gameObject.Name} 置いてある根の子 {RootAdoptChild} が {ScreensChild} の下に無いので、{RootPrefab} から作ります");
+            _adoptTaken = true;
+            return child;
+        }
+        _adoptTaken = true;
+        return child;
+    }
+
+    /// <summary>置いてある根を引き取る試みを済ませたか（1 回だけ。無くても 2 度は探さない）。</summary>
+    private bool _adoptTaken;
 
     /// <summary>できあがりを待つ（次のフレームを描かせる。上限を過ぎたら諦めて進める）。</summary>
     private void WaitBuild(Instance instance)

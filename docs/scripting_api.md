@@ -4307,6 +4307,8 @@ using SEED.UI;
 
 // ── 画面のスタック（ScreenStack。ノードは screen_stack.actor の作り: Screens・Veil・Blocker）──
 var stack = UiWidget.Of<ScreenStack>(GameObject.Find("RootStack"));
+// 置いてある根: インスペクタの RootAdoptChild（置いてある根の子）に Screens の下の子の名前を書くと、RootPrefab から作る代わりに
+// その子を根として引き取る（シーンにプレハブのインスタンスを置いて Edit でも実行時の見た目にする。docs/ui_navigation.md §2.7）
 ScreenHandle h = stack.Push("assets://ui/prefabs/edit.actor");                     // 既定の出入り（DefaultTransition。既定 Push = 右から）
 stack.Push(prefab, NavTransition.Cover);                                           // 上から覆う
 stack.Push(prefab, NavTransition.Fade, args: alarmId,                              // 画面へ値を渡す（UiScreen.OnScreenEnter）

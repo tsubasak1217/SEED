@@ -48,6 +48,7 @@ UiNavigation（Canvas・単位 dp）
 | `PopToRoot()` | 根まで下ろす（途中の段は動かさずに外し、いちばん上だけが戻る動きをする） |
 | `SetRoot(prefab, transition = None, …)` | 根からやり直す（旧いいちばん上が動いて退き、残りは動かさずに外す） |
 | `RootPrefab`（フィールド） | 最初の根（空なら積まない）。`RootSafeArea` = false で根を安全領域の外（シェルが自分で扱う） |
+| `RootAdoptChild`（フィールド） | **置いてある根**: `Screens` の下にあらかじめ置いたこの名前の子を、`RootPrefab` から作る代わりに根として引き取る（1 回だけ・根の段だけ。無ければ従来どおり作り警告）。シーンにプレハブのインスタンスを置いておけば Edit でも実行時と同じ見た目になる（2026-10-02。Wake or Pay の App.scene: RootStack の `Shell`、シェルの各タブの `AlarmList`・`ActivityTab`・`GardenTab`・`ShopTab`） |
 
 **画面の枠**（`screen_frame.actor`）: `ScreenFrame`（Canvas・親に合わせる・背景の Sprite〈不透明の画面は `color.background`、透ける画面は透明。
 `raycast_target`〉・受けるジェスチャーの無い CanvasGesture＝遮る板）→ `Body`（親に合わせる・`CanvasSafeArea`）→ 画面のプレハブの根。
