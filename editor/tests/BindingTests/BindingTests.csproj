@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SEED.Binding（観測できる値と UI 部品への結び付け。scripting/src/Api/Binding/。正典 docs/ui_binding.md）の純粋な部分の単体テスト。
+
+    UiComponentsTests・LocalizationTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート（SpriteRigTests の TestHarness を共有）
+      2. SEEDScripting 本体（ランタイム FFI に依存）を参照せず、純粋な部分（Binding/Model/*.cs）をリンクで取り込む
+         → 観測値・一覧・結び付けの規則がエンジンの API（SEED.Debug・SEEDScript・UI 部品）に依存し始めた瞬間に本テストが
+           ビルドできなくなる（＝部品の代わりに IBindTarget を挟んで純粋に確かめられることの検知器）
+
+    確かめること: Observable（知らせの回数と順序・等しければ知らせない・Dispose で止まる・途中の付け外し・例外の隔離・Notify・
+    再入は配り終えてから 1 段だけ・上限を超えたら警告）、Computed（依存 1〜3 個・等しい結果は知らせない・購読がある間だけ依存を
+    つなぐ・計算の例外）、ObservableList（ListChange の種類と位置と項目・知らせない場合・範囲の外・再入の順序と上限）、
+    一方向・双方向・一覧の結び付け（偽の当てる先。往復の留め金・当てる先の用意を待つ・消えたら外れる・Reapply）、
+    Bind.Deferred（1 フレームのまとめ）、BindingFrame（区切りの仕事）、DisposableBag（スクリプトの破棄でまとめて外す袋）。
+
+    実行方法: dotnet run（project = editor/tests/BindingTests）
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>BindingTests</RootNamespace>
+    <AssemblyName>BindingTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: 結び付けの純粋な部分（エンジンの API を使わない。Bind.Text・Bind.Toggle などの部品の口と当てる先は実行中だけのもの） -->
+    <Compile Include="..\..\..\scripting\src\Api\Binding\Model\*.cs">
+      <Link>Linked\Binding\%(Filename)%(Extension)</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

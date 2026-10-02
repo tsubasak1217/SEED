@@ -63,6 +63,18 @@ public static class UiRegistry
         return all;
     }
 
+    /// <summary>
+    /// 部品がまだ登録されているか（OnStart の後で、OnDestroy の前か。結び付け〈SEED.Binding〉が部品の生存を確かめる。2026-10-03）。
+    /// </summary>
+    /// <param name="widget">部品。</param>
+    /// <returns>登録されていれば true。</returns>
+    internal static bool IsRegistered(UiWidget widget)
+    {
+        var owner = widget.Owner;
+        if (!owner.IsValid) return false;
+        return ByActor.TryGetValue((owner.Entity.Index, owner.Entity.Generation), out var list) && list.Contains(widget);
+    }
+
     /// <summary>アクターの部品のうち型 T の最初のもの（無ければ null）。</summary>
     public static T? Find<T>(GameObject actor) where T : UiWidget
     {

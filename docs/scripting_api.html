@@ -239,6 +239,7 @@
     <a href="#sec-ui-charts">UI 部品（グラフ）</a>
     <a href="#sec-ui-textinput">UI 部品（文字入力）</a>
     <a href="#sec-localization">Localization（多言語）</a>
+    <a href="#sec-binding">Binding（結び付け）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -2995,6 +2996,40 @@ field.Submitted += (tf, action) =&gt; { <span class="c">/* Done など */</span>
   <div class="warn"><b>重要</b>: <code>L10n.Changed</code> は今の言語のコードの <b>string で発火</b>する。購読は <code>this.On(L10n.Changed, (string code) =&gt; …)</code>。引数なしの <code>() =&gt; …</code> では呼ばれない（SEED.Events は引数の型が合う購読だけを呼ぶ）。</div>
   <div class="warn"><b>重要</b>（Android）: Android の CoreCLR は Invariant（<code>runtime/android/dotnet_runtime.json</code> の <code>System.Globalization.Invariant=true</code>）なので、<code>L10n.SystemLanguage</code> は null（起動の言語は 保存した値 → 既定の言語）、数・日付の書式は不変文化（月・曜日の名前は英語）。言語ごとの書式（<code>"format.date": "M月d日"</code>）と曜日の名前は表に書いて引く。</div>
   <div class="warn"><b>重要</b>: Edit（Play していないとき）はスクリプトが動かないので、LocalizedText のアクタはプレハブの文字のまま見える。SEED.UI の部品の既定の文字列（<code>DialogOptions.DefaultPositiveText</code> の "OK"・TimeWheel の午前/午後・<code>ChartView.EmptyText</code>）は L10n を読まない。<code>Dialog.Show</code> などへは <code>L10n.Get</code> で引いて渡す（対応表は docs/localization.md §10）。</div>
+</section>
+
+<!-- ════════════════ 7.22 Binding（結び付け。2026-10-03） ════════════════ -->
+<section id="sec-binding" data-keywords="Binding バインディング データバインディング 結び付け 観測 観測値 SEED.Binding Observable ObservableList Computed IReadOnlyObservable ListChange ListChangeKind Insert Remove Replace Move Reset Bind Bind.Text Bind.Visible Bind.Color Bind.To Bind.Toggle Bind.Checkbox Bind.Slider Bind.TextField Bind.Selection Bind.List Bind.RowBinder Bind.Deferred Bind.OneWay Bind.TwoWay 双方向 一方向 IBindTarget ITwoWayBindTarget IListBindTarget BindingOwner AddTo Subscribe owner DisposableBag DisposableAction BindingFrame Tick BindingLimits MaxReentrantDepth 再入 ValueNotifier ReactiveProperty ValueListenableBuilder UniRx Flutter Refresh Render 状態 リアクティブ MVVM ListView L10n Changed">
+  <h2>7.22 Binding（観測できる値と UI 部品への結び付け。SEED.Binding）</h2>
+  <p>状態を観測値（<code>Observable&lt;T&gt;</code>・<code>Computed</code>・<code>ObservableList&lt;T&gt;</code>）で持ち、UI は <code>Bind.*</code> で 1 行ずつ結ぶ。作った時点の値ですぐ当て、値が変わるたびに当て直す（画面のコードに「いつ UI を直すか」を書かない）。トグル・チェックボックス・スライダ・文字の欄・選択は双方向。<code>owner</code>（ふつうは <code>this</code>）を渡すと、そのスクリプトの破棄で自動で外れる（<code>this.On</code> と同じ仕組み）。正典は docs/ui_binding.md、見本は <code>templates/ui/scripts/UiBindingDemo.cs</code>。</p>
+  <div class="api"><code class="sig">new Observable&lt;T&gt;(initial, comparer = null) / Value / Subscribe(handler) / Subscribe(owner, handler) / Notify() / SubscriberCount</code><span class="desc">観測できる値。set は等しければ何もせず、違えばその場で購読と結び付けへ知らせる（即時・同期）。Subscribe は変わったときだけ呼ぶ（購読した時点では呼ばない。Dispose で解除）。Notify は値が同じままで知らせる（参照型の中身を書き換えたとき）</span></div>
+  <div class="api"><code class="sig">Computed.From(a, f) / From(a, b, f) / From(a, b, c, f) → Computed&lt;T&gt;（Value・Subscribe・IsConnected）</code><span class="desc">導いた値。依存が変わったら計算し直し、結果が前と違うときだけ知らせる。購読がある間だけ依存を購読する（結び付けへ渡して捨ててよい）。計算の例外はエラーログで前の値のまま</span></div>
+  <div class="api"><code class="sig">new ObservableList&lt;T&gt;() / Add / Insert / RemoveAt / Remove / this[i] / Move / Clear / ReplaceAll / Count / IndexOf / Contains / Subscribe</code><span class="desc">観測できる一覧。変化（<code>ListChange&lt;T&gt;</code>: Kind = Insert・Remove・Replace・Move・Reset、Index・OldIndex・Item・OldItem）を起きた順に 1 件ずつ知らせる。this[i] の set は同じ項目でも知らせる。空の Clear・同じ位置の Move は知らせない。Reset の Index は −1</span></div>
+  <div class="api"><code class="sig">Bind.Text(owner, text, source) / Bind.Text(owner, text, source, format) / Bind.Text(owner, text, source, l10nKey, argName)</code><span class="desc">Text.Content へ。L10n 版は <code>L10n.Get(key, (argName, 値))</code> を入れ、L10n.Changed でも引き直す</span></div>
+  <div class="api"><code class="sig">Bind.Visible(owner, node, source[, Func&lt;T, bool&gt;]) / Bind.Color(owner, sprite, source[, Func&lt;T, Color&gt;]) / Bind.To(owner, source, apply)</code><span class="desc">GameObject.Visible（子孫ごと）・Sprite.Color・任意の処理。source は IReadOnlyObservable&lt;T&gt;（Observable・Computed・Bind.Deferred）</span></div>
+  <div class="api"><code class="sig">Bind.Toggle / Checkbox(owner, widgetOrNode, Observable&lt;bool&gt;) / Bind.Slider(…, Observable&lt;float&gt;) / Bind.TextField(…, Observable&lt;string&gt;) / Bind.Selection(…, Observable&lt;int&gt;)</code><span class="desc">双方向。作った時点で観測値の値を部品へ当てる（観測値が正）。部品へは知らせずに書き（SetOn・SetChecked・SetValue の notify: false、TextField は SetTextUnlessFocused）、利用者の操作（Changed・ValueChanged・TextChanged・SelectionChanged）は観測値へ入れる。往復は留め金で止まる。ノード（GameObject）を渡すと部品の OnStart（選択は項目が集まる）まで待つ。Selection の −1 は選ばない</span></div>
+  <div class="api"><code class="sig">Bind.RowBinder(items, bindRow) / Bind.List(owner, listView, items, bindRow)</code><span class="desc">ObservableList → ListView（ListView 自身は変えない）。作るときの bind は RowBinder。Insert・Remove・Reset → SetCount、Move → Refresh、Replace → 見えている行へ bindRow。ListView.Update は今までどおり毎フレーム</span></div>
+  <div class="api"><code class="sig">Bind.Deferred(source) → IReadOnlyObservable&lt;T&gt;</code><span class="desc">任意。1 フレームに何度変わっても、フレームの区切り（LateUpdate の頭）で最新の値を 1 回だけ知らせる。一方向の結び付けへそのまま渡す</span></div>
+  <div class="api"><code class="sig">Bind.OneWay(owner, IBindTarget&lt;T&gt;, source[, convert]) / Bind.TwoWay(owner, ITwoWayBindTarget&lt;T&gt;, observable) / Bind.List(owner, IListBindTarget, items)</code><span class="desc">自作の当てる先（IsAlive・IsReady・Write、双方向は ＋ Listen、一覧は SetCount・Refresh・RebindRow）。テストは偽物を差す</span></div>
+  <div class="api"><code class="sig">disposable.AddTo(owner) / new DisposableBag() / new DisposableAction(action) / BindingFrame.Tick() / PendingCount / BindingLimits.MaxReentrantDepth</code><span class="desc">任意の IDisposable をスクリプトの破棄で外す・まとめて外す袋・Dispose で 1 回呼ぶ口・フレームの区切り（エンジンが呼ぶ）・再入を許す段（1）</span></div>
+<pre><span class="k">using</span> SEED.Binding;
+<span class="k">private readonly</span> <span class="t">Observable</span>&lt;<span class="k">int</span>&gt; _count = <span class="k">new</span>(0);
+<span class="t">Bind</span>.Text(<span class="k">this</span>, label, _count, n =&gt; <span class="s">$"押した回数: {n}"</span>);
+<span class="t">Bind</span>.Visible(<span class="k">this</span>, badge, _count, n =&gt; n &gt;= 10);
+<span class="t">Bind</span>.Toggle(<span class="k">this</span>, gameObject.FindChild(<span class="s">"Notify"</span>), _notify);   <span class="c">// トグルの OnStart を待つ</span>
+_list = <span class="k">new</span> <span class="t">ListView</span>(scroll, RowPrefab, 0, 56f, <span class="t">Bind</span>.RowBinder(_history, BindRow));
+<span class="t">Bind</span>.List(<span class="k">this</span>, _list, _history, BindRow);
+_count.Value++;   <span class="c">// 文字・バッジがその場で直る</span></pre>
+  <table>
+    <tr><th>規則</th><th>内容</th></tr>
+    <tr><td>即時</td><td>値の変更はその場で購読と結び付けへ届く。UI 部品への書き込みは部品の規則（Visible はフレームの末尾・ListView は次の Update）</td></tr>
+    <tr><td>部品を待つ</td><td>部品の OnStart の前（Instantiate したプレハブは次のフレーム）・選択の項目が集まる前は書かずに待ち、区切りで最新の値を当てる</td></tr>
+    <tr><td>消えたら外れる</td><td>Text・Sprite・アクタ・部品（登録簿から外れた）が消えたら、次の書き込み・区切りで自分を外す</td></tr>
+    <tr><td>再入</td><td>購読の中の変更は今の知らせを配り終えてから最新の値でもう 1 周（一覧は起きた順）。1 段を超えたら値は入るが知らせず警告 1 回</td></tr>
+    <tr><td>区切り</td><td>BindingFrame.Tick はフレームに 1 回、LateUpdate のフェーズの頭（Update の後・描画の前）。区切りの途中で積まれた仕事は次の区切り</td></tr>
+  </table>
+  <div class="warn"><b>重要</b>: 画面のスクリプトに <code>Bind</code> という名前のメソッドがあると、その中の <code>Bind.Text(…)</code> はメソッドを指してコンパイルできない（CS0119）。<code>SEED.Binding.Bind.Text(…)</code> と書くか、<code>using BindTo = SEED.Binding.Bind;</code> のように別名を付ける。</div>
+  <div class="warn"><b>重要</b>: <code>Bind.Selection</code> は 1 つ選ぶグループ用（複数を選ぶ ChipGroup には向かない）。<code>Bind.Slider</code> の観測値は寄せる前の値のまま（見た目は範囲・段階へ寄せた値）。<code>Bind.TextField</code> は打っている最中の欄を外の値で上書きしない。owner なしで作った結び付けは、当てる先が消えても値が変わるまで観測値に残る（画面からは <code>owner: this</code> を渡す）。</div>
 </section>
 
 

@@ -4828,6 +4828,100 @@ ILocalizedTarget? found = LocalizedTargetTable.Find(actor);           // 判定�
 
 ---
 
+## 7.22 Binding（観測できる値と UI 部品への結び付け。SEED.Binding）
+
+状態を観測値（`Observable<T>`・`Computed`・`ObservableList<T>`）で持ち、UI は `Bind.*` で 1 行ずつ結ぶ。作った時点の値ですぐ当て、
+値が変わるたびに当て直す（画面のコードに「いつ UI を直すか」を書かない）。トグル・チェックボックス・スライダ・文字の欄・選択は双方向。
+`owner`（ふつうは `this`）を渡すと、そのスクリプトの破棄で自動で外れる（`this.On` と同じ仕組み）。正典は `docs/ui_binding.md`、
+見本は `templates/ui/scripts/UiBindingDemo.cs`。
+
+```csharp
+using SEED.Binding;
+
+// 観測できる値（set は等しければ何もしない。違えばその場で購読と結び付けへ知らせる＝即時・同期）
+var count = new Observable<int>(0);                                  // new Observable<T>(initial, comparer = null)
+count.Value++;                                                       // 変わったら即座に知らせる
+IDisposable sub = count.Subscribe(n => Debug.Log($"{n}"));           // 変わったときだけ呼ぶ（購読した時点では呼ばない）。Dispose で解除
+count.Subscribe(this, n => Debug.Log($"{n}"));                       // スクリプトの破棄で自動で外れる（BindingOwner の拡張）
+count.Notify();                                                      // 値は同じままで知らせる（参照型の中身を書き換えたとき）
+int subscribers = count.SubscriberCount;                             // 今の購読の数（結び付けを含む）
+IReadOnlyObservable<int> readOnly = count;                           // 読むだけの口（Value・Subscribe）。Computed・Bind.Deferred も同じ
+
+// 導いた値（依存 1〜3 個。結果が前と違うときだけ知らせる。購読がある間だけ依存を購読する＝結び付けへ渡して捨ててよい）
+Computed<int> total = Computed.From(price, qty, (p, n) => p * n);   // Computed.From(a, f) / From(a, b, f) / From(a, b, c, f)
+Computed<string> text = Computed.From(total, t => $"{t:N0} 円");
+bool connected = total.IsConnected;                                  // 依存を購読しているか（購読があるか）
+
+// 観測できる一覧（変化の種類と位置を起きた順に 1 件ずつ知らせる）
+var items = new ObservableList<string>();                            // new ObservableList<T>(IEnumerable<T> items) で写して作る
+items.Add("a"); items.Insert(0, "z"); items.RemoveAt(1); items.Remove("z");
+items[0] = "b";                                                      // Replace（同じ項目でも知らせる＝行の描き直しの合図）
+items.Move(2, 0);                                                    // Move（同じ位置なら知らせない）
+items.Clear(); items.ReplaceAll(new[] { "x", "y" });                 // Reset（空の Clear は知らせない）
+int n = items.Count; int i = items.IndexOf("x"); bool has = items.Contains("y");
+items.Subscribe(this, (ListChange<string> c) => Debug.Log($"{c.Kind} {c.Index} {c.OldIndex} {c.Item} {c.OldItem}"));
+// ListChangeKind: Insert・Remove・Replace・Move・Reset（Reset の Index は ListChange<T>.NoIndex = -1。今の一覧を読み直す）
+```
+
+```csharp
+// 結び付け（どれも IDisposable を返す。先頭に owner を渡す多重定義はスクリプトの破棄で自動で外れる）
+// 一方向（値 → UI）。source は IReadOnlyObservable<T>（Observable・Computed・Bind.Deferred）
+IDisposable b1 = Bind.Text(this, label, title);                      // Text.Content ← string
+Bind.Text(this, label, count, n => $"{n} 回");                       // 書式
+Bind.Text(this, label, money, "hud.money", "amount");                // L10n.Get("hud.money", ("amount", 値))。L10n.Changed でも引き直す
+Bind.Visible(this, badge, hasNew);                                   // GameObject.Visible ← bool（子孫ごと）
+Bind.Visible(this, badge, count, n => n > 0);                        // 判定つき
+Bind.Color(this, sprite, color);                                     // Sprite.Color ← Color
+Bind.Color(this, sprite, status, s => s == 0 ? okColor : ngColor);   // 変換つき
+Bind.To(this, count, n => button.SetText($"{n}"));                   // 任意の処理（作った時点で 1 回・変わるたびに）
+
+// 双方向（値 ⇔ 部品）。部品そのもの（UiWidget.Of<T> の後）か、部品の付くノード（GameObject。部品の OnStart を待つ）を渡す
+Bind.Toggle(this, toggleOrNode, notifyOn);                           // Observable<bool>。SetOn(v, animate, notify: false) ⇔ Toggle.Changed
+Bind.Checkbox(this, checkboxOrNode, agreed);                         // Observable<bool>。SetChecked ⇔ Checkbox.Changed
+Bind.Slider(this, sliderOrNode, volume);                             // Observable<float>。SetValue（範囲・段階へ寄せた見た目）⇔ ValueChanged
+Bind.TextField(this, fieldOrNode, name);                             // Observable<string>。SetTextUnlessFocused ⇔ TextChanged（1 文字ごと）
+Bind.Selection(this, groupOrNode, themeIndex);                       // Observable<int>（−1 = 選ばない）。SegmentedControl・RadioGroup・ChipGroup
+
+// 一覧（ObservableList → SEED.UI.ListView。ListView 自身は変えない）
+var list = new ListView(scroll, rowPrefab, 0, rowExtent, Bind.RowBinder(items, BindRow));   // 作るときの bind は一覧から
+Bind.List(this, list, items, BindRow);                               // Insert・Remove・Reset → SetCount、Move → Refresh、Replace → 見えている行へ BindRow
+void BindRow(GameObject row, string item, int index) { }             // Action<GameObject, T, int>。ListView.Update は今までどおり毎フレーム
+
+// まとめる（任意。1 フレームに何度変わっても、フレームの区切り〈LateUpdate の頭〉で最新の値を 1 回だけ知らせる）
+Bind.Text(this, label, Bind.Deferred(score), s => $"{s:N0}");        // IReadOnlyObservable<T> Bind.Deferred(source)
+
+// 自作の当てる先（部品の代わりに挟む口。テストは偽物を差す）
+Bind.OneWay(this, (IBindTarget<T>)target, source);                   // IBindTarget<T>: IsAlive・IsReady・Write(T)
+Bind.OneWay(this, target, source, convert);                          // 変換つき
+Bind.TwoWay(this, (ITwoWayBindTarget<T>)widget, observable);         // ＋ Listen(Action<T>) → IDisposable
+Bind.List(this, (IListBindTarget)rows, items);                       // IsAlive・SetCount(int)・Refresh()・RebindRow(int)
+IDisposable off = new DisposableAction(() => widget.Changed -= h);   // Dispose で 1 回だけ呼ぶ口（DisposableAction.Empty は何もしない）
+
+// 寿命
+someDisposable.AddTo(this);                                          // 任意の IDisposable をスクリプトの破棄で外す（UniRx の AddTo）
+var bag = new DisposableBag(); bag.Add(binding); bag.Dispose();      // まとめて外す袋（Dispose の後に Add した物はその場で外す）
+BindingFrame.Tick();                                                 // フレームの区切り（エンジンが LateUpdate の頭で呼ぶ。普段は呼ばない）
+int pending = BindingFrame.PendingCount;                             // 区切りを待っている仕事の数（診断用）
+const int depth = BindingLimits.MaxReentrantDepth;                   // 再入（購読の中で値を変える）を許す段 = 1
+```
+
+| 規則 | 内容 |
+|---|---|
+| 即時 | 値の変更はその場で購読と結び付けへ届く。UI 部品への書き込みは部品の規則（`Visible` はフレームの末尾・`ListView` は次の `Update`） |
+| 観測値が正 | 双方向は作った時点で観測値の値を部品へ当てる。部品へ書いている間の部品の知らせ・部品から入れた値の知らせは往復しない（留め金） |
+| 部品を待つ | 部品のスクリプトの OnStart の前（Instantiate したプレハブは次のフレーム）・選択の項目が集まる前は書かずに待ち、区切りで最新の値を当てる |
+| 消えたら外れる | Text・Sprite・アクタ・部品（登録簿から外れた）が消えたら、次の書き込み・区切りで自分を外す |
+| 再入 | 購読の中の変更は今の知らせを配り終えてから最新の値でもう 1 周（一覧は起きた順）。1 段を超えたら値は入るが知らせず警告 1 回 |
+| 区切り | `BindingFrame.Tick` はフレームに 1 回、LateUpdate のフェーズの頭（Update の後・描画の前）。区切りの途中で積まれた仕事は次の区切り |
+
+> **重要**: 画面のスクリプトに `Bind` という名前のメソッドがあると、その中の `Bind.Text(…)` はメソッドを指してコンパイルできない（CS0119）。`SEED.Binding.Bind.Text(…)` と書くか、`using BindTo = SEED.Binding.Bind;` のように別名を付ける。
+
+> **重要**: `Bind.Selection` は 1 つ選ぶグループ用（値は `SelectedIndex`）。複数を選ぶ `ChipGroup`（`Multiple = true`）には向かない。`Bind.Slider` の観測値は寄せる前の値のまま（部品の見た目は範囲・段階へ寄せた値。利用者が動かすと寄せた値が入る）。`Bind.TextField` は打っている最中の欄を外の値で上書きしない。
+
+> **重要**: owner なしで作った結び付けは、当てる先が消えても値が変わるまで観測値に残る。画面のスクリプトからは `owner: this` を渡す。観測値はスクリプトのフェーズ（メインスレッド）だけから使う。
+
+---
+
 ## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順
 
 コンポーネントを増やしたら、以下を行うことで **自動的にスクリプト・AI 補完から使える** ようになります。

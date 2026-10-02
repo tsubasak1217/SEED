@@ -231,7 +231,34 @@ public static unsafe class ScriptBridge
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void LateUpdate(nint h, NativeFrameContext* ctx)
-    { InvokePhase(h, ctx, ScriptCallback.LateUpdate); }
+    {
+        TickBindingsOncePerFrame(ctx);
+        InvokePhase(h, ctx, ScriptCallback.LateUpdate);
+    }
+
+    /// <summary>
+    /// このフレームでまだなら、結び付け（SEED.Binding）のフレームの区切りを進める（2026-10-03。docs/ui_binding.md §5）。
+    ///
+    /// 全スクリプトの Update の後・LateUpdate の頭（描画の前）で 1 回だけ: Bind.Deferred のまとめた値を当て、部品の OnStart を
+    /// 待っている結び付けを確かめる。<c>LateUpdate</c> はスクリプトの数だけ呼ばれるので、デバッグコマンドと同じく
+    /// フレームの実時間が変わったときだけ動かす。
+    /// </summary>
+    private static void TickBindingsOncePerFrame(NativeFrameContext* ctx)
+    {
+        float now = ctx->UnscaledElapsedTime;
+        if (now == _lastBindingTickTime) { return; }
+        _lastBindingTickTime = now;
+
+        try { SEED.Binding.BindingFrame.Tick(); }
+        catch (Exception ex)
+        {
+            // FFI 境界を例外が越えると CLR がプロセスを落とすため、必ずここで握り潰す。
+            Console.Error.WriteLine($"[SEEDScripting] 結び付けのフレームの区切りで例外: {ex}");
+        }
+    }
+
+    /// <summary>結び付けのフレームの区切りを最後に進めたフレームの実時間（同一フレームの二重実行よけ）。</summary>
+    private static float _lastBindingTickTime = float.NaN;
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static void Render(nint h, NativeFrameContext* ctx)
@@ -455,6 +482,8 @@ public static unsafe class ScriptBridge
             SEED.UI.BackDispatcher.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
+            // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。
+            SEED.Binding.BindingFrame.ResetForReload();
             var root = Encoding.UTF8.GetString(rootPtr, rootLen);
             return ScriptAssemblyManager.CompileAndLoad(root);
         }
@@ -493,6 +522,8 @@ public static unsafe class ScriptBridge
             SEED.UI.BackDispatcher.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
+            // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。
+            SEED.Binding.BindingFrame.ResetForReload();
             var path = Encoding.UTF8.GetString(pathPtr, pathLen);
             return ScriptAssemblyManager.LoadPrecompiled(path);
         }
@@ -531,6 +562,8 @@ public static unsafe class ScriptBridge
             SEED.UI.BackDispatcher.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
+            // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。
+            SEED.Binding.BindingFrame.ResetForReload();
             // Rust 側のバッファは呼び出しの間だけ有効なので、ここで配列へ写してから渡す。
             var bytes = new ReadOnlySpan<byte>(dataPtr, dataLen).ToArray();
             var name  = Encoding.UTF8.GetString(namePtr, nameLen);

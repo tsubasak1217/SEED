@@ -209,15 +209,47 @@ public abstract class SEEDScript : IScriptComponent
     }
 
     /// <summary>
-    /// エンジン内部用: this.On で張った購読をすべて解除する。
+    /// エンジン内部用: this.On で張った購読と、このスクリプトに預けた結び付け（SEED.Binding）をすべて解除する。
     /// ScriptBridge がインスタンス破棄時（OnDestroy 直後・および GCHandle 解放前）に呼ぶ。
     /// ユーザーコードからは呼ばない。二重呼び出しは無害。
     /// </summary>
     internal void UnsubscribeAllEvents()
     {
+        // 結び付け（Bind.*(owner: this)・Subscribe(owner: this)・AddTo(this)）を外す。
+        // 以後に預けられた物はその場で外す（破棄の後で結び付けを作っても漏れない）。
+        _ownedBindingsReleased = true;
+        var ownedBindings = _ownedBindings;
+        _ownedBindings = null;
+        ownedBindings?.Dispose();
+
         if (_eventSubscriptions is null) return;
         foreach (var subscription in _eventSubscriptions) SEED.Events.Unsubscribe(subscription);
         _eventSubscriptions.Clear();
         _eventSubscriptions = null;
+    }
+
+    // ── 結び付け（SEED.Binding）の寿命 ─────────────────────────
+    // Bind.*(owner: this, …)・観測値の Subscribe(owner: this, …)・AddTo(this) は、ここへ預けられ、
+    // this.On の購読と同じ時（UnsubscribeAllEvents）に自動で外れる。正典は docs/ui_binding.md §6。
+
+    /// <summary>このスクリプトに預けた結び付け（最初に預けるまで作らない）。</summary>
+    private SEED.Binding.DisposableBag? _ownedBindings;
+
+    /// <summary>破棄の後か（以後に預けられた結び付けはその場で外す）。</summary>
+    private bool _ownedBindingsReleased;
+
+    /// <summary>
+    /// エンジン内部用: 結び付けをこのスクリプトに預ける（SEED.Binding.BindingOwner から呼ぶ）。
+    /// 破棄の後に預けられた物はその場で Dispose する。
+    /// </summary>
+    /// <param name="disposable">預ける物。</param>
+    internal void TrackOwned(IDisposable disposable)
+    {
+        if (_ownedBindingsReleased)
+        {
+            disposable.Dispose();
+            return;
+        }
+        (_ownedBindings ??= new SEED.Binding.DisposableBag()).Add(disposable);
     }
 }

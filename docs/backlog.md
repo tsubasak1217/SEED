@@ -4011,3 +4011,43 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **【中・アプリ側】Wake or Pay の `StringTable` を L10n へ移す** — 2026-10-02。データの形（入れ子・`_` の説明・`{名前}`・`{{ }}`）は同じなので、
   `assets/common/data/strings.ja.json` → `assets/locale/ja.json` と `index.json`、`Strings.Get/Format` → `L10n.Get` の置き換えで移せる
   （手順は docs/localization.md §11。欠けの印は `⟦key⟧` → `[key]`）。W3 のアプリ側の作業。
+
+## データバインディング（SEED.Binding）— 2026-10-03 実装時の残件（正典: docs/ui_binding.md）
+
+- [ ] **【中】Play での確かめ（未検証）** — 2026-10-03。確かめたのはビルドと純粋な部分の単体テスト（`editor/tests/BindingTests` 50 件）と、
+  見本・docs の例のコンパイルだけ。部品の口（`Bind.Text`・`Visible`・`Color`・`Toggle`・`Checkbox`・`Slider`・`TextField`・`Selection`・`List`）、
+  当てる先（`scripting/src/Api/Binding/Targets/`）、owner の破棄での自動解除（`SEEDScript.UnsubscribeAllEvents`）、フレームの区切り
+  （`ScriptBridge.LateUpdate` の頭の `BindingFrame.Tick`）はエンジンの上でしか動かない。見本 `templates/ui/scripts/UiBindingDemo.cs` を置いたシーン
+  （子の名前は見本の先頭のコメント）を作り、`SCRIPT_DEBUG:binding,plus|toggle|clear|burst|state` で ①＋1 で文字・バッジ・まとめ・一覧が直る
+  ②トグルのタップが観測値へ入り、`toggle` の命令でつまみが動く ③`burst` で見出しの書き込みが 1 回（Deferred） ④Instantiate したトグルへ
+  次のフレームに値が当たる ⑤アクタの破棄でエラーが出ない、をエディタの Play と Android の実機で確かめる。
+- [ ] **【中・アプリ側】Wake or Pay の `Render()`・状態の版（`StateVersion`）の見比べを結び付けへ移す** — 2026-10-03。手順と例は
+  docs/ui_binding.md §7（状態の欄を `Observable` に替える → `Render` の 1 行を `Bind.*` 1 行へ → 版の見比べを消す → `WidgetBinder.SyncToggle` を
+  `Bind.Toggle(this, node, …)` へ）。画面のスクリプトに `Bind` という名前のメソッドがある所（`PopupPlane.Bind()`・`NumberFieldSlot.Bind(TextField)` など）は
+  CS0119 になるので、`SEED.Binding.Bind.…` と書くか別名の using を使う。W3 のアプリ側の作業。
+- [ ] **【低】`Bind` という名前のメソッドとの衝突（CS0119）** — 2026-10-03。名前は指示どおり `SEED.Binding.Bind`。利用者のスクリプトに `Bind()` があると
+  その中で `Bind.Text(…)` が書けない。気になるなら静的クラスの別名（`Binder` など）を足すか、`ObservableExtensions` の拡張メソッド
+  （`_count.BindText(label, …)`）の口を足す。
+- [ ] **【低】一覧の数を観測値として出す口が無い** — 2026-10-03。`Bind.Visible(this, emptyLabel, …)` のように「一覧が空なら見せる」には、
+  `items.Subscribe(this, _ => _isEmpty.Value = items.Count == 0)` と自分で観測値を作る。`ObservableList<T>.CountValue`（`IReadOnlyObservable<int>`）を足す案。
+- [ ] **【低】`Bind.Text` の L10n 版は差し込み 1 つ・複数形なし** — 2026-10-03。2 つ以上・複数形は `Computed` で文を作り、言語の切り替えは
+  `this.On(L10n.Changed, …)` で元を変える（docs/ui_binding.md §4.2）。`Bind.Text(text, source, Func<T, LocalizedRequest>)` の形を足す案。
+- [ ] **【低】部品が同じノードに作り直されたときに付け直さない** — 2026-10-03。ノードから結んだ双方向は、最初に見つかった部品を握り、
+  その部品が登録簿から外れたら結び付けごと外れる（スクリプトの付け替え・削除と追加で部品が替わる場合）。必要なら `WidgetRef` で登録簿の版を見て引き直す。
+- [ ] **【低】`Bind.Active` が無い** — 2026-10-03。`GameObject` に「動かす／止める」（Active）の口がまだ無い（`Visible` は描画だけ）。口ができたら
+  `Targets/` に当てる先を 1 つ足し、`Bind.Node.cs` に多重定義を足す。
+- [ ] **【低】`Computed` のひし形の依存で途中の値を知らせる（glitch）** — 2026-10-03。A → B、A と B → C のとき、A の変化で C が 2 回計算され、
+  1 回目は古い B で計算した値を知らせることがある（最後は正しい値）。表示の結び付けなら見えない程度。直すなら依存の高さ順に計算を後回しにする（MobX 方式）。
+- [ ] **【低】owner なしの結び付けは、当てる先が消えても値が変わるまで観測値に残る** — 2026-10-03。消えたことに気づくのは次の書き込みか区切り。
+  長生きの観測値（アプリの状態）へ owner なしで行ごとに結ぶと、行の破棄の後も残る。docs は owner を推奨。区切りで生存を見回る案（数が多いと高い）。
+- [ ] **【低】`Bind.TextField` はフォーカスの間に外で変えた値を入れない** — 2026-10-03。`SetTextUnlessFocused` の決まりどおり、打っている最中の欄は
+  外の値で上書きしない。フォーカスを外した後も入れ直さない（利用者が打てば欄の本文が観測値へ入る）。外の変更を後で入れたいなら、
+  `FocusChanged` で外れたときに当て直す口を `TextFieldTarget` に足す。
+- [ ] **【低】`Bind.Slider` の観測値は寄せる前の値のまま** — 2026-10-03。スライダは範囲・段階へ寄せるが、寄せた値を観測値へ書き戻さない
+  （選択のグループの「項目が集まる前」の書き戻しで値を壊さないため、双方向は書き戻しをしない作り）。観測値を寄せたいなら `ValueMath.Snap` で寄せてから入れる。
+- [ ] **【低】フレームに 1 回の判定が `UnscaledElapsedTime` の float の比較** — 2026-10-03。`BindingFrame.Tick`（と既存の
+  `DispatchDebugCommandsOncePerFrame`・`DispatchPlatformEventsOncePerFrame`）は前のフレームの実時間と比べる。float の精度で、起動から約 3 日を過ぎると
+  隣のフレームが同じ値になることがあり、その回の区切り（イベントの配信）が次のフレームへずれる（落ちはしない）。目覚ましのアプリは長く動くので、
+  エンジンからフレームの番号を渡す（`NativeFrameContext` に足す。runtime の仕事）のが確実。
+- [ ] **【参考】§7.22（Binding）も AI 補完に届かない** — 2026-10-03。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」の範囲
+  （`ScriptApiReference.MaxChars = 12000`）。
