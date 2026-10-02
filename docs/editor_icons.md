@@ -323,6 +323,7 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `Icon.Panel.Inspector` | `tune-variant` |
 | `Icon.Panel.AiAssistant` | `robot-outline` |
 | `Icon.Panel.Terrain` | `terrain` |
+| `Icon.Panel.Localization` | `translate`（文字列表（ローカライズ）パネル。ContentId `localization`） |
 
 #### コンポーネント種別（ComponentKind 対応）
 

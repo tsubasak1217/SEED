@@ -877,6 +877,12 @@
                               IsCheckable="True"
                               Tag="version_control"
                               Click="OnTogglePanel"/>
+                    <!-- 文字列表（SEED.Localization の assets/locale を編集。docs/localization.md §15） -->
+                    <MenuItem x:Name="MenuItemLocalization"
+                              Header="文字列表（ローカライズ）"
+                              IsCheckable="True"
+                              Tag="localization"
+                              Click="OnTogglePanel"/>
                 </MenuItem>
                 <!-- スクリプト: スクリプト編集関連ウィンドウ -->
                 <MenuItem Header="スクリプト">
@@ -2396,6 +2402,18 @@
                                                   CanHide="True"
                                                   CanFloat="True">
                                 <panels:VersionControlPanel x:Name="PanelVersionControl"/>
+                            </avd:LayoutAnchorable>
+                            <!--
+                                文字列表（ローカライズ）。多言語の置き場 assets/locale の index.json と <言語>.json を
+                                行 = キー・列 = 言語の表で編集する（docs/localization.md §15）。
+                                ContentId は layout.xml に永続化されるキーなので変更禁止。
+                            -->
+                            <avd:LayoutAnchorable Title="文字列表（ローカライズ）"
+                                                  ContentId="localization"
+                                                  CanClose="False"
+                                                  CanHide="True"
+                                                  CanFloat="True">
+                                <panels:LocalizationPanel x:Name="PanelLocalization"/>
                             </avd:LayoutAnchorable>
                         </avd:LayoutAnchorablePane>
 

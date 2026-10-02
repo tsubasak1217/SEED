@@ -20,6 +20,7 @@
 | `scripting/src/Api/Localization/Model/LocaleCatalog.cs` | 本体（言語の一覧・表・今の言語・探す順・欠けの方針・保存・書き換えの検知）。純粋な計算 |
 | `…/Model/LocaleIndex.cs`・`LocaleLanguage.cs` | index.json の読み込み・言語の引き当て（Match）・探す順（BuildChain） |
 | `…/Model/LocaleTable.cs`・`LocaleJson.cs` | 言語の表の読み込み（平たん化・複数形のまとまり）と JSON の共通の約束 |
+| `…/Model/LocaleJsonWriter.cs` | 平たん化の逆（鍵の道筋つきの項目の並び → 入れ子の JSON）。実行中は使わず、エディタの文字列表のパネルが書き出しに使う（§15） |
 | `…/Model/LocaleFormatter.cs` | 差し込み（`{name}`・`{0}`・`{name:書式}`・`{{ }}`） |
 | `…/Model/PluralRules.cs`・`PluralRuleKind.cs`・`PluralCategory.cs` | 複数形の規則の表と形の種類 |
 | `…/Model/LocaleCulture.cs` | 文化の引き当て・端末の言語・数と日付の書式（Invariant の環境では不変文化） |
@@ -31,14 +32,18 @@
 | `…/LocalizationReloader.cs` | 開発中だけデータファイルの書き換えを拾うスクリプト |
 | `templates/locale/index.json`・`ja.json`・`en.json` | 見本の表（SEED.UI の固定文字列・よく使う言葉・書式・書き方の見本） |
 | `editor/tests/LocalizationTests/` | 単体テスト（純粋な部分・Invariant の環境・見本の表・テンプレートの取り込み） |
+| `editor/src/Localization/`（`Json/`・`Model/`・`IO/`） | エディタの文字列表のモデル（WPF に依らない）・形を保つ読み込み・ディスクの読み書き・外部変更の監視（§15） |
+| `editor/src/Panels/LocalizationPanel.*`・`Panels/Localization/` | 文字列表（ローカライズ）のパネル（§15） |
+| `editor/tests/LocalizationPanelTests/`・`LocalizationPanelPreviewProbe/` | 文字列表のモデルの単体テストと、パネルのオフスクリーン描画（§15.8） |
 
 `Model/` の型はエンジンの API（Assets・SaveData・Debug）を使わない。テストはこのフォルダをリンクで取り込み、読み込み元と保存先を
 辞書へ差し替えて検査する（エンジンの API を使い始めるとテストがビルドできなくなる＝検知器）。
 
 ## 1. はじめかた
 
-1. エディタのテンプレートの取り込み（`templates/`）で **`locale` のカテゴリ**（`index.json`・`ja.json`・`en.json`）を選んで取り込む。
-   プロジェクトの `assets/locale/` に入る（§10）。
+1. エディタのテンプレートの取り込み（`templates/`）で **`locale` のカテゴリ**（表示名「ローカライズ」。`index.json`・`ja.json`・`en.json`）を選んで取り込む。
+   プロジェクトの `assets/locale/` に入る（§10）。「表示 → パネル → 文字列表（ローカライズ）」の「見本から作る」でも同じものが入り、
+   以後の文字列の追加・翻訳はそのパネルの表で書ける（§15）。
 2. 文字を出すアクタに ScriptComponent（型名 `SEED.Localization.LocalizedText`）を付け、インスペクタの「キー」に `ui.dialog.cancel` のように書く。
    部品（Button など）の文字は `SEED.Localization.LocalizedLabel`。スクリプトからは `L10n.Get("ui.dialog.cancel")`。
 3. 言語を選ぶ画面で `L10n.SetLanguage("en")`。表示中の `LocalizedText`・`LocalizedLabel` はその場で入れ替わり、次の起動も英語で始まる。
@@ -298,7 +303,7 @@ OS の言語を読む口（`App.Locale` の候補）が要る（backlog）。
 `templates/locale/` は `templates/` の 1 カテゴリ（フォルダ名 `locale`）。テンプレートの取り込み（`editor/src/Templates/`）はライブラリを
 アセットの根と同じ形として扱うので、`locale` のカテゴリ（またはファイル）を選ぶと**そのまま `<プロジェクト>/assets/locale/` へコピーされ、
 既定の置き場で読める**（`editor/tests/LocalizationTests` が `TemplateLibrary`・`TemplateImporter` で計画・コピー・読み込みまで確かめている）。
-`index.json` だけを選ぶと言語の表は付いてこない（参照で辿れない）ので、カテゴリごと選ぶ。カテゴリの表示名は今は `locale` のまま（backlog）。
+`index.json` だけを選ぶと言語の表は付いてこない（参照で辿れない）ので、カテゴリごと選ぶ。カテゴリの表示名は「ローカライズ」（`TemplateCategoryNames`）。
 
 SEED.UI の部品が持つ固定の文字列（**部品は L10n を読まない**。今回は部品の既定の文字列を置き換えない。アプリが部品へ渡すときに使う）:
 
@@ -351,6 +356,8 @@ string line = catalog.Get("chapter1.line3", new (string, object?)[] { ("name", h
 切り替え・端末に合わせる・書き換えの検知・置き場・壊れたデータ）・書式・Invariant の環境（子のプロセス）・見本の表（ja と en のキーと差し込みの一致）・
 テンプレートの取り込み。`L10n`・`LocalizedText`・`LocalizedLabel`・`LocalizationReloader` はエンジンの上でしか動かない（Play での確かめは backlog）。
 
+エディタの文字列表のパネルは `dotnet run --project editor/tests/LocalizationPanelTests`（47 件。2026-10-03）。§15.8。
+
 ## 14. 制限
 
 - 文字列だけを差し替える（画像・音声・フォントの言語ごとの差し替えは無い。フォントは Text の `FontPath` を言語ごとの表から引いて当てる）。
@@ -358,4 +365,92 @@ string line = catalog.Get("chapter1.line3", new (string, object?)[] { ("name", h
 - 複数形は整数だけ（§5）。序数（1st・2nd）・性別による変化は無い。
 - Android は端末の言語を取れず、書式は不変文化（§9）。
 - SEED.UI の部品の既定の文字列（`DialogOptions.DefaultPositiveText` など）は L10n を読まない（§10）。
+- エディタの文字列表のパネルの制限は §15.7。
 - 残件と候補は backlog.md「ローカライズ（SEED.Localization）」。
+
+## 15. エディタから編集する（文字列表のパネル）
+
+「表示 → パネル → 文字列表（ローカライズ）」（ContentId `localization`。既定では Project・Output と同じ下段）。
+プロジェクトパネルで `locale` フォルダの `.json`（`index.json`・`<code>.json`）をダブルクリックしても開く（§15.6）。
+JSON を手で書かずに、キーの追加・翻訳・言語の追加ができる。2026-10-03 作成（タスク L2-7）。
+
+### 15.1 画面
+
+| 場所 | 中身 |
+|---|---|
+| 操作の帯 | 保存（Ctrl+S）・読み直す・新しいキーの入力欄と「キーを追加」（Enter でも）・名前の変更・削除（表で Delete キーでも）・複数形の形を追加・言語… |
+| 絞り込みの帯 | 検索（キーと文。大文字小文字を区別しない）・「未訳だけ表示」・要約「未訳 N 件 / キー M 件」・凡例・警告の数（ツールチップに一覧。実行中の読み込みと同じ文言）・置き場（`assets://locale`） |
+| 表 | 行 = キー（平たん化した `a.b.c`。並びはファイルの順）、列 = キー・種類・言語（index.json の順）。言語の見出しに名前とコード・既定の言語・次に探す言語（fallback）。升目はダブルクリック / F2 / 文字を打つと編集、Enter で確定、Escape で取り消し |
+| 説明の帯 | 選んだ行のキーを包むオブジェクトの説明（`_about`・`_comment` など `_` で始まる鍵。近い順。既定の言語の表を先に見る）と操作の結果 |
+
+### 15.2 未訳の数え方
+
+未訳 = 空の文字列（`""`）・`null`・その言語の表に無い。未訳の升目は地の色（色表 `SeedColorTable.LOCALE_MISSING_CELL_BG`）で示し、
+升目のツールチップに状態の説明を出す。次の升目は「要らない」として数えない（色の無い空欄。ツールチップに理由）:
+
+- 複数形の形のうち、その言語の規則（§5 の `PluralRules`）で使わない形（ja の `one`、en の `few` など）。
+  規則の表は二重に持たず、`PluralRules.Select` に 0〜199 を流して出てきた形を「書くべき形」とする（`LocalePluralRequirements`）
+- 1 文で書いた言語（ja の `"coins": "コイン {n} 枚"`）の形の行と、形で書いた言語（en）の 1 文の行（§5 の ④。どちらかで引ける）
+
+種類の列は「複数形」（形の行）と「1 文」（ほかの言語では複数形のまとまりのキー）。見本の表（templates/locale）は未訳 0。
+
+### 15.3 操作
+
+| 操作 | 振る舞い |
+|---|---|
+| 升目の編集 | 文を書き換える。空にすると `null`（訳していない＝実行中は次の言語から引く）。表に無いキーに書くと、ほかの言語の並びで直前のキーの後ろへ足す |
+| キーを追加 | 全部の言語の表の末尾に `null` で足す（行も末尾）。`.` で区切ると入れ子。空の鍵・`_` で始まる鍵・空白は不可。文の入ったキーの下・子を持つキーの位置には作れない（理由を出して何も変えない） |
+| 名前の変更 | 全部の言語で鍵の道筋を替える（表の中の位置はそのまま）。複数形の形の行を選ぶとまとまりごと（`.one`・`.other` も）替わる |
+| 削除 | 選んだキー（複数可）を全部の言語の表から消す（確認あり。同じキーが 2 か所にあれば両方） |
+| 複数形の形を追加 | 選んだキー（形の行ならまとまり）に `zero`〜`other` の形を `null` で足す。どの言語でもまだ複数形でないキーは、全言語で 1 文を `other` の形へ移してまとまりにする。1 文で足りている言語は触らない |
+| 言語…（列の見出しの右クリックでも） | 言語を追加（コード → 名前を尋ねる。index.json の末尾に `{ "code", "name", "fallback": null }`・表 `<code>.json` を保存で作る。置き場に同じ名前の表が既にあればそれを読む）・既定の言語にする・次に探す言語（fallback。自分自身は不可）・名前を変える・一覧から外す |
+| 一覧から外す | index.json から外すだけで、表のファイルは消さない（一覧に載らない表は実行中に読まれない。同じコードで足し直すと戻る）。その言語を指していた fallback は `null` に、既定の言語だったら残りの先頭を既定にする |
+| 見本から作る | `assets/locale/index.json` が無いときの案内。templates/locale を取り込む（テンプレートの取り込みと同じ道。既にあるファイルは上書きしない）。「言語を足して始める」なら空の一覧から作る |
+
+言語のコードは英数字を `-` でつないだ形（`ja`・`en-US`・`zh-Hant`。`_` は `-` へ書きそろえる。`index` は index.json とぶつかるので不可）。
+
+### 15.4 保存の形
+
+- 「保存」・Ctrl+S（パネルにフォーカスがあるとき。そのときシーンの保存は動かない）。**変わったファイルだけ**を書く（開いて保存しただけでは書かない）
+- 入れ子の JSON に戻す（`LocaleJsonWriter`。平たん化の逆）: インデント 2・鍵と値の間は `": "`・最後に改行 1 つ・UTF-8（BOM 無し）・
+  改行は元のファイルに合わせる（新しいファイルは LF）
+- キーの並びは元のファイルの順を保ち、新しいキーは末尾（入れ子なら親のオブジェクトの末尾）。説明の鍵（`_about`）・`null`・数・真偽値・
+  空の `{}` `[]` も残す。配列は番号が抜けなく並ぶ間は配列のまま（値だけの配列は 1 行）、途中を消して番号が飛んだら番号の鍵のオブジェクト
+  （残りのキーの番号が変わらない）
+- index.json の言語の要素は 1 行のオブジェクト（`{ "code": "en", "name": "English", "fallback": "ja" }`。templates/locale と同じ書き方）
+- 平たいまま書いたファイル（`{"menu.start": …}`）は新しいキーも平たいまま
+- 旧版は `<assets>/.backup/` へ退避してから原子的に置き換える（`Assets/SafeFileWriter`。シーン・アニメーションの保存と同じ）
+- templates/locale の 3 ファイルは、読んでそのまま書き戻すと 1 文字も変わらない（`LocalizationPanelTests` が確かめる）
+
+### 15.5 外部変更・未保存
+
+- 置き場の `*.json` がディスク上で変わると（テキストエディタ・AI・VCS の取得）、未保存の変更が無ければ黙って読み直す（選んだ行・絞り込みは保つ）。
+  あれば上書きせず帯で知らせる（［読み直す（編集を捨てる）］［このまま編集を続ける］＝次の保存でディスクの変更を上書き）。
+  判定は中身の SHA-256 の比較（デバウンス 600 ms。パネル自身の保存は数えない。`IO/LocaleFolderWatcher`）
+- 未保存の間はタブ名に `*`。エディタを閉じる（シーン → スクリプト → 文字列表の順に確認）・別の置き場を開く・読み直すときに
+  ［はい］保存 ／［いいえ］捨てる ／［キャンセル］やめる、を尋ねる。パネルを隠しても編集は残る（確認しない）。ヘッドレスでは確認を出さずに捨てる（シーンと同じ）
+- 読めない表（壊れた JSON・開けないファイル）はその列だけ読み取り専用（編集も保存もしない。警告に理由）。index.json が読めなければ全体が読み取り専用
+
+### 15.6 プロジェクトパネルからの開き方
+
+`editor/config/panel_open_rules.json`（規則のデータ。無い・壊れているときは組み込み既定 `Assets/PanelOpenRuleCatalog.cs`）:
+直上のフォルダ名が `locale` の `.json` を ContentId `localization` のパネルで開く。ダブルクリックした表のフォルダがそのまま置き場になる
+（`L10n.Configure` で使う別の置き場 `assets://story/locale` も開ける）。言語の表なら、その言語の列へ目を向ける。
+テキストで直すときは右クリック「テキストエディタで開く」。判定の順番は [editor_project_panel.md](editor_project_panel.md) §10。
+
+### 15.7 制限
+
+- 元に戻す（Undo）は無い（「読み直す」で保存した状態へ戻る）
+- JSON のコメント（`//` `/* */`）は保存で消える。エスケープ（`\u3042`）は文字に戻る。同じ鍵が 2 つある JSON は、保存で後の値の 1 つになる
+- 番号の鍵のオブジェクト（`{"0": …, "1": …}`）は配列として書き戻す（実行中の読み方は同じ）
+- 説明（`_` の鍵）は見るだけ（書くのはテキストエディタで）。言語の culture は編集できない（index.json を直接直す）
+- 改行を含む文は表示・編集できるが、升目の入力で改行を足す操作は無い（テキストエディタで `\n`）
+- 並べ替え・一括の検索置換・CSV などの入出力・ほかの言語の文の「写し」はまだ無い（backlog）
+
+### 15.8 確かめ方
+
+- `dotnet run --project editor/tests/LocalizationPanelTests` — 書き出し（`LocaleJsonWriter`）・形を保つ読み込み（templates/locale の往復が元と同じ）・
+  表のモデル（行と列・未訳の数え方・升目・キーの追加/改名/削除・複数形の形・言語の追加/外す/既定/fallback・保存で書く中身）・
+  ディスクの読み書き（BOM 無し・旧版の退避・無い/読めない）・外部変更の控え・見本の取り込み・ダブルクリックの規則・読めない JSON で落ちないこと（47 件）
+- `dotnet run --project editor/tests/LocalizationPanelPreviewProbe -- --out <出力先>` — 実物のパネルを画面に出さずに組み立て、
+  開いた直後・未訳だけ・検索・書き換え後（タブ名の `*`）・置き場が無いとき、を PNG に書き出して表明する（エディタは起動しない）

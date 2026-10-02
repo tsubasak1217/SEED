@@ -549,9 +549,32 @@ dotnet run --project editor/tests/ProjectPanelPreviewProbe -- "<フォルダ or 
 | `.anim` | アニメーションタイムライン | コード内の分岐 |
 | `.mat` | OS の関連付け（専用パネル未実装のため） | コード内の分岐 |
 | `.sprite_mesh` | スプライトリグパネル | コード内の分岐 |
+| `locale` フォルダの `.json`（`assets/locale/index.json`・`<言語>.json`） | **文字列表（ローカライズ）パネル**（ContentId `localization`） | `editor/config/panel_open_rules.json` |
 | テキスト系（`.cs` / `.wgsl` / `.json` / `.txt` / `.csv` / `.md` / `.icons` …） | 内蔵スクリプトエディタのタブ | `editor/config/text_editable_extensions.json` |
 | `.blend` / 画像 / 音声 | **OS の関連付け（既定のアプリ）** | `editor/config/shell_open_extensions.json` |
 | 上記以外 | 何もしない | — |
+
+### 直上のフォルダ名で専用のパネルへ回す形式（データドリブン）
+
+同じ `.json` でも置き場によって開き方が違うもの（多言語の表など）は、拡張子だけでは決められない。
+`editor/config/panel_open_rules.json` が正典で、無い・壊れている場合は `Assets/PanelOpenRuleCatalog.cs` の組み込み既定
+（`locale/*.json` → 文字列表）で動き続ける（`MainWindow.Localization.cs` の `LoadPanelOpenRuleCatalog` が起動時に読む）。
+
+```json
+{
+  "format_version": 1,
+  "rules": [
+    { "panel": "localization", "parent_folder": "locale", "extensions": [".json"] }
+  ]
+}
+```
+
+- `panel` は開くパネルの ContentId（`editor/settings/layout.xml` の鍵と同じ）。MainWindow はそのパネルを前に出し、
+  中身が `Panels/IFileOpenablePanel` を満たしていれば `OpenFile(パス)` を渡す（パネルを足しても MainWindow に分岐を増やさない）。
+- `parent_folder` はファイルの**直上**のフォルダ名（大文字小文字は無視）。`assets/story/locale/en.json` も当たる（別の置き場）。
+- この判定は**テキストの分岐より前**。`.json` は内蔵エディタでも開けるので、後ろに置くと専用のパネルへ届かない。
+  テキストで直したいときは右クリック「テキストエディタで開く」（`.anim` / `.inputmap` と同じ）。
+- 単体テストは `editor/tests/LocalizationPanelTests` の RuleTests（組み込み既定と JSON が同じ判定になること・壊れた JSON の扱い）。
 
 ### 関連付けで開く形式（データドリブン）
 

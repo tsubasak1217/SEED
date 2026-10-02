@@ -43,6 +43,8 @@ public static class TemplateCategoryNames
             ["scripts"]  = "スクリプト",
             // UI の部品のプレハブ・ギャラリーのシーン・テーマ（W2-4。templates/ui/）
             ["ui"]       = "UI 部品",
+            // 多言語の見本の表（index.json・ja.json・en.json。SEED.Localization。templates/locale/ → assets/locale/）
+            ["locale"]   = "ローカライズ",
         };
 
     /// <summary>
