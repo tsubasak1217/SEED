@@ -126,10 +126,14 @@ AI・別ツール）になる。アセットルート配下の `.actor` / `.acto
 | 自動再読込（`AutoReloadPrefabs`） | 状態 | 保存時の自動反映（`PrefabAutoPropagateOnSave`） | 送るもの |
 | --- | --- | --- | --- |
 | オフ | 任意 | 任意 | **何もしない**（保留もしない） |
-| オン | Edit | オン | `PREFAB_REAPPLY_PATH`（Undo 1 操作・件数のトースト・シーンは未保存に。0 件なら黙る） |
-| オン | Edit | オフ | `PREFAB_STATUS`（版ずれのバナーだけ。シーンに触れない） |
+| オン | Edit | 任意 | `PREFAB_STATUS`（版ずれのバナーだけ。シーンに触れない。更新はバナーの［更新する］から利用者が行う） |
 | オン | Play / Pause | 任意 | `PREFAB_LIVE_PATCH_PATH` ＋パスを覚える（停止時は第 7 節の表どおり） |
 
+- **Edit では自動反映の設定に関わらず再展開しない**（2026-10-03。`docs/reviews/2026-10-03_code_review.md` #5）。外部変更は VCS の取得・
+  AI の書き込み・インポートのように `.scene` と `.actor` が同時に変わることが多く、ここで丸ごと再展開すると (a) シーンに未保存の印が付いて
+  新しい `.scene` の読み直しが見送られ、そのまま保存すると取得した `.scene` を古い内容で上書きする、(b) 読み直した新しいシーンの
+  インスタンスごとの変更を消す。「版のずれたインスタンスだけ再展開する」仕組みが入るまでは、バナーの［更新する］で利用者が更新する。
+  利用者自身の保存（`SAVE_OK` の続き）は従来どおり自動反映の設定に従う。
 - Edit では画面プレビュー（`PREVIEW_REFRESH_PATH`）も作り直す（保存したときと同じ。設定に関わらず）。
 - 判定は `AutoReloadPolicy.DecidePrefabExternalChange`（純粋な関数）。エディタ自身の保存の続き
   （`PrefabPlayReapplyQueue.DecideOnSave`）とは、Edit・自動反映オフのときだけ違う（本人が今保存したならバナーは出さない／

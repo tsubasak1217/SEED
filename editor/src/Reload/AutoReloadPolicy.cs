@@ -214,9 +214,15 @@ public static class AutoReloadPolicy
         // 守る設定（autoPropagate）は停止時に見る（PrefabPlayReapplyQueue.TakeOnReturnToEdit）。
         if (IsPlaying(state)) return PrefabExternalChangeAction.LivePatchAndRemember;
 
-        return autoPropagate
-            ? PrefabExternalChangeAction.ReapplyNow
-            : PrefabExternalChangeAction.StatusOnly;
+        // Edit では自動反映の設定に関わらず「版ずれのお知らせ」に留める（2026-10-03）。
+        // 外部変更は VCS の取得・AI の書き込み・インポートのように .scene と .actor が同時に変わることが多く、
+        // ここで丸ごと再展開すると (a) シーンに未保存の印が付いて新しい .scene の読み直しが見送られ、そのまま保存すると
+        // 取得した .scene を古い内容で上書きする、(b) 読み直した新しいシーンのインスタンスごとの変更を消す
+        // （docs/reviews/2026-10-03_code_review.md #5）。利用者が自分で保存したとき（SAVE_ACTOR の続き）は
+        // 従来どおり autoPropagate に従って再展開する（MainWindow.Prefab.cs）。
+        // 「版のずれたインスタンスだけ再展開する」仕組みが入るまでは、更新はバナーの［更新する］から利用者が行う。
+        _ = autoPropagate;
+        return PrefabExternalChangeAction.StatusOnly;
     }
 
     /// <summary>
