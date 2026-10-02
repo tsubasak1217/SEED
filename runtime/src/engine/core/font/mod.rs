@@ -14,7 +14,15 @@
 //
 //  【フォント選択】
 //  `FontRegistry` がアセットパス → フォント ID を管理し、アトラスのキーに ID を含める。
-//  テキストごとに違うフォントを指定しても 1 枚のアトラス・1 本のバッチで描ける。
+//  テキストごとに違うフォントを指定しても 1 つのアトラス・1 本のバッチで描ける。
+//
+//  【アトラスのページ（2026-10-03）】
+//  アトラスはテクスチャ配列（1 層 = 1 ページ）。ページが満杯なら上限（FontConfig::max_atlas_pages）まで次のページを足す
+//  （atlas.rs・atlas_pages.rs）。字のページは頂点で運ぶので、ページが何枚でも 1 本のバッチ・1 回の描画で描ける。
+//  ページを足したフレームの `flush` でテクスチャを作り直し、bind group も作り直す（呼び出し側は何もしなくてよい）。
+//  上限まで満杯なら、しばらく（`ATLAS_EVICT_MIN_IDLE_FRAMES`）使われていないページを丸ごと空にして使い直す（追い出し）。
+//  フレームの数え方: キャンバスの文字は `begin_frame` を毎フレーム呼ぶ（ページの「最後に使われたフレーム」を数える）。
+//  呼ばない描画器（ギズモ・操作ガイド）はフレームが進まないので追い出しは起きない（1 ページで足りる）。
 //
 //  使い方:
 //    let font_sys = FontSystem::new(&device, surface_format, depth_format, FontConfig::default());
@@ -22,12 +30,14 @@
 //    let mut batch = TextBatch::new();
 //    let glyphs = font_sys.prepare_glyphs("Hello", "");
 //    batch.add_text_screen("Hello", 0.0, 0.0, 24.0, [1.0,1.0,1.0,1.0], &glyphs, sw, sh);
-//    font_sys.flush(&queue);
+//    font_sys.flush(&device, &queue);
 //    let gpu = font_sys.build_gpu_batch(&batch, &device);
 //    font_sys.draw_text_batch(&gpu, &mut render_pass);
 // ============================================================
 
 pub mod atlas;
+/// グリフアトラスのページへの棚詰めの配置（ページの追加・上限・使用率。wgpu を使わない純粋な計算。2026-10-03）
+pub mod atlas_pages;
 pub mod axis_gizmo;
 /// 文字の距離場の設定（sdf / mtsdf・辺の色分け。project_settings の font 節・起動オプション）
 pub mod field_settings;
@@ -67,6 +77,9 @@ pub mod text_wrap;
 /// 文字の塗り方（text.wgsl）の CPU の写しと試験（細い横画が副画素の位置で消えないこと。2026-10-01）
 #[cfg(test)]
 mod text_aa_tests;
+/// アトラスのページの追加・追い出しを実 GPU の FontSystem で確かめる（--ignored。2026-10-03）
+#[cfg(test)]
+mod atlas_gpu_tests;
 
 use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use ab_glyph::{Font, InvalidFont, PxScale, ScaleFont};
@@ -74,7 +87,7 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 
 use atlas::{GlyphAtlas, GlyphInfo, GlyphKey};
-use field_stats::FieldBakeStats;
+use field_stats::{AtlasStatsSnapshot, FieldBakeStats};
 use glyph_field::{DistanceFieldKind, GlyphField};
 use msdf::{bake_glyph_mtsdf, BakeStats, ColoringStrategy};
 use pipeline::{TextPipeline, TextVertex};
@@ -93,47 +106,73 @@ pub static DEFAULT_FONT_BYTES: &[u8] =
 /// ギズモ・操作ガイドのようにラテン数十文字しか使わない用途向け。
 pub const DEFAULT_ATLAS_SIZE: u32 = 2048;
 
-/// キャンバステキスト用アトラスサイズ（一辺のピクセル数。1 チャネルの SDF のとき）。
+/// キャンバステキスト用アトラスサイズ（1 ページの一辺のピクセル数。1 チャネルの SDF のとき）。
 ///
 /// 日本語は使用字種が多い（HUD だけでも数百字）。em 64 + パディングで
-/// 全角 1 字 ≒ 60x60px なので、4096（R8 = 16 MiB）なら約 4,500 字を保持できる。
-/// MTSDF のときは `msdf::params::MTSDF_CANVAS_ATLAS_SIZE`（2048。RGBA8 = 16 MiB・約 2,500 字）。
+/// 全角 1 字 ≒ 60x60px なので、4096（R8 = 16 MiB）なら 1 ページに約 4,500 字を保持できる。
+/// MTSDF のときは `msdf::params::MTSDF_CANVAS_ATLAS_SIZE`（2048。RGBA8 = 16 MiB・1 ページに約 2,500 字）。
+/// ページが満杯なら上限（`FontConfig::max_atlas_pages`）まで同じ大きさのページを足す。
 pub const CANVAS_ATLAS_SIZE: u32 = 4096;
+
+/// キャンバスの文字のアトラスのテクスチャのラベル（GPU メモリの計測の枠を、ギズモ・操作ガイドのアトラスと分ける）。
+pub const CANVAS_ATLAS_LABEL: &str = "Glyph Atlas Canvas";
+/// ギズモ・操作ガイドの文字のアトラスのテクスチャのラベル（2026-10-02 までと同じ名前）。
+pub const OVERLAY_ATLAS_LABEL: &str = "Glyph Atlas";
 
 /// まとめて焼く字がこの数以上なら並列に焼く（MTSDF。1 字だけなら行の並列だけで足りる）。
 const PARALLEL_BAKE_MIN_GLYPHS: usize = 2;
 
+/// アトラスが上限まで満杯のとき、追い出してよいページの「使われていないフレーム数」の下限（60 fps で約 2 秒）。
+///
+/// 使い回しのレイアウト（text_layout_cache.rs。直近 2 フレームに描いたテキスト）が覚えているページは毎フレーム印が付くので、
+/// 2 以上なら覚えた配置が指すページを空にすることは無い。大きめにして、見えている字の入れ替えの往復（焼き直しの連続）を避ける。
+pub const ATLAS_EVICT_MIN_IDLE_FRAMES: u64 = 120;
+
 /// `FontSystem` の初期化パラメータ。
 #[derive(Clone, Debug)]
 pub struct FontConfig {
-    /// グリフアトラスの一辺ピクセル数。
+    /// グリフアトラスの 1 ページの一辺ピクセル数。
     pub atlas_size: u32,
     /// 距離場の種類（アトラスの形式とシェーダーの入口が決まる）。
     pub field: DistanceFieldKind,
     /// MSDF の辺の色分け（MTSDF のときだけ使う）。
     pub coloring: ColoringStrategy,
+    /// アトラスのページの上限（1 ページ目は作ったときから持ち、満杯ならここまで足す。field_settings::atlas_page_limit）。
+    pub max_atlas_pages: u32,
+    /// アトラスのテクスチャのラベル（GPU メモリの計測の内訳に出る）。
+    pub atlas_label: &'static str,
 }
 
 impl Default for FontConfig {
-    /// ギズモ・操作ガイド用（ラテン数十字・小さい字なので 1 チャネルの SDF・2048² の R8 = 4 MiB。2026-10-01 までと同じ）。
+    /// ギズモ・操作ガイド用（ラテン数十字・小さい字なので 1 チャネルの SDF・2048² の R8 = 1 ページ 4 MiB。2026-10-01 までと同じ）。
+    ///
+    /// ページの上限はキャンバスと同じ決め方（ふだんは 1 ページで足りるので、2 ページ目以降は作られない）。
     fn default() -> Self {
         Self {
             atlas_size: DEFAULT_ATLAS_SIZE,
             field: DistanceFieldKind::Sdf,
             coloring: ColoringStrategy::default(),
+            max_atlas_pages: field_settings::active_atlas_page_limit(),
+            atlas_label: OVERLAY_ATLAS_LABEL,
         }
     }
 }
 
 impl FontConfig {
-    /// キャンバステキスト用の設定（設定の距離場の種類・大きめのアトラス。どちらも 16 MiB）。
+    /// キャンバステキスト用の設定（設定の距離場の種類・大きめのアトラス。どちらも 1 ページ 16 MiB）。
     pub fn canvas() -> Self {
         let settings = field_settings::active();
         let atlas_size = match settings.kind {
             DistanceFieldKind::Sdf => CANVAS_ATLAS_SIZE,
             DistanceFieldKind::Mtsdf => msdf::params::MTSDF_CANVAS_ATLAS_SIZE,
         };
-        Self { atlas_size, field: settings.kind, coloring: settings.coloring }
+        Self {
+            atlas_size,
+            field: settings.kind,
+            coloring: settings.coloring,
+            max_atlas_pages: field_settings::active_atlas_page_limit(),
+            atlas_label: CANVAS_ATLAS_LABEL,
+        }
     }
 }
 
@@ -254,6 +293,7 @@ impl TextBatch {
                 info.uv_min,
                 info.uv_max,
                 info.field_em_px,
+                info.page,
                 &GlyphShading::plain(color),
             );
 
@@ -269,6 +309,7 @@ impl TextBatch {
     /// カメラ VP まで通した結果を積むための入口）。
     ///
     /// - `field_em`: このグリフの距離場の解像度（`GlyphInfo::field_em_px`）
+    /// - `page`: このグリフのアトラスのページ（`GlyphInfo::page`。テクスチャ配列の層）
     /// - `shading`: 色・縁取り・太さ・ぼかし（`GlyphShading`。px からの変換は
     ///   `FontSystem::value_spec` を使う）
     pub fn add_quad_ndc(
@@ -277,18 +318,20 @@ impl TextBatch {
         uv_min: [f32; 2],
         uv_max: [f32; 2],
         field_em: f32,
+        page: u32,
         shading: &GlyphShading,
     ) {
-        self.push_quad(corners, uv_min, uv_max, field_em, shading);
+        self.push_quad(corners, uv_min, uv_max, field_em, page, shading);
     }
 
-    /// 4 隅・UV・陰影からクアッドを積む共通処理（頂点順と索引の唯一の定義）。
+    /// 4 隅・UV・ページ・陰影からクアッドを積む共通処理（頂点順と索引の唯一の定義）。
     fn push_quad(
         &mut self,
         corners: [[f32; 3]; 4],
         uv_min: [f32; 2],
         uv_max: [f32; 2],
         field_em: f32,
+        page: u32,
         shading: &GlyphShading,
     ) {
         let base = self.vertices.len() as u32;
@@ -308,6 +351,7 @@ impl TextBatch {
                 weight_dist: shading.weight_dist,
                 softness: shading.softness,
                 field_em,
+                page,
             });
         }
         self.indices
@@ -344,11 +388,16 @@ pub struct FontSystem {
     pub atlas: GlyphAtlas,
     pipeline: TextPipeline,
     atlas_bg: wgpu::BindGroup,
-    /// アトラスに置けない字（アウトラインが無い・アトラスが満杯で入らなかった）の表（2026-09-28）。
+    /// アトラスに置けない字（アウトラインが無い）の表（2026-09-28）。
     ///
-    /// どちらも結果が変わらない（フォント ID の実体は固定・アトラスは追い出さない）ので、焼き直さずに飛ばす。
-    /// `prepare_glyphs` の返り値は従来と同じ（どちらの字も返さない）。
+    /// 結果が変わらない（フォント ID の実体は固定）ので、焼き直さずに飛ばす。`prepare_glyphs` の返り値には入らない。
     unplaceable: HashSet<GlyphKey>,
+    /// アトラスが上限まで満杯で入らなかった字の表（焼き直さずに飛ばす。ページを追い出して空きができたら消す。2026-10-03）。
+    atlas_full: HashSet<GlyphKey>,
+    /// 満杯で入らなかった字があるか（あれば `begin_frame` ごとに、使われなくなったページの追い出しを試す）。
+    starved: bool,
+    /// 今のフレームの番号（`begin_frame` で 1 つ進む。アトラスのページの「最後に使われたフレーム」に使う）。
+    frame: u64,
     /// MTSDF を焼いた記録（数・時間・検査に落ちた字。ログは field_stats.rs）。
     pub field_stats: FieldBakeStats,
 }
@@ -379,7 +428,7 @@ impl FontSystem {
         font_bytes: &'static [u8],
     ) -> Result<Self, InvalidFont> {
         let registry = FontRegistry::new(font_bytes)?;
-        let atlas = GlyphAtlas::new(device, config.atlas_size, config.field);
+        let atlas = GlyphAtlas::new(device, config.atlas_size, config.field, config.max_atlas_pages, config.atlas_label);
         let pipeline = TextPipeline::new(device, surface_format, depth_format, config.field);
 
         let atlas_bg = Self::create_atlas_bg(device, &pipeline, &atlas);
@@ -391,6 +440,9 @@ impl FontSystem {
             pipeline,
             atlas_bg,
             unplaceable: HashSet::new(),
+            atlas_full: HashSet::new(),
+            starved: false,
+            frame: 0,
             field_stats: FieldBakeStats::new(field_settings::per_glyph_log_enabled()),
         })
     }
@@ -398,6 +450,38 @@ impl FontSystem {
     /// 距離場の種類。
     pub fn field_kind(&self) -> DistanceFieldKind {
         self.config.field
+    }
+
+    /// フレームの頭に呼ぶ（キャンバスの文字の描画器が毎フレーム 1 回。ギズモ・操作ガイドは呼ばない）。
+    ///
+    /// フレームの番号を進め、満杯で入らなかった字があれば、しばらく使われていないページの追い出しを試す
+    /// （空きができたら入らなかった字の表を消す＝次に使われたときに焼いて入れる）。
+    pub fn begin_frame(&mut self) {
+        self.frame += 1;
+        if self.starved && self.atlas.evict_idle_page(self.frame, ATLAS_EVICT_MIN_IDLE_FRAMES).is_some() {
+            self.after_eviction();
+        }
+    }
+
+    /// 今のフレームの番号。
+    pub fn frame(&self) -> u64 {
+        self.frame
+    }
+
+    /// ページを追い出した回数（増えたら、満杯で欠けていた字が入るかもしれない＝使い回しのレイアウトを作り直す合図）。
+    pub fn atlas_evictions(&self) -> u64 {
+        self.atlas.evictions()
+    }
+
+    /// 使い回しのレイアウトの字のページ（ビットの和）を、今のフレームに使った印を付ける（追い出しの順）。
+    pub fn touch_atlas_pages(&mut self, page_mask: u64) {
+        self.atlas.touch_pages(page_mask, self.frame);
+    }
+
+    /// ページを追い出した後始末（満杯で入らなかった字の表を消す）。
+    fn after_eviction(&mut self) {
+        self.atlas_full.clear();
+        self.starved = false;
     }
 
     /// px → 値の変換の決まり（縁取り・太さ・影のぼかし。距離場の種類ごと）。
@@ -417,7 +501,7 @@ impl FontSystem {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&atlas.texture_view),
+                    resource: wgpu::BindingResource::TextureView(atlas.texture_view()),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -442,11 +526,15 @@ impl FontSystem {
 
         // ── 1. まだアトラスに無い字を集める（重複なし・出た順）──
         // 焼いても描くものが無い・アトラスに入らないと分かっている字は焼き直さない（2026-09-28）。
+        // 既にある字のページには今のフレームに使った印を付ける（このあと焼く字のための追い出しで消されないように）。
         let mut missing: Vec<char> = Vec::new();
         let mut seen: HashSet<char> = HashSet::new();
         for ch in text.chars() {
             let key = GlyphKey { font_id, codepoint: ch };
-            if self.atlas.get(&key).is_none() && !self.unplaceable.contains(&key) && seen.insert(ch) {
+            if let Some(info) = self.atlas.get(&key) {
+                let page = info.page;
+                self.atlas.touch_page(page, self.frame);
+            } else if !self.unplaceable.contains(&key) && !self.atlas_full.contains(&key) && seen.insert(ch) {
                 missing.push(ch);
             }
         }
@@ -503,9 +591,40 @@ impl FontSystem {
             if let Some(stats) = stats {
                 self.field_stats.record(ch, &stats);
             }
-            // アトラスが満杯（追い出しはしない＝空きは増えない）: 同じ大きさの字は二度と入らないので覚える
-            if self.atlas.insert(key.clone(), &glyph).is_none() {
-                self.unplaceable.insert(key);
+            self.insert_glyph(key, &glyph);
+        }
+        // アトラスのページ数・使用率を記録に写す（字ごとのログが有効なら 1 行出す。field_stats.rs）
+        self.field_stats.record_atlas(AtlasStatsSnapshot {
+            pages: self.atlas.page_count(),
+            max_pages: self.atlas.max_pages(),
+            glyphs: self.atlas.glyph_count(),
+            used_fraction_of_limit: self.atlas.used_fraction_of_limit(),
+        });
+        if self.field_stats.log_each() {
+            eprintln!("{} {}", field_settings::LOG_TAG, self.atlas.usage_line());
+        }
+    }
+
+    /// 焼いた字をアトラスへ入れる（いちばん新しいページ → 上限までページを足す）。上限なら、しばらく使われていないページを
+    /// 追い出して 1 回だけ入れ直す。追い出せるページも無ければ最後の手段として古いページの隙間へ入れる。
+    /// それでも入らなければ、空きができるまで焼き直さないよう `atlas_full` に覚える（`starved` を立てる）。
+    fn insert_glyph(&mut self, key: GlyphKey, glyph: &GlyphField) {
+        let placed = match self.atlas.insert(key.clone(), glyph) {
+            Some(info) => Some(info),
+            None if self.atlas.evict_idle_page(self.frame, ATLAS_EVICT_MIN_IDLE_FRAMES).is_some() => {
+                self.after_eviction();
+                self.atlas.insert(key.clone(), glyph)
+            }
+            None => self.atlas.insert_in_gaps(key.clone(), glyph),
+        };
+        match placed {
+            // 置いたページに今のフレームに使った印（すぐには追い出されない）
+            Some(info) => self.atlas.touch_page(info.page, self.frame),
+            None => {
+                // 追い出せるページも無かった: 警告（最初の 1 回）し、空きができるまで焼き直さない
+                self.atlas.warn_overflow_once();
+                self.atlas_full.insert(key);
+                self.starved = true;
             }
         }
     }
@@ -522,14 +641,18 @@ impl FontSystem {
         text_layout::advance_em(font, ch)
     }
 
-    /// アトラスを GPU にアップロードする（毎フレーム呼ぶ）。
-    pub fn flush(&mut self, queue: &wgpu::Queue) {
-        self.atlas.upload_if_dirty(queue);
+    /// アトラスを GPU にアップロードする（毎フレーム呼ぶ。描画を記録する前）。
+    ///
+    /// ページが増えていたらアトラスのテクスチャ配列が作り直されるので、bind group もここで作り直す。
+    pub fn flush(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.atlas.upload_if_dirty(device, queue) {
+            self.rebuild_atlas_bg(device);
+        }
     }
 
     /// atlas_bg を再構築する（アトラステクスチャ変更後に呼ぶ必要がある場合）。
     ///
-    /// 現在の実装ではアトラスはリサイズしないため通常不要。
+    /// ページが増えたとき `flush` が呼ぶ（それ以外では不要）。
     pub fn rebuild_atlas_bg(&mut self, device: &wgpu::Device) {
         self.atlas_bg = Self::create_atlas_bg(device, &self.pipeline, &self.atlas);
     }

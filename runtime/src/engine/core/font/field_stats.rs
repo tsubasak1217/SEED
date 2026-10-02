@@ -1,9 +1,12 @@
 // ============================================================
-//  font/field_stats.rs — MTSDF を焼いた数・時間・検査（安全弁）に落ちた字の記録とログ
+//  font/field_stats.rs — MTSDF を焼いた数・時間・検査（安全弁）に落ちた字の記録・アトラスのページ数と使用率のログ
 //
 //  【ログ】
 //  - 検査に落ちて真の SDF で描く字は、焼いたときに必ず 1 行出す（字・食い違いの画素・これまでの数と例）。
 //  - 環境変数 SEED_FONT_FIELD_LOG=1 なら、焼いた字ごとに大きさ・辺の数・各段の時間・検査の結果を 1 行ずつ出す（計測用）。
+//    まとめて焼いた回ごとに、アトラスのページ数・使用率の 1 行も出す（mod.rs の bake_and_insert・atlas.rs の usage_line）。
+//  - アトラスにページを足したとき・上限まで満杯になったときは atlas.rs が必ず 1 行出す（2026-10-03）。
+//  集計の 1 行（`summary_line`）にはアトラスのページ数・字数・上限に対する使用率も入る。
 // ============================================================
 
 use std::time::Duration;
@@ -15,6 +18,22 @@ use super::msdf::BakeStats;
 const MAX_FALLBACK_EXAMPLES: usize = 24;
 /// ミリ秒への換算。
 const MS_PER_SEC: f64 = 1000.0;
+
+/// アトラスの状態の写し（焼いて入れた後に FontSystem が写す。集計の 1 行に出す）。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AtlasStatsSnapshot {
+    /// 今あるページの数。
+    pub pages: u32,
+    /// ページの上限。
+    pub max_pages: u32,
+    /// 入っている字の数。
+    pub glyphs: usize,
+    /// 上限のページ数に対する使った高さの割合（0..1）。
+    pub used_fraction_of_limit: f32,
+}
+
+/// 百分率への換算。
+const PERCENT: f32 = 100.0;
 
 /// MTSDF を焼いた記録（FontSystem ごと）。
 #[derive(Debug, Default)]
@@ -33,6 +52,8 @@ pub struct FieldBakeStats {
     pub batches: usize,
     pub max_batch_time: Duration,
     pub max_batch_count: usize,
+    /// アトラスの最後の状態（ページ数・字数・使用率）。
+    pub atlas: AtlasStatsSnapshot,
     /// 字ごとにログを出すか。
     log_each: bool,
 }
@@ -102,6 +123,16 @@ impl FieldBakeStats {
         }
     }
 
+    /// アトラスの状態を写す（焼いて入れた後に毎回）。
+    pub fn record_atlas(&mut self, atlas: AtlasStatsSnapshot) {
+        self.atlas = atlas;
+    }
+
+    /// 字ごとのログを出すか（SEED_FONT_FIELD_LOG=1）。
+    pub fn log_each(&self) -> bool {
+        self.log_each
+    }
+
     /// 落ちた字の例（空白で区切る）。
     pub fn examples_text(&self) -> String {
         self.fallback_examples.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" ")
@@ -111,7 +142,7 @@ impl FieldBakeStats {
     pub fn summary_line(&self) -> String {
         let avg = if self.baked > 0 { ms(self.total_time) / self.baked as f64 } else { 0.0 };
         format!(
-            "MTSDF 焼いた字 {} 平均 {:.2} ms 最大 {:.2} ms（{}） まとめて焼いた最長 {:.2} ms（{} 字） 検査に落ちた字 {}（例: {}）",
+            "MTSDF 焼いた字 {} 平均 {:.2} ms 最大 {:.2} ms（{}） まとめて焼いた最長 {:.2} ms（{} 字） 検査に落ちた字 {}（例: {}） アトラス {}/{} ページ・{} 字・上限に対する使用率 {:.1}%",
             self.baked,
             avg,
             ms(self.max_time),
@@ -119,7 +150,11 @@ impl FieldBakeStats {
             ms(self.max_batch_time),
             self.max_batch_count,
             self.fallback,
-            self.examples_text()
+            self.examples_text(),
+            self.atlas.pages,
+            self.atlas.max_pages,
+            self.atlas.glyphs,
+            self.atlas.used_fraction_of_limit * PERCENT
         )
     }
 }
@@ -150,5 +185,9 @@ mod tests {
         assert_eq!(st.max_char, Some('鬱'));
         assert_eq!(st.total_time, Duration::from_millis(7));
         assert!(st.summary_line().contains("検査に落ちた字 1"));
+        // アトラスの状態は最後に写したものが集計に出る
+        st.record_atlas(AtlasStatsSnapshot { pages: 2, max_pages: 4, glyphs: 3100, used_fraction_of_limit: 0.375 });
+        let line = st.summary_line();
+        assert!(line.contains("アトラス 2/4 ページ・3100 字・上限に対する使用率 37.5%"), "{line}");
     }
 }

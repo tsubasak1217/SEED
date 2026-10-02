@@ -13,7 +13,9 @@
 //      浮動小数はビット列で比べる。-0.0 と 0.0 も別扱い＝計算結果が 1 ビットでも変わりうるものは別）
 //    - インライン画像の表（位置・パス・送り幅・高さ。送り幅が変われば行分割が変わる）
 //  値（行分割・行ごとの字の配置）はこれらだけの純関数なので、キーが同じなら作り直しと 1 ビットも違わない。
-//  字のアトラスの UV は一度入れた字では動かない（アトラスは追い出さない）ので、覚えた配置の UV も古くならない。
+//  字のアトラスの UV・ページは一度入れた字では動かない。アトラスが満杯でページを追い出すとき（2026-10-03）も、覚えた配置の字の
+//  ページは使い回すたびに使った印が付くので追い出されない（canvas_text.rs の page_mask・font/mod.rs の ATLAS_EVICT_MIN_IDLE_FRAMES）。
+//  追い出しの後は満杯で欠けた字を入れ直すために表を空にする（`clear`）。
 //  色・色区間・影・太さ・ピボット・行列（位置・スクロール）は**キーに入れない**（毎フレームの頂点の生成で使う。
 //  使い回すのは行列を掛ける前の「キャンバスのローカルの配置」だけ）。
 //
@@ -191,6 +193,12 @@ impl<V> TextLayoutCache<V> {
         self.previous = std::mem::take(&mut self.current);
     }
 
+    /// 覚えている値を全部捨てる（アトラスのページを追い出した後に、欠けていた字を入れ直すため。統計は残す）。
+    pub fn clear(&mut self) {
+        self.current.clear();
+        self.previous.clear();
+    }
+
     /// 覚えている値の数（2 世代の合計。診断とテスト用）。
     pub fn len(&self) -> usize {
         self.current.values().map(Vec::len).sum::<usize>() + self.previous.values().map(Vec::len).sum::<usize>()
@@ -291,6 +299,25 @@ mod tests {
             Some(2)
         });
         assert!(rebuilt, "消えた値は作り直す");
+    }
+
+    /// `clear` で全部捨てると、次は作り直す。
+    #[test]
+    fn clear_drops_all_values() {
+        let mut cache: TextLayoutCache<u32> = TextLayoutCache::new();
+        let s = spec(24.0);
+        let images = InlineImages::default();
+        cache.get_or_insert_with(probe("a", &s, &images), || Some(1));
+        cache.advance_generation();
+        cache.get_or_insert_with(probe("b", &s, &images), || Some(2));
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        let mut rebuilt = false;
+        cache.get_or_insert_with(probe("a", &s, &images), || {
+            rebuilt = true;
+            Some(1)
+        });
+        assert!(rebuilt);
     }
 
     /// 作れなかった（None）ものは覚えない。

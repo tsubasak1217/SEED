@@ -88,7 +88,7 @@
 | `ray_tracing` | RT の機能（RAY_QUERY・加速構造）をデバイスへ求めない（RT のパイプライン・TLAS・DDGI の更新・RT 影を作らない） | `Renderer::new`（`supports_rt`）・品質の上限 `translucency=raster` |
 | `post` | ブルーム・ビネット・FXAA を止める（トーンマップは残す） | 品質の上限 `bloom` / `vignette` / `fxaa` = false |
 | `picking` | エディタに接続していない Play（PC の単体の SEED.exe・パッケージ実行・Android）で、ID パスを描くとき（図鑑のサムネイルの撮影）にもピッキングの ID バッファ（画面と同じ大きさの Rgba32Float）を作らない。true（full）でも単体の Play では起動時には作らず、ID パスを描くときに初めて作る。Edit・エディタの Play（埋め込み・名前付きパイプでつながった別プロセス）・`SEED_ID_PASS_IN_PLAY` では旗によらず起動時から作る（§14.5） | `app/id_buffer_ops.rs`（`App::id_buffer_wanted`・`ensure_id_buffer`）・`app_init.rs`・`event_handler.rs`・`thumbnail_ops.rs` |
-| `memory_hint` | `"performance"`（既定）/ `"memory_usage"`。wgpu の `MemoryHints`。gpu-alloc（wgpu 25 の Vulkan）では、performance は転送用の塊を 128〜512 MiB・32 MiB 未満の資源を 2 の冪に切り上げた塊から、memory_usage は転送用 8〜64 MiB・8 MiB 以上の資源を専用に確保する | `Renderer::new`（`DeviceDescriptor::memory_hints`） |
+| `memory_hint` | `"performance"`（既定）/ `"memory_usage"`。wgpu の `MemoryHints`。gpu-alloc（wgpu 25 の Vulkan）では、performance は転送用の塊を 128〜512 MiB・32 MiB 未満の資源を 2 の冪に切り上げた塊から、memory_usage は転送用 8〜64 MiB・8 MiB 以上の資源を専用に確保する。**文字のグリフアトラスのページの上限も決める**（performance 4 ページ＝64 MiB まで・memory_usage 2 ページ＝32 MiB まで。1 ページ 16 MiB で、字が増えたときだけ足す。`project_settings.json` の `font.atlas_pages` があればそちら。2026-10-03。[ui_components.md](ui_components.md) §12.15） | `Renderer::new`（`DeviceDescriptor::memory_hints`）・`font/field_settings.rs`（`atlas_page_limit`。`FontConfig::canvas` / `default`） |
 
 - 旗は「止める」向きにだけ効く。資源は起動時に確保するので、実行中には変えられない（再起動が要る）。
 - **`scene_3d: false` は 3D だけの資源をまとめて止める**: 影・GI・bindless・レイトレーシング・デファードは、個々の旗が true でも作らない

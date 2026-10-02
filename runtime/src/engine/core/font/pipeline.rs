@@ -1,7 +1,8 @@
 // ============================================================
 //  font/pipeline.rs — テキスト wgpu パイプライン
 //
-//  Group 0 : グリフアトラス (R8Unorm の SDF / Rgba8Unorm の MTSDF) + サンプラー
+//  Group 0 : グリフアトラス (R8Unorm の SDF / Rgba8Unorm の MTSDF。テクスチャ配列＝1 層 1 ページ) + サンプラー
+//  ページ番号は頂点（`TextVertex::page`）で運ぶので、どのページの字も 1 本のバッチ・1 回の描画で描ける（2026-10-03）。
 //
 //  描画は距離場（旧 Bitmap モードは廃止したので uniform も不要になった）。
 //  距離場の種類でフラグメントシェーダーの入口を選ぶ（text.wgsl の fs_sdf / fs_mtsdf。頂点の形は共通）。
@@ -40,6 +41,10 @@ pub struct TextVertex {
     /// シェーダーは「1 テクセルあたりの値の変化 = 0.5 ÷ (0.125 em × これ)」と「画面の上の文字の大きさ = これ ÷ 1 画素のテクセル数」
     /// を求める（2026-10-02。字ごとに解像度が違ってよい）。
     pub field_em: f32,
+    /// このグリフが置かれたアトラスのページ（テクスチャ配列の層の番号。atlas.rs の GlyphInfo::page。2026-10-03）。
+    ///
+    /// クアッド内で定数。シェーダーは補間しない整数（flat）で受けて `textureSample(atlas, samp, uv, page)` で読む。
+    pub page: u32,
 }
 
 // ── 頂点属性のオフセット（マジックナンバーをここへ集約する）────
@@ -60,6 +65,8 @@ const ATTR_OFFSET_WEIGHT_DIST: u64 = 56;
 const ATTR_OFFSET_SOFTNESS: u64 = 60;
 /// field_em (f32) のバイトオフセット。
 const ATTR_OFFSET_FIELD_EM: u64 = 64;
+/// page (u32) のバイトオフセット。
+const ATTR_OFFSET_PAGE: u64 = 68;
 
 // ── TextPipeline ──────────────────────────────────────────────
 
@@ -100,7 +107,8 @@ impl TextPipeline {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        // 1 層 = 1 ページのテクスチャ配列（層が 1 枚でも配列として束ねる。atlas.rs）
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,
@@ -174,6 +182,12 @@ impl TextPipeline {
                     format: wgpu::VertexFormat::Float32,
                     offset: ATTR_OFFSET_FIELD_EM,
                     shader_location: 7,
+                },
+                // location 8: page (u32) — アトラスのページ（テクスチャ配列の層）
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint32,
+                    offset: ATTR_OFFSET_PAGE,
+                    shader_location: 8,
                 },
             ],
         };
@@ -255,8 +269,8 @@ mod tests {
     #[test]
     fn vertex_layout_offsets_match_struct() {
         // position(12) + uv(8) + color(16) + outline_color(16)
-        //   + outline_dist(4) + weight_dist(4) + softness(4) + field_em(4) = 68
-        assert_eq!(std::mem::size_of::<TextVertex>(), 68);
+        //   + outline_dist(4) + weight_dist(4) + softness(4) + field_em(4) + page(4) = 72
+        assert_eq!(std::mem::size_of::<TextVertex>(), 72);
         assert_eq!(ATTR_OFFSET_POSITION, 0);
         assert_eq!(ATTR_OFFSET_UV, 12);
         assert_eq!(ATTR_OFFSET_COLOR, 20);
@@ -265,6 +279,10 @@ mod tests {
         assert_eq!(ATTR_OFFSET_WEIGHT_DIST, 56);
         assert_eq!(ATTR_OFFSET_SOFTNESS, 60);
         assert_eq!(ATTR_OFFSET_FIELD_EM, 64);
+        assert_eq!(ATTR_OFFSET_PAGE, 68);
+        // 実体のオフセットとも一致すること（欄の並びを変えた事故の検出）
+        assert_eq!(std::mem::offset_of!(TextVertex, field_em) as u64, ATTR_OFFSET_FIELD_EM);
+        assert_eq!(std::mem::offset_of!(TextVertex, page) as u64, ATTR_OFFSET_PAGE);
     }
 
     /// シェーダーが naga で parse + validate できること。

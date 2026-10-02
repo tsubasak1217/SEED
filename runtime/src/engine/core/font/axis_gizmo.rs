@@ -402,7 +402,7 @@ impl AxisGizmo {
             );
         }
 
-        self.font_system.flush(queue);
+        self.font_system.flush(device, queue);
         let text = self.font_system.build_gpu_batch(&text_batch, device);
 
         GpuAxisGizmoBatch {

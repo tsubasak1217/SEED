@@ -157,6 +157,8 @@ pub struct CanvasTextRenderer {
     frame_batch: TextBatch,
     /// 使い回しの GPU バッファ（`upload` で `frame_batch` を送る）。
     gpu: TextGpuStream,
+    /// レイアウトの使い回しを作った時点のアトラスの追い出しの回数（増えたら、満杯で欠けていた字を入れ直すために作り直す）。
+    seen_evictions: u64,
 }
 
 /// 1 つのテキストの「行列を掛ける前」の配置（行分割の結果と、行ごとの字の並び）。
@@ -167,6 +169,8 @@ struct CachedItemLayout {
     layout: ResolvedLayout,
     /// 行ごとの字の配置（アトラスの UV と送り幅）。
     lines: Vec<LineLayout>,
+    /// 字が置かれたアトラスのページ（ビット `1 << page` の和）。使い回すたびにページへ使った印を付ける（追い出しの順）。
+    page_mask: u64,
 }
 
 impl CanvasTextRenderer {
@@ -190,6 +194,7 @@ impl CanvasTextRenderer {
                 layouts: TextLayoutCache::new(),
                 frame_batch: TextBatch::new(),
                 gpu: TextGpuStream::new(),
+                seen_evictions: 0,
             }),
             Err(e) => {
                 eprintln!("[SEED TEXT] フォントの初期化に失敗しました: {e:?}");
@@ -201,8 +206,17 @@ impl CanvasTextRenderer {
     /// フレームの頭に呼ぶ（全ゾーンの `build_grouped` より前に 1 回）。
     ///
     /// CPU のバッチを空にし、行分割の使い回しの世代を進める（前のフレームで描かなかったテキストの配置を捨てる）。
+    /// アトラスのフレームも進める（満杯なら、しばらく使われていないページを追い出す）。ページが追い出されていたら
+    /// 使い回しを全部捨てる（満杯で欠けていた字を次のレイアウトで焼いて入れるため。覚えた配置が指すページは毎フレーム
+    /// 使った印が付くので、追い出されるのは覚えた配置が指さないページだけ＝捨てるのは欠けた字のため）。
     pub fn begin_frame(&mut self) {
         self.frame_batch.clear();
+        self.font.begin_frame();
+        let evictions = self.font.atlas_evictions();
+        if evictions != self.seen_evictions {
+            self.seen_evictions = evictions;
+            self.layouts.clear();
+        }
         self.layouts.advance_generation();
     }
 
@@ -253,7 +267,7 @@ impl CanvasTextRenderer {
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         crate::profile_scope!("描画/UI/テキスト/GPU 転送");
         // 新しく増えたグリフをアトラスへアップロードする（毎フレーム必須）。
-        self.font.flush(queue);
+        self.font.flush(device, queue);
         self.gpu.upload(device, queue, &self.frame_batch);
     }
 
@@ -334,6 +348,8 @@ impl CanvasTextRenderer {
         else {
             return;
         };
+        // 使い回した配置の字のページに、今のフレームに使った印を付ける（このフレームの頂点が読むページを追い出さない）
+        font_system.touch_atlas_pages(cached.page_mask);
         let layout: &ResolvedLayout = &cached.layout;
         let lines: &[LineLayout] = &cached.lines;
 
@@ -426,7 +442,13 @@ impl CanvasTextRenderer {
                 &layout.images,
             ));
         }
-        Some(CachedItemLayout { layout, lines })
+        // 字のページの組（ビットの和。使い回すたびに印を付ける）
+        let page_mask = lines
+            .iter()
+            .flat_map(|line| line.glyphs.iter())
+            .filter_map(|placed| placed.info.map(|info| 1u64 << info.page))
+            .fold(0u64, |mask, bit| mask | bit);
+        Some(CachedItemLayout { layout, lines, page_mask })
     }
 
     /// 1 行分のグリフを準備し、行幅を測る。
@@ -588,6 +610,8 @@ fn emit_glyph_quads(
                     [info.uv_min[0], info.uv_min[1]],
                     [info.uv_max[0], info.uv_max[1]],
                     info.field_em_px,
+                    // 字のページ（アトラスのテクスチャ配列の層）。ページが違っても同じバッチに積む
+                    info.page,
                     &shading,
                 );
             }

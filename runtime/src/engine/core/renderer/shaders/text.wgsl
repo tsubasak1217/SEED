@@ -1,7 +1,9 @@
 // ============================================================
 //  text.wgsl — スクリーン空間テキスト描画シェーダー（距離場: 1 チャネルの SDF / MTSDF）
 //
-//  Group 0 : グリフアトラス テクスチャ + サンプラー
+//  Group 0 : グリフアトラス テクスチャ配列（1 層 = 1 ページ。2026-10-03） + サンプラー
+//    字のページ（層の番号）は頂点の `page` で運び、補間しない整数（flat）で受けて層を選ぶ（font/atlas.rs。
+//    ページごとにバッチを分けない＝どのページの字も 1 回の描画で描ける）。
 //    - fs_sdf   … R8 の 1 チャネルの SDF（em 64・spread 8。font/rasterizer.rs。2026-10-01 までの方式。A/B と退避に残す）
 //    - fs_mtsdf … RGBA8 の MTSDF（em 40〜64・spread = 0.125 em。font/msdf/。2026-10-02 からの既定）。
 //                 赤・緑・青 = 輪郭から作った MSDF（3 つの中央値が形。拡大しても角が立つ）、アルファ = 真の SDF。
@@ -53,7 +55,7 @@
 //  （式を変えるときは両方直すこと）。
 // ============================================================
 
-@group(0) @binding(0) var atlas      : texture_2d<f32>;
+@group(0) @binding(0) var atlas      : texture_2d_array<f32>;
 @group(0) @binding(1) var atlas_samp : sampler;
 
 // ── 定数（マジックナンバー禁止）────────────────────────────────
@@ -88,6 +90,7 @@ struct VertIn {
     @location(5) weight_dist   : f32,
     @location(6) softness      : f32,
     @location(7) field_em      : f32,
+    @location(8) page          : u32,
 }
 
 struct VertOut {
@@ -101,6 +104,8 @@ struct VertOut {
     @location(5)       softness      : f32,
     // このグリフの距離場の解像度（em あたりのテクセル数）。クアッド内で定数
     @location(6)       field_em      : f32,
+    // このグリフのアトラスのページ（テクスチャ配列の層）。整数なので補間しない
+    @location(7) @interpolate(flat) page : u32,
 }
 
 // ── 頂点シェーダー ────────────────────────────────────────────
@@ -117,12 +122,14 @@ fn vs_main(in: VertIn) -> VertOut {
     out.weight_dist   = in.weight_dist;
     out.softness      = in.softness;
     out.field_em      = in.field_em;
+    out.page          = in.page;
     return out;
 }
 
 // ── 塗り方の部品 ──────────────────────────────────────────────
 
 /// 画面の 1 画素がアトラスの何テクセルか（UV の x・y の微分の二乗平均。分岐の前に呼ぶこと）。
+/// どのページも同じ大きさなので、テクスチャ配列の 1 層の大きさで換算する。
 fn texels_per_pixel(uv: vec2<f32>) -> f32 {
     let tex_size = vec2<f32>(textureDimensions(atlas));
     let dx = dpdx(uv) * tex_size;
@@ -209,7 +216,7 @@ fn shade(d_shape: f32, d_true: f32, texels: f32, in: VertOut) -> vec4<f32> {
 /// 1 チャネルの SDF（R8）。
 @fragment
 fn fs_sdf(in: VertOut) -> @location(0) vec4<f32> {
-    let d = textureSample(atlas, atlas_samp, in.uv).r;
+    let d = textureSample(atlas, atlas_samp, in.uv, in.page).r;
     let texels = max(texels_per_pixel(in.uv), TEXT_MIN_TEXELS_PER_PX);
     let color = shade(d, d, texels, in);
     if color.a < TEXT_ALPHA_EPSILON { discard; }
@@ -219,7 +226,7 @@ fn fs_sdf(in: VertOut) -> @location(0) vec4<f32> {
 /// MTSDF（RGBA8。赤・緑・青 = MSDF、アルファ = 真の SDF）。
 @fragment
 fn fs_mtsdf(in: VertOut) -> @location(0) vec4<f32> {
-    let s = textureSample(atlas, atlas_samp, in.uv);
+    let s = textureSample(atlas, atlas_samp, in.uv, in.page);
     let texels = max(texels_per_pixel(in.uv), TEXT_MIN_TEXELS_PER_PX);
     // 形の距離: 拡大では中央値（角が立つ）、縮小では真の SDF（小さな文字の滑らかさ）。
     let d_shape = mix(median3(s.r, s.g, s.b), s.a, mtsdf_true_weight(texels));

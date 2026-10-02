@@ -212,7 +212,7 @@ impl ScreenHintOverlay {
                 HINT_FONT_SIZE, HINT_COLOR, screen_w, screen_h,
             );
         }
-        self.font_system.flush(queue);
+        self.font_system.flush(device, queue);
         let text = self.font_system.build_gpu_batch(&batch, device)?;
 
         Some(GpuHintBatch { plate, text })

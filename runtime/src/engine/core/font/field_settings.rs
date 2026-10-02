@@ -1,10 +1,12 @@
 // ============================================================
-//  font/field_settings.rs — 文字の距離場の設定（sdf / mtsdf・辺の色分け）を決めてプロセスへ登録する
+//  font/field_settings.rs — 文字の距離場の設定（sdf / mtsdf・辺の色分け・アトラスのページの上限）を決めてプロセスへ登録する
 //
 //  【データ】
-//    project_settings.json の "font": { "distance_field": "mtsdf" | "sdf", "msdf_coloring": "ink_trap" | "simple" }
+//    project_settings.json の "font": { "distance_field": "mtsdf" | "sdf", "msdf_coloring": "ink_trap" | "simple",
+//                                       "atlas_pages": 1〜8（省略可。2026-10-03） }
 //    起動オプション（検証・A/B 用。PC は --font-distance-field=<sdf|mtsdf>）: 設定より優先する。
-//  既定は mtsdf・ink_trap（キーが無い・読めない値は既定のまま＋警告）。
+//  既定は mtsdf・ink_trap・ページの上限は render.profile の memory_hint で決める（performance は 4・memory_usage は 2。
+//  `atlas_page_limit`）。キーが無い・読めない値は既定のまま＋警告。
 //
 //  【効く場所】
 //  キャンバスの文字の描画器（canvas_text.rs の FontSystem。FontConfig::canvas）が作られるときに 1 回読む
@@ -18,6 +20,7 @@ use serde_json::Value;
 
 use super::glyph_field::DistanceFieldKind;
 use super::msdf::ColoringStrategy;
+use crate::engine::core::renderer::render_profile::MemoryHint;
 
 /// project_settings.json の文字の節のキー。
 pub const FONT_KEY: &str = "font";
@@ -25,6 +28,15 @@ pub const FONT_KEY: &str = "font";
 pub const DISTANCE_FIELD_KEY: &str = "distance_field";
 /// MSDF の辺の色分けのキー（font 節の中）。
 pub const COLORING_KEY: &str = "msdf_coloring";
+/// グリフアトラスのページの上限のキー（font 節の中。整数 1〜`MAX_ATLAS_PAGES_SETTING`。2026-10-03）。
+pub const ATLAS_PAGES_KEY: &str = "atlas_pages";
+
+/// アトラスのページの上限の既定（1 ページ 16 MiB × 4 = 64 MiB まで。MTSDF なら全角のふつうの字で約 10,000 字）。
+pub const DEFAULT_ATLAS_PAGES: u32 = 4;
+/// render.profile の memory_hint が memory_usage のときのページの上限（32 MiB まで。MTSDF で約 5,000 字）。
+pub const MEMORY_SAVING_ATLAS_PAGES: u32 = 2;
+/// 設定 `font.atlas_pages` で書ける上限（8 ページ = 128 MiB。これを超える値は警告して既定のまま）。
+pub const MAX_ATLAS_PAGES_SETTING: u32 = 8;
 /// 起動ログの行頭の印。
 pub const LOG_TAG: &str = "[SEED FONT]";
 /// 1 グリフごとの焼き時間・検査の結果をログへ出す環境変数（値が 1 のとき。計測用）。
@@ -37,13 +49,35 @@ pub struct FontFieldSettings {
     pub kind: DistanceFieldKind,
     /// MSDF の辺の色分け。
     pub coloring: ColoringStrategy,
+    /// グリフアトラスのページの上限（設定に書かれた値。None = memory_hint で決める。`atlas_page_limit`）。
+    pub atlas_pages: Option<u32>,
 }
 
 impl FontFieldSettings {
     /// 起動ログの 1 行。
     pub fn log_line(&self, source: &str) -> String {
-        format!("distance_field={} msdf_coloring={} source={source}", self.kind.as_str(), self.coloring.as_str())
+        let pages = self.atlas_pages.map(|n| n.to_string()).unwrap_or_else(|| "auto".to_string());
+        format!(
+            "distance_field={} msdf_coloring={} atlas_pages={pages} source={source}",
+            self.kind.as_str(),
+            self.coloring.as_str()
+        )
     }
+}
+
+/// グリフアトラスのページの上限を決める【純関数】: 設定 `font.atlas_pages` があればそれ、
+/// 無ければ render.profile の memory_hint（memory_usage は `MEMORY_SAVING_ATLAS_PAGES`・ほかは `DEFAULT_ATLAS_PAGES`）。
+pub fn atlas_page_limit(settings: &FontFieldSettings, memory_hint: MemoryHint) -> u32 {
+    settings.atlas_pages.unwrap_or(match memory_hint {
+        MemoryHint::MemoryUsage => MEMORY_SAVING_ATLAS_PAGES,
+        MemoryHint::Performance => DEFAULT_ATLAS_PAGES,
+    })
+}
+
+/// 今の設定と今の描画の構成（render.profile）から、グリフアトラスのページの上限を決める。
+pub fn active_atlas_page_limit() -> u32 {
+    let memory_hint = crate::engine::core::renderer::render_profile::active_flags().memory_hint;
+    atlas_page_limit(&active(), memory_hint)
 }
 
 /// 設定を決める【純関数】: 既定 ← project_settings.json の font 節 ← 起動オプション。
@@ -71,6 +105,14 @@ pub fn resolve_font_field_settings(settings_json: &str, launch: Option<&str>) ->
                 match v.as_str().and_then(ColoringStrategy::parse) {
                     Some(c) => settings.coloring = c,
                     None => warnings.push(format!("{FONT_KEY}.{COLORING_KEY} = {v} は知りません（ink_trap / simple）。既定のまま続けます")),
+                }
+            }
+            if let Some(v) = font.get(ATLAS_PAGES_KEY) {
+                match v.as_u64().filter(|n| (1..=u64::from(MAX_ATLAS_PAGES_SETTING)).contains(n)) {
+                    Some(n) => settings.atlas_pages = Some(n as u32),
+                    None => warnings.push(format!(
+                        "{FONT_KEY}.{ATLAS_PAGES_KEY} = {v} は使えません（1〜{MAX_ATLAS_PAGES_SETTING} の整数）。既定（memory_hint で決める）のまま続けます"
+                    )),
                 }
             }
         }
@@ -115,7 +157,7 @@ mod tests {
     #[test]
     fn resolves_in_order() {
         let (s, src, w) = resolve_font_field_settings("", None);
-        assert_eq!(s, FontFieldSettings { kind: DistanceFieldKind::Mtsdf, coloring: ColoringStrategy::InkTrap });
+        assert_eq!(s, FontFieldSettings { kind: DistanceFieldKind::Mtsdf, coloring: ColoringStrategy::InkTrap, atlas_pages: None });
         assert_eq!(src, "既定");
         assert!(w.is_empty());
 
@@ -132,5 +174,27 @@ mod tests {
         let (s, _, w) = resolve_font_field_settings(r#"{"font":{"distance_field":"bitmap"}}"#, Some("nope"));
         assert_eq!(s.kind, DistanceFieldKind::Mtsdf);
         assert_eq!(w.len(), 2, "設定と起動オプションの両方を警告: {w:?}");
+    }
+
+    /// ページの上限: 設定が無ければ memory_hint（performance 4・memory_usage 2）、設定 1〜8 はそのまま、範囲外・整数でない値は警告して既定。
+    #[test]
+    fn atlas_page_limit_from_settings_and_memory_hint() {
+        let (s, _, w) = resolve_font_field_settings("", None);
+        assert!(w.is_empty());
+        assert_eq!(atlas_page_limit(&s, MemoryHint::Performance), DEFAULT_ATLAS_PAGES);
+        assert_eq!(atlas_page_limit(&s, MemoryHint::MemoryUsage), MEMORY_SAVING_ATLAS_PAGES);
+        assert!(MEMORY_SAVING_ATLAS_PAGES < DEFAULT_ATLAS_PAGES, "メモリを節約する構成のほうが少ない");
+
+        let (s, _, w) = resolve_font_field_settings(r#"{"font":{"atlas_pages":6}}"#, None);
+        assert!(w.is_empty());
+        assert_eq!(s.atlas_pages, Some(6));
+        assert_eq!(atlas_page_limit(&s, MemoryHint::MemoryUsage), 6, "設定は memory_hint より優先");
+        assert!(s.log_line("x").contains("atlas_pages=6"));
+
+        for bad in [r#"{"font":{"atlas_pages":0}}"#, r#"{"font":{"atlas_pages":9}}"#, r#"{"font":{"atlas_pages":"4"}}"#, r#"{"font":{"atlas_pages":2.5}}"#] {
+            let (s, _, w) = resolve_font_field_settings(bad, None);
+            assert_eq!(s.atlas_pages, None, "{bad}");
+            assert_eq!(w.len(), 1, "{bad}: {w:?}");
+        }
     }
 }
