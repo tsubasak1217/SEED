@@ -28,7 +28,16 @@ public sealed partial class ScreenStack
     private bool _destroyed;
 
     /// <inheritdoc />
-    bool INavigator.WouldHandleBack()
+    bool INavigator.WouldHandleBack() => WouldHandleBack();
+
+    /// <inheritdoc />
+    IBackPreviewTarget? INavigator.BackPreviewTarget => BackPreviewTarget;
+
+    /// <summary>
+    /// 今このスタックへ戻るを渡したら受けるか（副作用なし。<see cref="HandleBack"/> と同じ決め方。2026-10-02 に公開。
+    /// 独自の戻るの層の wants に使う）。
+    /// </summary>
+    public bool WouldHandleBack()
     {
         if (_model.Top is not { } top) return false;
         if (top.Options.IgnoreBack) return true;
@@ -36,8 +45,11 @@ public sealed partial class ScreenStack
         return _model.CanPop;
     }
 
-    /// <inheritdoc />
-    IBackPreviewTarget? INavigator.BackPreviewTarget
+    /// <summary>
+    /// 予測型の戻るのプレビューの相手（2026-10-02 に公開。根より上のとき、いちばん上の画面の枠を縮め、下の画面を見せる。戻るを無視する画面・
+    /// 出入りの途中・できあがっていない画面は null）。独自の戻るの層の preview に使う（呼ぶたびに新しい相手を作る）。
+    /// </summary>
+    public IBackPreviewTarget? BackPreviewTarget
     {
         get
         {

@@ -15,7 +15,10 @@ namespace SEED.UI;
 //    OnBackPressed()     … 戻るを受けた。true を返すとスタックは下ろさない（未保存の確認ダイアログを出す・鳴動の画面で無視する）
 //    WouldConsumeBack()  … 今、戻るが来たら OnBackPressed が true を返すか（副作用なしの問い。予測型の戻るの判定に使う。
 //                           OnBackPressed を上書きしたら、同じ条件でこれも上書きする。上書きしなければ「受ける」とみなす）
+//    IsPrewarmReady      … 作り置き（ScreenStack.Prewarm）の画面が温まったか（2026-10-02。重い準備を Update で続ける画面が、
+//                           済むまで false を返すと、作り置きはそれまで「作っている途中」のまま。既定は true）
 //  付けなくてもよい（ただのプレハブも積める）。Close(result) で自分を下ろし、結果を積んだ側へ返す（ScreenHandle.Closed）。
+//  作り置きを使い回す（PrewarmMode.Reuse）画面には、使うたびに OnScreenEnter、外れるたびに OnScreenExit が届く（前の状態は Enter で作り直す）。
 // ============================================================
 
 /// <summary>画面のスクリプトの土台。</summary>
@@ -71,6 +74,14 @@ public abstract class UiScreen : UiWidget
 
     /// <summary>戻るを受けそうか（画面のスタックの問いの入口。<see cref="WouldConsumeBack"/> を呼ぶ）。</summary>
     internal bool MayConsumeBack() => WouldConsumeBack();
+
+    /// <summary>
+    /// 作り置き（<see cref="ScreenStack.Prewarm(string, PrewarmOptions?)"/>）の画面が温まったか（2026-10-02）。
+    /// 隠した枠の中でも部品のスクリプトは動くので、重い準備（ホイールの行・一覧の行の生成など）を Update で続ける画面は、
+    /// 済むまで false を返すと、作り置きは貸せる状態にならず作っている途中のまま（積まれたらその場で続ける）。
+    /// 既定は true（できあがって数フレーム〈PrewarmSlot.SettleFrames〉で温まったとみなす）。待つ上限は PrewarmSlot.MaxWaitFrames。
+    /// </summary>
+    protected internal virtual bool IsPrewarmReady => true;
 
     /// <summary>型が OnBackPressed を上書きしているか（UiScreen 自身の既定の実装でなければ true）。</summary>
     private static bool OverridesOnBackPressed(Type type)

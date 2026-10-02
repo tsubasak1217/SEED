@@ -89,6 +89,22 @@ public sealed class FocusModel<T> where T : class
     public bool HasScope(object scope) => _scopes.Contains(scope);
 
     /// <summary>
+    /// 範囲を重ねる範囲にする・外す（2026-10-02。覆いを画面の下へ回す〈ModalHost.Park〉間は画面の範囲と同じ扱いにして、
+    /// 上に積んだ画面の範囲が前に出られるようにする）。並びは変えない（前後は BringToFront・SendToBack で決める）。
+    /// </summary>
+    /// <param name="scope">範囲。</param>
+    /// <param name="overlay">重ねる範囲にするか。</param>
+    public void SetOverlay(object scope, bool overlay)
+    {
+        if (ReferenceEquals(scope, RootScope)) return;
+        if (overlay) _overlays.Add(scope);
+        else _overlays.Remove(scope);
+    }
+
+    /// <summary>重ねる範囲か。</summary>
+    public bool IsOverlay(object scope) => _overlays.Contains(scope);
+
+    /// <summary>
     /// 相手をフォーカスにしたい。範囲の覚えとして記し、その範囲がいちばん前なら今のフォーカスになる（true）。
     /// 知らない範囲は足す（後ろ＝根のすぐ前）。
     /// </summary>
