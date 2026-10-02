@@ -3994,7 +3994,11 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   温め描きが利用者に見えないか（根の画面が不透明な前提）、`Reuse` で戻した画面の 2 回目の `OnScreenEnter`、動きなしの覆い・シートの開閉、覆いの高さいっぱい、
   ポップアップの見た目（札の大きさ・× の位置・出入り）、`Park` した覆いの上を全画面が出入りする見え方・戻る・フォーカス、`CloseAll(false)` の直後に全画面を積む流れ。
   (2) **ポップアップのテンプレートのサムネイルを撮り直す**（`templates/ui/thumbnails/popup.png` が無い。`template_actors.json` の `thumbnail_sample` は `Action: popup` で書いた。
-  editor/tools/SeedTemplateThumbnails で撮る）。
+  editor/tools/SeedTemplateThumbnails で撮る）。→ 2026-10-03 撮った（L1-6。札の左右と × が切れないよう `frame: 320` を外して舞台の全体 360 dp を切り出す）。
+  撮った絵で気付いたこと（直していない）: 中身の `nav_overlay_content.actor` の「閉じる」ボタンが、ポップアップの札の中では板の無い文字だけになり、
+  文字が札の左の余白へはみ出す（上からの覆いの中では幅いっぱいのボタン）。ボタンの `LayoutItem` は `preferred_width: 0` で、覆いは縦の Stack の横を
+  引き伸ばすがポップアップの札は引き伸ばさない疑い（推論。撮った元の絵〈540 px〉で文字の中心が題の左端〈余白の始まり〉と一致＝幅 0 のボタンの中央）。
+  題も「プロフィール（上からの覆い）」のまま。ポップアップ向けの中身のプレハブを作るか札の並べ方を直したら `--only popup` で撮り直す。
   (3) 作り置きはプレハブ 1 つにつき 1 つ（同じ画面を 2 つ積むと 2 つ目はプレハブから作る）。隠した作り置きの部分木も毎フレームの走査に乗る（W3-6 (2) と同じ根）。
   温め描きは根の画面が透ける（`Opaque = false`）スタックでは見える。
   (4) `Park` は覆いの帯の面を想定して作った（シート・ダイアログを回すのも同じ規則で動く見込み〈推論・未確認〉）。全画面を `Replace` で替えると古い手札が閉じた時点で戻る
@@ -4266,8 +4270,11 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   ⑥一覧（ListView）を下まで送れる（窓の外の行へ移ってスクロール）⑦入力欄は Enter で入力を始め、Esc で外れ、確定の Enter で決定が二重に走らない
   ⑧ホイール・時刻ホイールが二重に動かない、をエディタの Play で確かめる。パッド（D-pad・South／East・左スティックの Y の符号〈gilrs の上 = 正は記憶による〉）は
   実機のパッドで確かめる。
-- [ ] **【中】テンプレートのサムネイル** — 2026-10-03。`template_actors.json` の `prefabs/ui_navigator.actor`（方向キー・パッドの操作）と
+- [x] **【中】テンプレートのサムネイル** — 2026-10-03。`template_actors.json` の `prefabs/ui_navigator.actor`（方向キー・パッドの操作）と
   `prefabs/focus_ring.actor`（フォーカスの枠）の `thumbnail` は空（撮っていない）。枠の見本の撮り方（ボタンに枠を重ねた絵）を `thumbnail_sample` で決めて撮り直す。
+  → 2026-10-03 済（L1-6）。`ui_navigator` はボタン 3 つ（`stand_in` button・Tonal）を置き、舞台のスクリプトの新しい見本の操作 `focus`
+  （UiNavigator が無ければ `ContentPrefab` の ui_navigator.actor を作り、`UiNavigation.FocusFirstIn` で最初のボタンへ枠つきでフォーカス）で撮った。
+  `focus_ring` は枠そのものを `frame: 200` で大きめに撮った。2 回撮って両方とも同じバイト列（35 件すべてに画像あり・プローブ 01 が通る）。
 - [ ] **【中】Esc が画面の組み立ての部品の無いシーンでも戻るの段へ届く** — 2026-10-03。UiNavigator はキャンセル（Escape）を `BackDispatcher.PollBackKey` へ回すので、
   ScreenStack・ModalHost の無いゲームのシーンでも戻るの段が動き、どの層も受けなければ `App.MoveTaskToBack()`（Android では背面へ。PC はログだけ）。
   ゲームが自分で Esc を読むなら `BackDispatcher.AddLayer` で受けるか `UiNavigationOptions.CancelDispatchesBack = false`。既定を false にするか、

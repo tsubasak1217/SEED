@@ -15,6 +15,8 @@
 //       overlay    … 上からの覆いを開く（中身は ContentPrefab）
 //       popup      … 中央のポップアップを開く（中身は ContentPrefab。2026-10-02）
 //       toast      … トーストを出す（受け皿 ToastHost が要る）
+//       focus      … 方向キー・パッドのフォーカスの枠を出す（舞台の読む順の最初の部品へ UiNavigation.FocusFirstIn。
+//                    シーンに UiNavigator が無ければ ContentPrefab〈ui_navigator.actor〉を舞台の根に作る。2026-10-03）
 //       line_chart … 折れ線グラフ（Target のノード）へ値を入れる（Values = 分。空の値は記録の無い日）
 //       bar_chart  … 棒グラフ（Target のノード）へ値を入れる（Values = ',' で棒、';' で積み上げ）
 //       none       … 何もしない（置いただけで見える部品）
@@ -55,6 +57,7 @@ public class ThumbnailStage : SEEDScript
     private const string ActionOverlay = "overlay";
     private const string ActionPopup = "popup";
     private const string ActionToast = "toast";
+    private const string ActionFocus = "focus";
     private const string ActionLineChart = "line_chart";
     private const string ActionBarChart = "bar_chart";
 
@@ -85,7 +88,7 @@ public class ThumbnailStage : SEEDScript
 
     // ── 欄（ツールが thumbnail_sample.script から書き込む）──────────
 
-    /// <summary>見本の操作（none・dialog・menu・progress・sheet・overlay・popup・toast・line_chart・bar_chart）。</summary>
+    /// <summary>見本の操作（none・dialog・menu・progress・sheet・overlay・popup・toast・focus・line_chart・bar_chart）。</summary>
     [SerializeField(Label = "見本の操作")]
     public string Action = ActionNone;
 
@@ -113,7 +116,7 @@ public class ThumbnailStage : SEEDScript
     [SerializeField(Label = "項目（| 区切り）")]
     public string Items = "";
 
-    /// <summary>シート・覆いの中身のプレハブ（assets://…）。</summary>
+    /// <summary>シート・覆い・ポップアップの中身のプレハブ（assets://…）。focus では UiNavigator が無いときに作る入口のプレハブ。</summary>
     [SerializeField(Label = "中身のプレハブ")]
     public string ContentPrefab = "";
 
@@ -149,6 +152,8 @@ public class ThumbnailStage : SEEDScript
     private float _sincePerformed;
     /// <summary>最後にやり直せなかった理由（諦めたときに添える）。</summary>
     private string _lastReason = "";
+    /// <summary>focus で入口（UiNavigator）のプレハブを作ったか（作るのは 1 度だけ。動き始めるのは次のフレーム）。</summary>
+    private bool _navigatorCreated;
 
     /// <summary>
     /// 毎フレーム: 見本の操作をできるまでやり直し、できたら待ってから合図を出す。
@@ -207,6 +212,8 @@ public class ThumbnailStage : SEEDScript
                 return Opened(Popup.Show(new PopupOptions { ContentPrefab = ContentPrefab }), "ModalHost", out reason);
             case ActionToast:
                 return Opened(Toast.Show(Message, UiIcon.Ring(), ToastLength.Long), "ToastHost", out reason);
+            case ActionFocus:
+                return ShowFocusRing(out reason);
             case ActionLineChart:
                 return FillLineChart(out reason);
             case ActionBarChart:
@@ -255,6 +262,42 @@ public class ThumbnailStage : SEEDScript
         SquareIconIndex => UiIcon.Square(),
         _ => UiIcon.Ring(),
     };
+
+    // ============================================================
+    //  フォーカスの枠（方向キー・パッドの操作）
+    // ============================================================
+
+    /// <summary>
+    /// 方向キー・パッドのフォーカスの枠を出す: 舞台（このスクリプトの付いた根）の下で読む順の最初の部品へ
+    /// 枠つきでフォーカスする（UiNavigation.FocusFirstIn）。枠を重ねるのは UiNavigator なので、
+    /// シーンに無ければ ContentPrefab（ui_navigator.actor）を舞台の根の子に 1 度だけ作る（動き始めるのは次のフレーム）。
+    /// 枠が見える状態（UiNavigation.IsRingVisible）になったらできたとする。
+    /// </summary>
+    /// <param name="reason">できなかった理由（できたら空）。</param>
+    /// <returns>枠が見える状態なら true（入口がまだ動いていない・部品がまだ測れていなければ false。次のフレームでやり直す）。</returns>
+    private bool ShowFocusRing(out string reason)
+    {
+        if (!UiNavigation.HasNavigator)
+        {
+            var prefab = ContentPrefab.Trim();
+            if (!_navigatorCreated && prefab.Length > 0)
+            {
+                GameObject.Instantiate(prefab, gameObject);
+                _navigatorCreated = true;
+            }
+            reason = "UiNavigator is not ready";
+            return false;
+        }
+        // 部品が作った直後でまだ測れていなければ FocusFirstIn は待ちに入って false を返す。毎フレーム頼み直してよい
+        if (!UiNavigation.IsRingVisible) UiNavigation.FocusFirstIn(gameObject, showRing: true);
+        if (UiNavigation.IsRingVisible)
+        {
+            reason = "";
+            return true;
+        }
+        reason = "no navigable widget is ready";
+        return false;
+    }
 
     // ============================================================
     //  グラフ

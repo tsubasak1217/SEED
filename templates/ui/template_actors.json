@@ -321,6 +321,16 @@
       "category": "UI/ナビゲーション",
       "tags": ["navigation", "keyboard", "gamepad", "focus", "d-pad", "方向キー", "キーボード", "ゲームパッド", "パッド", "フォーカス", "十字キー"],
       "thumbnail": "",
+      "thumbnail_sample": {
+        "stand_in": "prefabs/button.actor",
+        "frame": 240,
+        "instances": [
+          {"": {"Button": {"fields": {"Variant": "Tonal", "Text": "はじめる"}}}},
+          {"": {"Button": {"fields": {"Variant": "Tonal", "Text": "つづきから"}}}},
+          {"": {"Button": {"fields": {"Variant": "Tonal", "Text": "せってい"}}}}
+        ],
+        "script": {"Action": "focus", "ContentPrefab": "assets://ui/prefabs/ui_navigator.actor"}
+      },
       "requires": ["prefabs/focus_ring.actor"]
     },
     {
@@ -395,7 +405,6 @@
       "thumbnail_sample": {
         "stand_in": "prefabs/modal_host.actor",
         "placement": "fill",
-        "frame": 320,
         "script": {"Action": "popup", "ContentPrefab": "assets://ui/prefabs/nav_overlay_content.actor"},
         "settle": 1.5
       }
@@ -421,7 +430,8 @@
       "description": "方向キー・パッドで選んでいる部品に重ねる枠（縁だけの角丸の Sprite）。UiNavigator が実行中に 1 つ作る部品。見た目を作ったらアクタファイル化して UiNavigator の設定の「枠のプレハブ」に指定する（色・太さ・間・角丸はテーマの color.focus_ring・size.focus_ring_width・size.focus_ring_gap・radius.focus_ring が上書きする）。",
       "category": "UI/重ねる面の見た目",
       "tags": ["focus ring", "focus", "outline", "フォーカス", "枠", "見た目"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {"frame": 200}
     },
     {
       "path": "prefabs/line_chart.actor",

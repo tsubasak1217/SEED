@@ -414,6 +414,8 @@ dotnet run --project editor/tests/TemplateImportTests -- \
 
 - 2026-10-02: 全件（32 件）の画像を生成の道具（§9.10）で作って置いた（192×192・α なしの PNG・1 枚 1〜22 KB）。
   手で描いた画像に差し替えてもよい（同じ場所に置くか、`thumbnail` 欄で指す）。
+- 2026-10-03: 足した 3 件（`popup`・`focus_ring`・`ui_navigator`）を `--only` で撮った（35 件すべてに画像あり）。
+  見た目の無い `ui_navigator` は、ボタン 3 つを置いて最初のボタンにフォーカスの枠を出した絵（見本の操作 `focus`）。
 - git: `.gitignore` は `templates/**/*.png`（ライブラリの重い画像はローカルだけ）を除外するが、
   `!templates/**/thumbnails/*.png` の例外で見本の画像は**追跡する**。`.gitattributes` の `*.png` の規則で Git LFS に入る
   （エディタのアイコンと同じ）。
@@ -651,7 +653,7 @@ dotnet run --project editor/tools/SeedTemplateThumbnails -- [--only <名前>] [-
 | `patch` | 上書き `{ "<ノードのパス>": { "<コンポーネント名>": { …data へ深くマージ… } } }`。パスは根 = `""`・子は name を `/` でつなぐ。コンポーネント名 `$node` はノードそのもの（`canvas_transform` など） |
 | `instances` | 同じテンプレートを並べる（それぞれに `patch` と同じ形の上書きを重ねる。例 トグルのオンとオフ・一覧の 3 行） |
 | `spacing` | 並べる間隔（dp。既定 12） |
-| `script` | 舞台のスクリプトの欄 `Action`（`dialog`・`menu`・`progress`・`sheet`・`overlay`・`toast`・`line_chart`・`bar_chart`・`none`）・`Title`・`Message`・`PositiveText`・`NegativeText`・`Items`（`\|` 区切り。頭の `!` で危険・`~` で選べない）・`ContentPrefab`・`Values`（`,` 区切り。棒の積み上げは `;`・折れ線の空は記録の無い日）・`StartDate`（`yyyy-MM-dd`）・`Target`（既定は置いたテンプレートの根の名前） |
+| `script` | 舞台のスクリプトの欄 `Action`（`dialog`・`menu`・`progress`・`sheet`・`overlay`・`popup`・`toast`・`focus`・`line_chart`・`bar_chart`・`none`。`focus` は舞台の読む順の最初の部品へ方向キー・パッドのフォーカスの枠を出し、シーンに UiNavigator が無ければ `ContentPrefab` の入口を作る。2026-10-03）・`Title`・`Message`・`PositiveText`・`NegativeText`・`Items`（`\|` 区切り。頭の `!` で危険・`~` で選べない）・`ContentPrefab`・`Values`（`,` 区切り。棒の積み上げは `;`・折れ線の空は記録の無い日）・`StartDate`（`yyyy-MM-dd`）・`Target`（既定は置いたテンプレートの根の名前） |
 | `camera`・`light` | `model` の舞台のカメラ `{position, rotation, fov}`（m・度。左手系で前は +Z）と平行光 `{rotation, intensity}` |
 | `window` | `root_canvas` の舞台の窓（画素。既定 `[960, 540]`。設計の解像度にすると歪まない） |
 
