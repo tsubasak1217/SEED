@@ -118,24 +118,8 @@ fn sdf_value(dist_sq_to_opposite_center: i64, inside: bool, spread: u32) -> u8 {
 
 // ── サイズ非依存 SDF グリフ ───────────────────────────────────
 
-/// 固定 em サイズで焼いた 1 グリフぶんの SDF とそのメトリクス。
-///
-/// メトリクスはすべて **em 単位**（フォントサイズ 1.0 相当）で保持する。
-/// 描画時にフォントサイズを掛けるだけで任意サイズへ拡大縮小できる。
-pub struct GlyphSdf {
-    /// R8 の距離場データ（`width * height` バイト、行優先）。
-    pub data: Vec<u8>,
-    /// 距離場の幅（スプレッドぶんのパディング込み）。
-    pub width: u32,
-    /// 距離場の高さ（スプレッドぶんのパディング込み）。
-    pub height: u32,
-    /// ペン基点 → クアッド左上（Y 下向き、em 単位）。
-    pub bearing_em: [f32; 2],
-    /// パディング込みクアッドサイズ（em 単位）。
-    pub size_em: [f32; 2],
-    /// 水平アドバンス幅（em 単位）。
-    pub advance_em: f32,
-}
+/// 固定 em サイズで焼いた 1 グリフぶんの距離場（2026-10-02 から MTSDF と同じ形 `GlyphField` で返す。kind = Sdf・R8）。
+pub use super::glyph_field::GlyphField;
 
 /// グリフを固定 em サイズ（`SDF_EM_PX`）で SDF 化する。
 ///
@@ -150,8 +134,8 @@ pub struct GlyphSdf {
 ///
 /// スペース等アウトラインを持たないグリフは `None`（送り幅だけは
 /// `FontSystem::advance_em` が別途フォントから直接引く）。
-pub fn rasterize_glyph_sdf(font: &FontArc, codepoint: char) -> Option<GlyphSdf> {
-    use super::sdf::{SDF_EM_PX, SDF_SPREAD_PX};
+pub fn rasterize_glyph_sdf(font: &FontArc, codepoint: char) -> Option<GlyphField> {
+    use super::sdf::{SDF_EM_PX, SDF_SPREAD_EM, SDF_SPREAD_PX};
 
     // ── 1. 基準 em サイズでカバレッジを焼く ──
     let (bitmap, bw, bh, bearing_px, advance_px) =
@@ -173,10 +157,11 @@ pub fn rasterize_glyph_sdf(font: &FontArc, codepoint: char) -> Option<GlyphSdf> 
 
     // ── 4. メトリクスを em 単位へ正規化する ──
     let inv_em = 1.0 / SDF_EM_PX;
-    Some(GlyphSdf {
+    Some(GlyphField {
         data,
         width: padded_w,
         height: padded_h,
+        kind: super::glyph_field::DistanceFieldKind::Sdf,
         // パディングぶんクアッドは左上へ広がる。
         bearing_em: [
             (bearing_px[0] - pad as f32) * inv_em,
@@ -184,6 +169,9 @@ pub fn rasterize_glyph_sdf(font: &FontArc, codepoint: char) -> Option<GlyphSdf> 
         ],
         size_em: [padded_w as f32 * inv_em, padded_h as f32 * inv_em],
         advance_em: advance_px * inv_em,
+        pad_em: SDF_SPREAD_EM,
+        em_px: SDF_EM_PX,
+        msdf_fallback: false,
     })
 }
 

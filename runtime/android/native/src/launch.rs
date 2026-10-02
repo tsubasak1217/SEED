@@ -256,6 +256,8 @@ fn play_launch_args(
         gpu_timing: false,
         gpu_mem_log: false,
         render_profile: None,
+        // 文字の距離場は project_settings.json の font.distance_field（既定 mtsdf）。端末の起動オプションの上書きは無い。
+        font_distance_field: None,
         asset_overlay,
     }
 }

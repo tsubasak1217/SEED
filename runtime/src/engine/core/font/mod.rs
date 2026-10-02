@@ -2,11 +2,15 @@
 //  font/mod.rs — フォントシステム統合
 //
 //  【方式】
-//  グリフは常に **サイズ非依存 SDF**（固定 em 64px で焼いた距離場）としてアトラスへ入る。
+//  グリフは常に **サイズ非依存の距離場**（固定の大きさで焼いた距離場）としてアトラスへ入る。
 //  描画時にフォントサイズを掛けて拡大縮小するので、
 //    ・同じ文字はサイズが違っても 1 エントリで済む（アトラス消費が激減）
 //    ・拡大してもエッジが階段状にならない
 //    ・距離場を使って縁取り（アウトライン）を 1 パスで描ける
+//  距離場の種類（glyph_field.rs の DistanceFieldKind。設定は field_settings.rs）:
+//    ・MTSDF（既定。2026-10-02）… 輪郭から作る 3 チャネルの MSDF + 真の SDF（msdf/。RGBA8・em 40）。大きな文字でも角が立ち曲線が滑らか
+//    ・SDF（A/B と退避）       … em 64 で 2 値にしたビットマップから距離変換（rasterizer.rs。R8）
+//  キャンバスの文字は設定の種類、ギズモ・操作ガイドの文字は SDF（FontConfig::default）。
 //
 //  【フォント選択】
 //  `FontRegistry` がアセットパス → フォント ID を管理し、アトラスのキーに ID を含める。
@@ -25,6 +29,12 @@
 
 pub mod atlas;
 pub mod axis_gizmo;
+/// 文字の距離場の設定（sdf / mtsdf・辺の色分け。project_settings の font 節・起動オプション）
+pub mod field_settings;
+/// MTSDF を焼いた数・時間・検査に落ちた字の記録とログ
+pub mod field_stats;
+/// 焼き上がった 1 グリフの距離場（SDF / MTSDF）の形と距離場の種類
+pub mod glyph_field;
 /// キャンバス上の TextComponent 描画（CPU で NDC まで変換して既存パイプラインへ流す）
 pub mod canvas_text;
 /// 操作ガイドの背景プレート（角丸クアッド。screen_hint 専用の極小パイプライン）
@@ -34,6 +44,8 @@ pub mod icon_overlay;
 pub mod inline;
 /// 描画器を持たない層のための GPU 非依存フォントキャッシュ
 pub mod layout_fonts;
+/// 輪郭から作る MTSDF（3 チャネルの MSDF + 真の SDF。2026-10-02）
+pub mod msdf;
 pub mod pipeline;
 /// フォント実体のレジストリ（アセットパス → フォント ID）
 pub mod registry;
@@ -58,9 +70,13 @@ mod text_aa_tests;
 
 use crate::engine::core::renderer::gpu_mem::GpuMemDeviceExt;
 use ab_glyph::{Font, InvalidFont, PxScale, ScaleFont};
+use rayon::prelude::*;
 use std::collections::HashSet;
 
 use atlas::{GlyphAtlas, GlyphInfo, GlyphKey};
+use field_stats::FieldBakeStats;
+use glyph_field::{DistanceFieldKind, GlyphField};
+use msdf::{bake_glyph_mtsdf, BakeStats, ColoringStrategy};
 use pipeline::{TextPipeline, TextVertex};
 use rasterizer::rasterize_glyph_sdf;
 use registry::FontRegistry;
@@ -77,35 +93,47 @@ pub static DEFAULT_FONT_BYTES: &[u8] =
 /// ギズモ・操作ガイドのようにラテン数十文字しか使わない用途向け。
 pub const DEFAULT_ATLAS_SIZE: u32 = 2048;
 
-/// キャンバステキスト用アトラスサイズ（一辺のピクセル数）。
+/// キャンバステキスト用アトラスサイズ（一辺のピクセル数。1 チャネルの SDF のとき）。
 ///
 /// 日本語は使用字種が多い（HUD だけでも数百字）。em 64 + パディングで
-/// 1 グリフ ≒ 80x80px なので、4096 なら約 2500 字を保持できる。
+/// 全角 1 字 ≒ 60x60px なので、4096（R8 = 16 MiB）なら約 4,500 字を保持できる。
+/// MTSDF のときは `msdf::params::MTSDF_CANVAS_ATLAS_SIZE`（2048。RGBA8 = 16 MiB・約 2,500 字）。
 pub const CANVAS_ATLAS_SIZE: u32 = 4096;
 
+/// まとめて焼く字がこの数以上なら並列に焼く（MTSDF。1 字だけなら行の並列だけで足りる）。
+const PARALLEL_BAKE_MIN_GLYPHS: usize = 2;
+
 /// `FontSystem` の初期化パラメータ。
-///
-/// 描画方式は常に SDF なのでモード指定は持たない（旧 `FontMode` は廃止）。
 #[derive(Clone, Debug)]
 pub struct FontConfig {
     /// グリフアトラスの一辺ピクセル数。
     pub atlas_size: u32,
+    /// 距離場の種類（アトラスの形式とシェーダーの入口が決まる）。
+    pub field: DistanceFieldKind,
+    /// MSDF の辺の色分け（MTSDF のときだけ使う）。
+    pub coloring: ColoringStrategy,
 }
 
 impl Default for FontConfig {
+    /// ギズモ・操作ガイド用（ラテン数十字・小さい字なので 1 チャネルの SDF・2048² の R8 = 4 MiB。2026-10-01 までと同じ）。
     fn default() -> Self {
         Self {
             atlas_size: DEFAULT_ATLAS_SIZE,
+            field: DistanceFieldKind::Sdf,
+            coloring: ColoringStrategy::default(),
         }
     }
 }
 
 impl FontConfig {
-    /// キャンバステキスト用の設定（大きめのアトラス）。
+    /// キャンバステキスト用の設定（設定の距離場の種類・大きめのアトラス。どちらも 16 MiB）。
     pub fn canvas() -> Self {
-        Self {
-            atlas_size: CANVAS_ATLAS_SIZE,
-        }
+        let settings = field_settings::active();
+        let atlas_size = match settings.kind {
+            DistanceFieldKind::Sdf => CANVAS_ATLAS_SIZE,
+            DistanceFieldKind::Mtsdf => msdf::params::MTSDF_CANVAS_ATLAS_SIZE,
+        };
+        Self { atlas_size, field: settings.kind, coloring: settings.coloring }
     }
 }
 
@@ -225,6 +253,7 @@ impl TextBatch {
                 ],
                 info.uv_min,
                 info.uv_max,
+                info.field_em_px,
                 &GlyphShading::plain(color),
             );
 
@@ -239,16 +268,18 @@ impl TextBatch {
     /// 呼び出し側が済ませている場合に使う（キャンバステキストが CPU で
     /// カメラ VP まで通した結果を積むための入口）。
     ///
+    /// - `field_em`: このグリフの距離場の解像度（`GlyphInfo::field_em_px`）
     /// - `shading`: 色・縁取り・太さ・ぼかし（`GlyphShading`。px からの変換は
-    ///   `sdf::outline_px_to_sdf` / `sdf::px_to_sdf` を使う）
+    ///   `FontSystem::value_spec` を使う）
     pub fn add_quad_ndc(
         &mut self,
         corners: [[f32; 3]; 4],
         uv_min: [f32; 2],
         uv_max: [f32; 2],
+        field_em: f32,
         shading: &GlyphShading,
     ) {
-        self.push_quad(corners, uv_min, uv_max, shading);
+        self.push_quad(corners, uv_min, uv_max, field_em, shading);
     }
 
     /// 4 隅・UV・陰影からクアッドを積む共通処理（頂点順と索引の唯一の定義）。
@@ -257,6 +288,7 @@ impl TextBatch {
         corners: [[f32; 3]; 4],
         uv_min: [f32; 2],
         uv_max: [f32; 2],
+        field_em: f32,
         shading: &GlyphShading,
     ) {
         let base = self.vertices.len() as u32;
@@ -275,6 +307,7 @@ impl TextBatch {
                 outline_dist: shading.outline_dist,
                 weight_dist: shading.weight_dist,
                 softness: shading.softness,
+                field_em,
             });
         }
         self.indices
@@ -316,6 +349,8 @@ pub struct FontSystem {
     /// どちらも結果が変わらない（フォント ID の実体は固定・アトラスは追い出さない）ので、焼き直さずに飛ばす。
     /// `prepare_glyphs` の返り値は従来と同じ（どちらの字も返さない）。
     unplaceable: HashSet<GlyphKey>,
+    /// MTSDF を焼いた記録（数・時間・検査に落ちた字。ログは field_stats.rs）。
+    pub field_stats: FieldBakeStats,
 }
 
 impl FontSystem {
@@ -344,8 +379,8 @@ impl FontSystem {
         font_bytes: &'static [u8],
     ) -> Result<Self, InvalidFont> {
         let registry = FontRegistry::new(font_bytes)?;
-        let atlas = GlyphAtlas::new(device, config.atlas_size);
-        let pipeline = TextPipeline::new(device, surface_format, depth_format);
+        let atlas = GlyphAtlas::new(device, config.atlas_size, config.field);
+        let pipeline = TextPipeline::new(device, surface_format, depth_format, config.field);
 
         let atlas_bg = Self::create_atlas_bg(device, &pipeline, &atlas);
 
@@ -356,7 +391,18 @@ impl FontSystem {
             pipeline,
             atlas_bg,
             unplaceable: HashSet::new(),
+            field_stats: FieldBakeStats::new(field_settings::per_glyph_log_enabled()),
         })
+    }
+
+    /// 距離場の種類。
+    pub fn field_kind(&self) -> DistanceFieldKind {
+        self.config.field
+    }
+
+    /// px → 値の変換の決まり（縁取り・太さ・影のぼかし。距離場の種類ごと）。
+    pub fn value_spec(&self) -> sdf::FieldValueSpec {
+        self.config.field.value_spec()
     }
 
     /// アトラス用バインドグループ（Group 0）を作る。
@@ -381,55 +427,87 @@ impl FontSystem {
         })
     }
 
-    /// 指定フォントのグリフを取得またはラスタライズしてアトラスに追加する。
+    /// 指定フォントのグリフを取得または焼いてアトラスに追加する。
     ///
     /// - `font_path`: フォントのアセットパス。空文字 = 組み込みフォント。
     ///   未ロードならここで読み込まれる（失敗しても組み込みで描画は継続する）。
     ///
     /// 返り値: (char, GlyphInfo) ペアのリスト（スペース等アウトラインなしは除外）。
     /// メトリクスは **em 単位** なので、描画側でフォントサイズを掛けること。
+    ///
+    /// 【まとめて焼く（2026-10-02）】まだアトラスに無い字を先に集めて焼く。MTSDF は 1 字が SDF より重いので、
+    /// 2 字以上なら字ごとに並列で焼く（rayon。1 字の中も行ごとに並列）。アトラスへの登録は順に行う。
     pub fn prepare_glyphs(&mut self, text: &str, font_path: &str) -> Vec<(char, GlyphInfo)> {
         let font_id = self.registry.font_id(font_path);
-        let mut result = Vec::new();
 
+        // ── 1. まだアトラスに無い字を集める（重複なし・出た順）──
+        // 焼いても描くものが無い・アトラスに入らないと分かっている字は焼き直さない（2026-09-28）。
+        let mut missing: Vec<char> = Vec::new();
+        let mut seen: HashSet<char> = HashSet::new();
         for ch in text.chars() {
-            let key = GlyphKey {
-                font_id,
-                codepoint: ch,
+            let key = GlyphKey { font_id, codepoint: ch };
+            if self.atlas.get(&key).is_none() && !self.unplaceable.contains(&key) && seen.insert(ch) {
+                missing.push(ch);
+            }
+        }
+
+        // ── 2. 焼いてアトラスへ入れる ──
+        if !missing.is_empty() {
+            self.bake_and_insert(font_id, &missing);
+        }
+
+        // ── 3. 入力の順にグリフ情報を返す（アトラスに無い字は返さない）──
+        text.chars()
+            .filter_map(|ch| self.atlas.get(&GlyphKey { font_id, codepoint: ch }).map(|info| (ch, *info)))
+            .collect()
+    }
+
+    /// 字の列を焼いてアトラスへ入れる（焼けない字・入らない字は `unplaceable` へ覚える）。
+    fn bake_and_insert(&mut self, font_id: u16, chars: &[char]) {
+        // フォント実体は clone（Arc）して借用を分ける（このあとアトラスと記録を可変で使う）。
+        let font = self.registry.font(font_id).clone();
+        let kind = self.config.field;
+        let coloring = self.config.coloring;
+        let bake_one = |ch: char| -> Option<(GlyphField, Option<BakeStats>)> {
+            match kind {
+                DistanceFieldKind::Sdf => rasterize_glyph_sdf(&font, ch).map(|g| (g, None)),
+                DistanceFieldKind::Mtsdf => bake_glyph_mtsdf(&font, ch, coloring).map(|(g, st)| (g, Some(st))),
+            }
+        };
+        let batch_start = std::time::Instant::now();
+        let baked: Vec<(char, Option<(GlyphField, Option<BakeStats>)>)> =
+            if kind == DistanceFieldKind::Mtsdf && chars.len() >= PARALLEL_BAKE_MIN_GLYPHS {
+                // まとめて並列に焼く（この区間の時間 = 並列に焼いた壁時計の時間）
+                crate::profile_scope!("描画/UI/テキスト/グリフ焼き（並列）");
+                chars.par_iter().map(|&ch| (ch, bake_one(ch))).collect()
+            } else {
+                chars
+                    .iter()
+                    .map(|&ch| {
+                        // 初めて出る文字だけがここへ来る（呼び出し回数＝そのフレームに新しく焼いた字数。スクロール開始の山の切り分け用）
+                        crate::profile_scope!("描画/UI/テキスト/グリフ焼き");
+                        (ch, bake_one(ch))
+                    })
+                    .collect()
             };
-
-            // キャッシュ済みならそのまま使う。
-            if let Some(info) = self.atlas.get(&key) {
-                result.push((ch, *info));
-                continue;
-            }
-            // 焼いても描くものが無い・アトラスに入らないと分かっている字は焼き直さない（2026-09-28）。
-            // 以前はスペースなどアウトラインの無い字をフレームごとに焼きに行っていた（PC の計測で 1 フレーム約 25 回）。
-            if self.unplaceable.contains(&key) {
-                continue;
-            }
-
-            // 未キャッシュ: 固定 em サイズで距離場を焼いてアトラスへ入れる。
-            // 初めて出る文字だけがここへ来る（呼び出し回数＝そのフレームに新しく焼いた字数。スクロール開始の山の切り分け用）
-            crate::profile_scope!("描画/UI/テキスト/グリフ焼き");
-            let font = self.registry.font(font_id);
-            let Some(glyph) = rasterize_glyph_sdf(font, ch) else {
-                // アウトラインなし（スペース等）→ 描くものが無いので飛ばす。
-                // 送り幅が要る場合は `advance_em` を使うこと。
+        // 計測用（SEED_FONT_FIELD_LOG=1）: まとめて焼いた字数と壁時計の時間（初めて出る画面の詰まりの大きさの目安）
+        self.field_stats.record_batch(chars.len(), batch_start.elapsed(), kind.as_str());
+        for (ch, result) in baked {
+            let key = GlyphKey { font_id, codepoint: ch };
+            let Some((glyph, stats)) = result else {
+                // アウトラインなし（スペース等）→ 描くものが無いので飛ばす。送り幅が要る場合は `advance_em` を使うこと。
                 // フォント ID ごとの実体は変わらない（registry は読み直さない）ので、結果は何度焼いても同じ＝覚えてよい。
                 self.unplaceable.insert(key);
                 continue;
             };
-            match self.atlas.insert(key.clone(), &glyph) {
-                Some(info) => result.push((ch, info)),
-                // アトラスが満杯（追い出しはしない＝空きは増えない）: 同じ大きさの字は二度と入らないので覚える
-                None => {
-                    self.unplaceable.insert(key);
-                }
+            if let Some(stats) = stats {
+                self.field_stats.record(ch, &stats);
+            }
+            // アトラスが満杯（追い出しはしない＝空きは増えない）: 同じ大きさの字は二度と入らないので覚える
+            if self.atlas.insert(key.clone(), &glyph).is_none() {
+                self.unplaceable.insert(key);
             }
         }
-
-        result
     }
 
     /// アウトラインを持たない文字（スペース等）の送り幅を em 単位で返す。

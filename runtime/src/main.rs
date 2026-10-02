@@ -46,6 +46,10 @@ const GPU_MEM_LOG_ARG: &str = "--gpu-mem-log";
 /// project_settings.json の render.profile より優先する。
 const RENDER_PROFILE_ARG: &str = "--render-profile=";
 
+/// 文字の距離場の種類の起動引数（検証・A/B 用。`--font-distance-field=<sdf|mtsdf>`。font/field_settings.rs）。
+/// project_settings.json の font.distance_field より優先する。
+const FONT_DISTANCE_FIELD_ARG: &str = "--font-distance-field=";
+
 /// ディープリンクでの起動を PC で試す起動引数（検証用。`--deep-link=<URI>`。W1-6）。
 /// SEED.Platform の模擬の起動理由（スクリプトの App.LaunchReason）が DeepLink・Uri = <URI> になる（docs/android.md §25.15）。
 const DEEP_LINK_ARG: &str = "--deep-link=";
@@ -208,6 +212,12 @@ fn parse_args() -> LaunchArgs {
         .find(|a| a.starts_with(RENDER_PROFILE_ARG))
         .map(|a| a[RENDER_PROFILE_ARG.len()..].to_string());
 
+    // 検証・A/B 用: 文字の距離場の種類（sdf / mtsdf。無ければ project_settings.json の font.distance_field）。
+    let font_distance_field = raw
+        .iter()
+        .find(|a| a.starts_with(FONT_DISTANCE_FIELD_ARG))
+        .map(|a| a[FONT_DISTANCE_FIELD_ARG.len()..].to_string());
+
     LaunchArgs {
         parent_hwnd,
         parent_pid,
@@ -227,6 +237,7 @@ fn parse_args() -> LaunchArgs {
         gpu_timing,
         gpu_mem_log,
         render_profile,
+        font_distance_field,
         // 上書き層（pak より先にアセットルートを読む）は Android のデバッグ版の差し替え専用。PC は従来の読む順のまま（§23）。
         asset_overlay: false,
     }

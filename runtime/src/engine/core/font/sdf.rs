@@ -61,6 +61,39 @@ pub const MAX_OUTLINE_SDF: f32 = (SDF_SPREAD_PX as f32 - SDF_PIXEL_CENTER_TO_EDG
 
 // ─── 変換ヘルパー ────────────────────────────────────────────
 
+/// px → 距離場の値の変換の決まり（距離場の種類ごと。1 チャネルの SDF と MTSDF は em の幅が同じで上限だけ違う）。
+///
+/// `Weight`・`OutlineWidth`・`ShadowSoftness` の px を、そのテキストの大きさで割って em にし、値 0..1 が表す距離
+/// （`range_em`）で割って値の単位にする。焼いてある範囲（±`max_outline_value`）で頭打ちにする。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldValueSpec {
+    /// 値 0..1 が表す距離（em 単位）。
+    pub range_em: f32,
+    /// 縁取り・太さとして表せる値の上限（クアッドの端まで）。
+    pub max_outline_value: f32,
+}
+
+impl FieldValueSpec {
+    /// 1 チャネルの SDF（em 64・spread 8）の決まり。
+    pub const SDF: FieldValueSpec = FieldValueSpec { range_em: SDF_RANGE_EM, max_outline_value: MAX_OUTLINE_SDF };
+
+    /// 任意の px 量を値の単位へ（符号つき）。`font_size <= 0` は 0。
+    pub fn px_to_value(&self, px: f32, font_size_px: f32) -> f32 {
+        if font_size_px <= 0.0 {
+            return 0.0;
+        }
+        ((px / font_size_px) / self.range_em).clamp(-self.max_outline_value, self.max_outline_value)
+    }
+
+    /// 縁取りの太さ（px）を値の単位へ（0 以上）。太さ 0 以下・大きさ 0 以下は 0（縁取りなし）。
+    pub fn outline_px_to_value(&self, outline_width_px: f32, font_size_px: f32) -> f32 {
+        if outline_width_px <= 0.0 || font_size_px <= 0.0 {
+            return 0.0;
+        }
+        ((outline_width_px / font_size_px) / self.range_em).clamp(0.0, self.max_outline_value)
+    }
+}
+
 /// アウトライン太さ(px) を SDF テクスチャ単位へ変換する。
 ///
 /// - `outline_width_px`: 縁取りの太さ（そのテキストのローカルピクセル）
@@ -79,19 +112,12 @@ pub const MAX_OUTLINE_SDF: f32 = (SDF_SPREAD_PX as f32 - SDF_PIXEL_CENTER_TO_EDG
 /// `outline_px_to_sdf` と同じ理由（それ以上は距離が存在しない）。
 /// `font_size <= 0` は 0 を返す（0 除算回避）。
 pub fn px_to_sdf(px: f32, font_size_px: f32) -> f32 {
-    if font_size_px <= 0.0 {
-        return 0.0;
-    }
-    ((px / font_size_px) / SDF_RANGE_EM).clamp(-MAX_OUTLINE_SDF, MAX_OUTLINE_SDF)
+    FieldValueSpec::SDF.px_to_value(px, font_size_px)
 }
 
 pub fn outline_px_to_sdf(outline_width_px: f32, font_size_px: f32) -> f32 {
-    // 太さ 0 以下・サイズ 0 以下は縁取り無し（0 除算も避ける）。
-    if outline_width_px <= 0.0 || font_size_px <= 0.0 {
-        return 0.0;
-    }
-    // px → em → テクスチャ単位。焼いてある範囲を超えたら頭打ちにする。
-    ((outline_width_px / font_size_px) / SDF_RANGE_EM).clamp(0.0, MAX_OUTLINE_SDF)
+    // px → em → テクスチャ単位。焼いてある範囲を超えたら頭打ちにする（式は FieldValueSpec に一本化）。
+    FieldValueSpec::SDF.outline_px_to_value(outline_width_px, font_size_px)
 }
 
 // ============================================================

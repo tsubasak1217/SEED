@@ -281,6 +281,8 @@
 
 ## テストの独立性（2026-09-13 に気付いた既存不具合・シャドウ改修とは無関係）
 
+- [ ] **`font::inline::icon_set::tests::poll_keeps_previous_content_on_parse_failure` が並べて走らせると時々落ちる** — 2026-10-02（MTSDF の作業で `cargo test --lib engine::core::font::` を回したときに 1 回だけ「壊れていた内容が直ったので次回は再読込されるはず」で落ちた。単独では 3 回とも通る）。アイコンの一覧のキャッシュ（プロセスで共有）を同じ時に別のテストが `invalidate_all()` で消すためと思われる（推定）。直すならテストごとに別のキャッシュを使うか、キャッシュに触るテストを直列にする。関連: `runtime/src/engine/core/font/inline/icon_set.rs`。
+
 - [ ] **`plugin::host::tests::set_save_int_writes_flag_and_keeps_other_keys` が全体実行だと落ちる**
   — 2026-09-13。単体（`cargo test set_save_int_writes_flag_and_keeps_other_keys`）では通るが、
   `cargo test`（`--test-threads=1` でも同じ）だと `save.json を読めない … (os error 3)` で失敗する。
@@ -3592,6 +3594,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   作成時間は同じ桁（テクセルごとの最近傍の曲線の探索。推定）、CJK は辺の色分けの崩れの検証が要る。最初に、フォントの読み込み（`font/rasterizer.rs` の元）が輪郭を取り出せるかを確かめる。
   PC 等倍の細い横線の消失は別原因（画素の中心で 1 回だけ読んで閾値で切る描き方）で、MSDF では直らない → シェーダーで画面空間の幅を使ってなめらかに切る直しを別に行う。
   → PC 等倍の細い横線は **2026-10-01 に済**（docs/ui_components.md §12。正確には平滑化の幅 fwidth(d) が細い横画の上で 0 になっていた。MSDF でも同じ平滑化の規則を使う）。
+  → **2026-10-02 に済**（輪郭から作る MTSDF〈3 チャネルの MSDF + 真の SDF・RGBA8 2048²＝16 MiB〉をキャンバスの文字の既定にした。150 px の参照との差は「0.5 を超えて違う画素」が字あたり 130〜573 → 5〜35。実機の模擬〈1080x2340・2.625 倍〉の鳴動画面の時刻も滑らか。docs/ui_components.md §12.8〜§12.14。1 チャネルの SDF は `font.distance_field: "sdf"` で残す。実機での見え方の確認と残件は下の「MTSDF（2026-10-02）の残件」）。
   (2) **背面のアプリのメモリが約 740 MB で、低メモリのときに Android に止められた**（14:01。予約は残り鳴動は正常）。UI だけのアプリとしては大きい。内訳の計測
   （グリフのアトラス 4096²・GPU バッファ・テクスチャ・CoreCLR）と削減を後で行う。
   → **2026-10-02 に GPU の分を計測して減らした**（下の「実機確認 2 回目」(2) と docs/rendering_profiles.md。グリフのアトラスは 16 MiB で主因ではなかった。CoreCLR などの
@@ -3617,6 +3620,12 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   止め、動かし始めたフレームの経過は数えず、1 フレームで足す経過を 1/30 秒（`MotionStep.MaxFrameSeconds`）までにした（`TransitionClock`・`ScreenStack.Step`）。
   ダイアログ・上からの覆い（中身の Enter も待つ）・トーストにも上限と始めのフレームの規則を当てた。PC の同じ測定で、撮影を並べた 1 回目の途中の姿 3 枚（x = 0.24 から）→
   11 枚（x = 0.962 から）、撮影なしは 15・16 枚 → 17 枚。**実機（Pixel 6a）での再確認は残り**（`MaxWaitFrames` 10・「Enter の後 1 フレーム」は PC の測定から決めた値）。
+- [ ] **MTSDF（2026-10-02。大きな文字の粗さの直し）の残件** — 実装: `runtime/src/engine/core/font/msdf/`・`text.wgsl` の `fs_mtsdf`（docs/ui_components.md §12.8〜§12.14）。
+  (1) **実機（Pixel 6a）での見え方と、初めて出る画面の詰まりの確認**（APK の作成まで。`tmp/msdf` の UiDevice の複製・`tmp/w3_device/wakeorpay-msdf.apk`）。1 字の生成は PC の release で平均 2.0 ms（画数の多い字 4.4 ms）、1 チャネルの SDF の約 6〜15 倍。PC の debug で Wake or Pay の主な画面を回すと、まとめて焼く 1 回の最長が 48 ms（11 字。SDF 16 ms）。
+  開発用の APK の libSEED.so は develop（最適化 1）なので release より遅い。詰まりが目立つなら、よく使う字（かな・英数・アプリの文言）の先焼き（起動時か空き時間）を足す（`FontSystem::prepare_glyphs` の前に別スレッドで焼いてアトラスへ入れる口。設定で字の一覧を渡す）。
+  (2) **アトラスの容量**: 2048²（RGBA8）に全角のふつうの字で約 2,500 字、画数の多い字は輪郭の長さで em 64 まで大きくなる（1 字で最大 2.56 字ぶん）。追い出しは無く、満杯で新しい字が描かれない（警告は出る）。字の多いゲームでは 2 枚目のページか追い出しが要る。
+  (3) 尖りが逆向きに戻る辺（カスプ）の押し広げ（msdfgen の deconverge）が無い・重なった輪郭の距離は近似（msdfgen と同じ）。どちらも字形ごとの検査で落ちれば真の SDF で描かれる（組み込みの書体では落ちる字 0）。ほかの書体（可変フォント・CFF）では未確認。
+  (4) Android の起動オプションでの切り替え（PC の `--font-distance-field=` に当たるもの）が無い（`project_settings.json` の `font.distance_field` で切り替える）。
 - [ ] **下からのシート（`BottomSheet`）の開く・閉じる動きに出入りの時計の規則が効いていない** — 2026-09-30（遷移の時計の直しで、当てられなかった所として確認）。
   動きは Rust の `CanvasScroll.ScrollTo`（`motion.sheet` 0.25 秒・easeInOut）がスクロールの物理の時計で進めるので、C# から「始めのフレームを数えない・1 フレームの上限
   （1/30 秒）」を置けない。中身（`SheetOptions.ContentPrefab`）の組み立てが重いと開く動きが飛ぶ見込み（推論。Wake or Pay は今は使っていない）。案: `ScrollTo` に

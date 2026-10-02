@@ -22,7 +22,6 @@
 use super::inline::color_runs::ColorRuns;
 use super::inline::doc::InlineDoc;
 use super::inline::{IMAGE_PLACEHOLDER, InlineImages};
-use super::sdf::{outline_px_to_sdf, px_to_sdf};
 use super::text_gpu_stream::TextGpuStream;
 use super::text_layout::{
     ResolvedLayout, TextLayoutSpec, TextLocalBox, resolve_layout_with_images,
@@ -338,9 +337,11 @@ impl CanvasTextRenderer {
         let layout: &ResolvedLayout = &cached.layout;
         let lines: &[LineLayout] = &cached.lines;
 
-        // px → SDF テクスチャ単位の変換は 1 度だけ行う（グリフごとに同じ値）。
-        let outline_dist = outline_px_to_sdf(item.outline_width, item.font_size);
-        let weight_dist = px_to_sdf(item.weight, item.font_size);
+        // px → 距離場の値の変換は 1 度だけ行う（グリフごとに同じ値）。式は距離場の種類ごとの決まり
+        // （SDF・MTSDF は em の幅が同じで、上限〈クアッドの端〉だけ違う。sdf::FieldValueSpec）。
+        let value_spec = font_system.value_spec();
+        let outline_dist = value_spec.outline_px_to_value(item.outline_width, item.font_size);
+        let weight_dist = value_spec.px_to_value(item.weight, item.font_size);
 
         // 枠ありのときだけ pivot がローカル平行移動として効く（枠なしは [0,0]）。
         let pivot_offset = layout.pivot_offset(item.pivot);
@@ -350,7 +351,7 @@ impl CanvasTextRenderer {
             let mut shadow = GlyphShading::plain(item.shadow_color);
             // 影も本体と同じ太さで抜く（太くした文字の影だけ細いと不自然になる）。
             shadow.weight_dist = weight_dist;
-            shadow.softness = px_to_sdf(item.shadow_softness, item.font_size);
+            shadow.softness = value_spec.px_to_value(item.shadow_softness, item.font_size);
             emit_glyph_quads(
                 batch,
                 layout,
@@ -586,6 +587,7 @@ fn emit_glyph_quads(
                     [p00, p10, p11, p01],
                     [info.uv_min[0], info.uv_min[1]],
                     [info.uv_max[0], info.uv_max[1]],
+                    info.field_em_px,
                     &shading,
                 );
             }

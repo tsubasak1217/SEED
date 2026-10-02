@@ -88,6 +88,9 @@ impl App {
         // （bindless・影・GI・レイトレ・Play のピッキング）を作らないので、品質を決めた後・Renderer::new より前に決め、
         // 止めた機能を品質の上限へ重ねる（renderer/render_profile。既定の full は何も変えない）。
         self.resolve_render_profile(&settings_json);
+        // 文字の距離場（font.distance_field。sdf / mtsdf）も同じ JSON から決める。キャンバスの文字の描画器（下の
+        // CanvasTextRenderer::new）がアトラスの形式とシェーダーの入口を決めるときに読むので、それより前に登録する。
+        self.resolve_font_field(&settings_json);
         // シャドウマップ品質（解像度・影距離・カスケード分割・バイアス・PCF）も同じ JSON から読む。
         //
         // 【ここで読む理由】直後の `Renderer::new`（→ DrawContext::new）が

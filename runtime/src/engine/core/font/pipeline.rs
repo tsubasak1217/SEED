@@ -1,9 +1,10 @@
 // ============================================================
 //  font/pipeline.rs — テキスト wgpu パイプライン
 //
-//  Group 0 : グリフアトラス (R8Unorm SDF) + サンプラー
+//  Group 0 : グリフアトラス (R8Unorm の SDF / Rgba8Unorm の MTSDF) + サンプラー
 //
-//  描画は常に SDF（旧 Bitmap モードは廃止したので uniform も不要になった）。
+//  描画は距離場（旧 Bitmap モードは廃止したので uniform も不要になった）。
+//  距離場の種類でフラグメントシェーダーの入口を選ぶ（text.wgsl の fs_sdf / fs_mtsdf。頂点の形は共通）。
 //  文字色・縁取り色・縁取り距離はすべて頂点属性で運ぶため、
 //  1 バッチの中でテキストごとに違う縁取りを混在させられる。
 //
@@ -34,6 +35,11 @@ pub struct TextVertex {
     ///
     /// fwidth 由来のアンチエイリアス幅へ加算する。0 のとき従来とビット互換。
     pub softness: f32,
+    /// このグリフの距離場の解像度（em あたりのテクセル数。SDF は 64、MTSDF は 40〜64）。
+    ///
+    /// シェーダーは「1 テクセルあたりの値の変化 = 0.5 ÷ (0.125 em × これ)」と「画面の上の文字の大きさ = これ ÷ 1 画素のテクセル数」
+    /// を求める（2026-10-02。字ごとに解像度が違ってよい）。
+    pub field_em: f32,
 }
 
 // ── 頂点属性のオフセット（マジックナンバーをここへ集約する）────
@@ -52,6 +58,8 @@ const ATTR_OFFSET_OUTLINE_DIST: u64 = 52;
 const ATTR_OFFSET_WEIGHT_DIST: u64 = 56;
 /// softness (f32) のバイトオフセット。
 const ATTR_OFFSET_SOFTNESS: u64 = 60;
+/// field_em (f32) のバイトオフセット。
+const ATTR_OFFSET_FIELD_EM: u64 = 64;
 
 // ── TextPipeline ──────────────────────────────────────────────
 
@@ -62,11 +70,20 @@ pub struct TextPipeline {
     pub sampler: wgpu::Sampler,
 }
 
+/// 距離場の種類ごとのフラグメントシェーダーの入口（text.wgsl）。
+fn fragment_entry(kind: super::glyph_field::DistanceFieldKind) -> &'static str {
+    match kind {
+        super::glyph_field::DistanceFieldKind::Sdf => "fs_sdf",
+        super::glyph_field::DistanceFieldKind::Mtsdf => "fs_mtsdf",
+    }
+}
+
 impl TextPipeline {
     pub fn new(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
+        kind: super::glyph_field::DistanceFieldKind,
     ) -> Self {
         // ── シェーダー ────────────────────────────────────────
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -152,6 +169,12 @@ impl TextPipeline {
                     offset: ATTR_OFFSET_SOFTNESS,
                     shader_location: 6,
                 },
+                // location 7: field_em (f32) — このグリフの距離場の解像度（em あたりのテクセル数）
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: ATTR_OFFSET_FIELD_EM,
+                    shader_location: 7,
+                },
             ],
         };
 
@@ -169,7 +192,7 @@ impl TextPipeline {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(fragment_entry(kind)),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -232,8 +255,8 @@ mod tests {
     #[test]
     fn vertex_layout_offsets_match_struct() {
         // position(12) + uv(8) + color(16) + outline_color(16)
-        //   + outline_dist(4) + weight_dist(4) + softness(4) = 64
-        assert_eq!(std::mem::size_of::<TextVertex>(), 64);
+        //   + outline_dist(4) + weight_dist(4) + softness(4) + field_em(4) = 68
+        assert_eq!(std::mem::size_of::<TextVertex>(), 68);
         assert_eq!(ATTR_OFFSET_POSITION, 0);
         assert_eq!(ATTR_OFFSET_UV, 12);
         assert_eq!(ATTR_OFFSET_COLOR, 20);
@@ -241,12 +264,14 @@ mod tests {
         assert_eq!(ATTR_OFFSET_OUTLINE_DIST, 52);
         assert_eq!(ATTR_OFFSET_WEIGHT_DIST, 56);
         assert_eq!(ATTR_OFFSET_SOFTNESS, 60);
+        assert_eq!(ATTR_OFFSET_FIELD_EM, 64);
     }
 
     /// シェーダーが naga で parse + validate できること。
     ///
     /// WGSL は**実行時**にコンパイルされるので、書き間違いはビルドでは捕まらない。
     /// ここで検証しておかないと「テキストを出した瞬間に落ちる」まで気付けない。
+    /// 距離場の 2 種類の入口（fs_sdf / fs_mtsdf）が両方あることも確かめる。
     #[test]
     fn text_shader_parses_and_validates() {
         let src = include_str!("../renderer/shaders/text.wgsl");
@@ -258,5 +283,43 @@ mod tests {
         );
         v.validate(&module)
             .unwrap_or_else(|e| panic!("[text] validate 失敗: {e:?}"));
+        for kind in [super::super::glyph_field::DistanceFieldKind::Sdf, super::super::glyph_field::DistanceFieldKind::Mtsdf] {
+            let entry = fragment_entry(kind);
+            assert!(
+                module.entry_points.iter().any(|e| e.name == entry && e.stage == naga::ShaderStage::Fragment),
+                "text.wgsl に入口 {entry} が無い"
+            );
+        }
+    }
+
+    /// Android の描画の裏側（Vulkan の SPIR-V・GLES の GLSL ES 3.00）へ naga で訳せること（両方の入口）。
+    #[test]
+    fn text_shader_translates_for_android_backends() {
+        let src = include_str!("../renderer/shaders/text.wgsl");
+        let module = naga::front::wgsl::parse_str(src).expect("parse");
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+            .validate(&module)
+            .expect("validate");
+        naga::back::spv::write_vec(&module, &info, &naga::back::spv::Options::default(), None).expect("SPIR-V へ訳せる");
+        for entry in ["vs_main", "fs_sdf", "fs_mtsdf"] {
+            let stage = if entry == "vs_main" { naga::ShaderStage::Vertex } else { naga::ShaderStage::Fragment };
+            let options = naga::back::glsl::Options {
+                version: naga::back::glsl::Version::Embedded { version: 300, is_webgl: false },
+                ..Default::default()
+            };
+            let pipeline_options = naga::back::glsl::PipelineOptions { shader_stage: stage, entry_point: entry.to_string(), multiview: None };
+            let mut out = String::new();
+            let mut writer = naga::back::glsl::Writer::new(
+                &mut out,
+                &module,
+                &info,
+                &options,
+                &pipeline_options,
+                naga::proc::BoundsCheckPolicies::default(),
+            )
+            .unwrap_or_else(|e| panic!("GLSL ES の準備（{entry}）: {e:?}"));
+            writer.write().unwrap_or_else(|e| panic!("GLSL ES へ訳す（{entry}）: {e:?}"));
+            assert!(!out.is_empty());
+        }
     }
 }

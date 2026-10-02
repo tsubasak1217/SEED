@@ -129,6 +129,8 @@ mod render_resolution;
 mod render_quality;
 /// 描画の構成（render.profile。full / ui）の App 側の窓口（起動時の決定・3D を描かない構成での警告）
 mod render_profile_ops;
+/// 文字の距離場（font.distance_field。sdf / mtsdf）の App 側の窓口（起動時の決定と登録）
+mod font_field_ops;
 /// ピッキングの ID バッファの持ち方（エディタにつながっていれば起動時から、単体の Play は ID パスを描くときに作る）
 mod id_buffer_ops;
 /// GPU メモリの内訳の計測（renderer/gpu_mem）の App 側の口（フレームの印・内訳を出すきっかけ・IPC）
@@ -690,6 +692,11 @@ pub struct LaunchArgs {
     ///
     /// PC は --render-profile=<名前>、Android は起動オプション seed.render_profile。None なら設定どおり。
     pub render_profile: Option<String>,
+    /// 文字の距離場の種類の上書き（検証・A/B 用。project_settings.json の font.distance_field より優先する。
+    /// font/field_settings.rs。docs/ui_components.md §12.10）。
+    ///
+    /// PC は --font-distance-field=<sdf|mtsdf>。None なら設定どおり（既定 mtsdf）。
+    pub font_distance_field: Option<String>,
     /// アセットルート（ファイルシステム）を「上書き層」として pak より先に読むか（実行中の差し替え。docs/android.md §23）。
     ///
     /// Android の糊（runtime/android/native の launch.rs）が「デバッグ版の APK のパッケージ実行」のときだけ true にする
@@ -1522,6 +1529,9 @@ pub struct App {
     /// 起動オプションで渡された描画の構成の名前（検証用。`LaunchArgs::render_profile` の写し）。
     pub(super) render_profile_launch: Option<String>,
 
+    /// 起動オプションで渡された文字の距離場の種類（検証・A/B 用。`LaunchArgs::font_distance_field` の写し）。
+    pub(super) font_field_launch: Option<String>,
+
     /// フレーム統計（直近 1 秒の平均 fps・直近フレームの実時間）。
     /// `pace_frame` が毎フレーム更新し、スクリプト API（SEED.Time.Fps /
     /// FrameTimeMs）へ静的値として発行される。
@@ -1878,6 +1888,7 @@ impl App {
             gpu_timer:         None,
             gpu_mem_log_launch:    args.gpu_mem_log,
             render_profile_launch: args.render_profile,
+            font_field_launch: args.font_distance_field,
             frame_stats: frame_pacing::FrameStats::default(),
             // 描画の止め方は handle_resumed で project_settings.json から決める（それまでは既定の continuous）
             redraw: redraw_hooks::RedrawState::default(),
