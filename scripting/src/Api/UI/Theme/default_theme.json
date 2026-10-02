@@ -78,6 +78,7 @@
     "slider_track": 4,
     "slider_thumb": 20,
     "slider_thumb_pressed": 24,
+    "slider_tick": 3,
     "progress_bar": 8,
     "ring_thickness": 6,
     "radio_dot": 10,

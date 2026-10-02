@@ -4182,6 +4182,12 @@ slider.SetValue(30f)                  // 範囲・段階へ寄せる（同じ値
 slider.ValueChanged                   // event Action<Slider, float>
 slider.TrackLength                    // float（溝の長さ。2026-10-02: 溝はレイアウトの幅に追従する＝コンテナの fill_width・Stretch・flex で伸ばすと
                                       // 「幅 − プレハブの左右の余白」になり、画面の幅が変わるたびに置き直す。伸ばしていなければプレハブの長さのまま）
+slider.TickCount                      // int（2026-10-03。刻みの数＝Flutter の divisions。既定 0 = 点なし。1 以上で溝の上に両端を含めて TickCount + 1 個の点。
+                                      // 値の段階 Step とは独立〈点を描くだけ〉。上限 SliderTicks.MaxTickCount〈100〉・点の間隔 < 直径 × 2 なら描かない。
+                                      // 塗りの上の点は color.on_primary・外は color.on_surface_muted・直径 size.slider_tick〈3〉）
+slider.SetTickCount(4)                // 1〜5 分なら 4 刻み（値も寄せるなら slider.Step = 1f）。見た目もすぐ変える
+slider.TickPrefab                     // string（点のプレハブ。既定 Slider.DefaultTickPrefab = assets://ui/prefabs/slider_tick.actor）
+                                      // 点は子 Ticks〈Fill と Thumb の間〉の下に作る。Ticks の無い古い slider.actor では描かない（警告 1 度。templates/ui を取り込み直す）
 number.Min / number.Max / number.Step / number.Value / number.Format / number.Suffix   // 例 Format "0"・Suffix "分"
 number.SetValue(15f); number.StepBy(+1)
 number.TrySetText("42")               // bool: 数でない入力は捨てる・範囲の外は収める
@@ -4213,10 +4219,12 @@ ring.Thickness             // float（2026-10-02。輪の太さ。0 以下 = テ
 
 // 不定の進捗（終わりの分からない待ち。2026-10-02。プレハブ templates/ui/prefabs/progress_spinner.actor = Sprite〈弧〉＋ SEED.UI.ProgressSpinner）
 // 弧が伸び縮みしながら回る（Flutter の CircularProgressIndicator の不定の動き。色 color.primary）。回っている間（Spinning・押せる・
-// 自分と祖先が表示・画面と重なる）だけ描き続けを頼むので、隠す・止めると on_demand の描画は止まる
+// 自分と祖先が表示・画面と祖先の切り抜き〈CanvasClip。スクロールの窓など〉の積と重なる。切り抜きは 2026-10-03 から）だけ描き続けを頼むので、
+// 隠す・止める・窓の外へ流れると on_demand の描画は止まる
 var spinner = UiWidget.Of<ProgressSpinner>(gameObject.FindChild("Spinner"))!;
-spinner.Size = 48f;        // 大きさ（弧の外側の直径。0 以下 = テーマの size.spinner 36）。SetSize(48f)
-spinner.Thickness = 5f;    // 弧の太さ（0 以下 = size.spinner_thickness 4）。SetThickness(5f)
+spinner.SetSize(48f);      // 大きさ（弧の外側の直径。0 以下 = テーマの size.spinner 36。見た目もすぐ変える）。欄は spinner.Size
+spinner.SetThickness(5f);  // 弧の太さ（0 以下 = size.spinner_thickness 4。見た目もすぐ変える）。欄は spinner.Thickness
+                           // 欄（Size・Thickness）へ直に書くのはプレハブ・インスペクタの初めの値向け（動き始めた後に書いても次に見た目を作り直すまで反映されない）
 spinner.SetSpinning(false);// 止める（今の姿のまま）。true で回す（既定）
 float d = spinner.ResolvedSize, t = spinner.ResolvedThickness;
 SpinnerArc arc = SpinnerMotion.At(seconds, 1.333f, 2.222f);   // 時刻の弧（StartDegrees・SweepDegrees。純粋な計算）
@@ -4382,7 +4390,12 @@ wheel.RowPrefab                        // string（行のプレハブ。子に L
 | `motion.wheel`・`motion.wheel_correct` | 0.3・0.2 | タップ・キー・スクリプト・午前/午後の連動の動き（秒）・選べない行から戻る動き |
 
 純粋な計算（エディタのテストで検算）: `WheelLook.Resolve(距離, 窓の高さ, 行の高さ, WheelLookParams)`（行の見た目）・`WheelLook.DistanceAtOffset`（逆）・
-`WheelLoop`（循環の添字・近い向きの行・位置）・`TimeWheelMath`（12/24 時間・午前/午後の連動・分の刻み）。
+`WheelLoop`（循環の添字・近い向きの行・位置）・`TimeWheelMath`（12/24 時間・午前/午後の連動・分の刻み）・
+`WheelRowWindow`（2026-10-03。作って置く行の範囲: `CacheExtent(窓の高さ, 行の高さ, WheelLookParams)`〈描ける上限 − 窓の半分 ＋ 1 行〉・
+`MaxCreatedRows(…, 行の数)`〈作る行の数の上限。窓 190・行 32 で 12〉・`MaxDrawnRows`〈描く行の上限 9〉）。
+
+> **行の使い回し**: 列は全項目ぶんの行を作りません（W2-5 から。W2-3 の ListView が見えている行と前後の余白だけをプレハブから作り、範囲から外れた行を
+> 入ってきた行へ付け替える）。作る行の数は項目の数・周の数によらず列あたり 12 行まで（docs/ui_components.md §11.3）。
 
 > **重要**: ホイールの値の変化で他の部品は作り直されません（書くのはその列の行の文字だけ）。列が動いている間はエンジンが「動いている」を申告するので
 > `render_policy: on_demand` でも止まらず、止まって 10 フレームで描画が止まります。
@@ -4487,6 +4500,8 @@ menu!.Completed += r => { if (r == DialogResult.Selected) Edit(menu.SelectedInde
 var busy = Dialog.ShowProgress("購入の手続きをしています…", "購入");                  // スピナー（ProgressSpinner）＋本文
 busy!.SetMessage("もう少しで終わります");                                            // 本文を変える（札の高さも合わせ直す。開く前に呼んでもよい）
 busy.Close(DialogResult.Positive);                                                    // 外から結果つきで閉じる（Dismiss() は Dismissed）
+// 外から閉じてもボタンと同じ決め方を通る（2026-10-03）: 入力つきのダイアログを Close(DialogResult.Positive) で閉じると InputText が入る
+// （入力欄がまだできていなければ初めの文字）。外から Close(DialogResult.Selected) は番号が無いので Dismissed で閉じる（警告）
 // ボタンの行: 文字の幅の和 ＋ 間隔が札の中の幅に入らなければ縦に積む（右寄せ・上から中立・いいえ・はい。間 size.dialog_actions_overflow_gap = 0）
 // 本文・選択肢が札に入りきらない（画面の高さ − 安全領域 − size.dialog_margin × 2 を超える）ときは、選択肢 → 本文の窓を縮めてスクロール（題とボタンは見えたまま）
 // HideButtons = true でボタンの行を出さない（文字を指定していても）
@@ -4724,6 +4739,7 @@ field.SetError(true);                          // エラーの見た目（枠と
 field.SetPadding(8f);                          // 欄ごとの左右の内側の余白（Padding。負 = テーマの size.field_padding〈既定〉・0 は余白なし。幅の狭い数値の欄）
 field.SetAllowSelection(false);                // 選択を許さない（AllowSelection。Flutter の enableInteractiveSelection: false）: 長押しは全選択にせず
                                                // カーソルを置くだけ・SelectAllOnFocus と SelectAll() も選ばない・キーボードや IME の選択はカーソルへ畳む
+                                               // 2026-10-03: フォーカスの場へコピー・切り取りの禁止も渡す（畳む前の Ctrl+A → Ctrl+C も写さない。次のフォーカスから）
 // 欄は自分のレイアウトの大きさの変化を見て中身を置き直す（コンテナが幅を伸ばした・ダイアログが入力の枠の幅〈札の中の幅〉に合わせた）
 
 string text = field.Text;                      // 本文（フォーカスの間はエンジンの本文に追従する）

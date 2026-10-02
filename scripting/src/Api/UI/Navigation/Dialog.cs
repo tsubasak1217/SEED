@@ -184,24 +184,44 @@ public sealed partial class Dialog : ModalPlane, IKeyboardInsetTarget
         }
     }
 
-    /// <summary>ボタン・幕・戻る・選択肢で結果を決めて閉じる（1 回だけ）。Positive なら入力欄の文字を手札へ置いてから閉じる（W2-6b）。</summary>
+    /// <summary>
+    /// ボタン・幕・戻る・選択肢・外から（手札の Close・Dismiss・ModalHost.CloseAll。2026-10-03）で結果を決めて閉じる（1 回だけ）。
+    /// Positive なら入力欄の文字を手札へ置いてから閉じる（W2-6b）。
+    /// </summary>
     /// <param name="result">結果。</param>
     /// <param name="selectedIndex">選んだ項目の番号（Selected のときだけ）。</param>
-    private void Choose(DialogResult result, int selectedIndex = DialogModel.NoSelection)
+    /// <param name="animate">出る動きを見せるか（外から animate = false で閉じたとき false。2026-10-03）。</param>
+    private void Choose(DialogResult result, int selectedIndex = DialogModel.NoSelection, bool animate = true)
     {
         if (Phase is ModalPhase.Exiting or ModalPhase.Closed) return;
         if (!_latch.TryComplete(result, selectedIndex)) return;
         if (Handle is DialogHandle handle && result == DialogResult.Selected) handle.SetSelectedIndex(_latch.SelectedIndex);
-        if (_input is { } field)
-        {
-            // フォーカスを外して変換中の文字を確定扱いにし、キーボードを隠してから文字を読む
-            field.Unfocus();
-            if (result == DialogResult.Positive && _options.Input is { } spec && Handle is DialogHandle inputHandle)
-                inputHandle.SetInputText(spec.Finish(field.Text));
-        }
+        // フォーカスを外して変換中の文字を確定扱いにし、キーボードを隠してから文字を読む
+        _input?.Unfocus();
+        // Positive なら入力欄の文字を手札へ（入力欄のスクリプトがまだ始まっていない＝開いてすぐ外から閉じたときは初めの文字。
+        // 決め方は DialogModel.InputResultText。入力の無いダイアログ・Positive 以外は置かない＝null のまま）
+        if (Handle is DialogHandle inputHandle && DialogModel.InputResultText(_options, result, _input?.Text) is { } text)
+            inputHandle.SetInputText(text);
         ClearKeyboardLift();
         KeyboardInsets.Unregister(this);
-        RequestClose(result);
+        RequestClose(result, animate);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 2026-10-03（レビュー #9）: 外から閉じてもボタンと同じ決め方（<see cref="Choose"/>）を通す。以前は土台の RequestClose へ直行したので、
+    /// 入力欄つきのダイアログを Close(Positive) で閉じると InputText が null のまま・Close(Selected) では SelectedIndex が −1 のままだった。
+    /// 出る動きの途中・閉じた後は土台へ回す（動きなしの頼みなら今すぐ閉じ終える。結果は最初の頼みのまま）。
+    /// </remarks>
+    internal override void CloseFromOutside(object? result, bool animate)
+    {
+        if (Phase is ModalPhase.Exiting or ModalPhase.Closed)
+        {
+            RequestClose(result, animate);
+            return;
+        }
+        // 手札が整えた結果をもう一度 DialogResult へ直す（ModalHost.CloseAll など手札を通らない入口のため。同じ値なら変わらない）
+        Choose(DialogModel.ExternalCloseResult(result), DialogModel.NoSelection, animate);
     }
 
     /// <summary>幕のタップ。</summary>

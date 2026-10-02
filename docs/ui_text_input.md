@@ -69,7 +69,7 @@
 | 最大の長さ（書記素） | 変換中は超えてよい。確定した案が超えたら、前の状態が既に最大なら変化を取り消し、そうでなければ先頭から最大の長さまでに切り詰める（Flutter の LengthLimitingTextInputFormatter・truncateAfterCompositionEnds） |
 | 貼り付けの禁止（PC） | Ctrl+V・Shift+Insert を止めて `PasteBlocked` を知らせる（**クリップボードを読まない**） |
 | 貼り付けの禁止（Android） | GameActivity には長押しの貼り付けのメニューが無く、IME のクリップボードの候補・音声入力は `commitText` で来る。**変換中の区間に触れない一度の挿入が 2 書記素以上**なら貼り付けとみなして前の状態へ戻す（`PASTE_MIN_GRAPHEMES`）。1 文字ずつの確定・変換の確定・変換中は通す。次の単語の予測の候補（変換なしで単語を一度に入れる）もこれに当たる（§14） |
-| コピー・切り取りの禁止（PC） | Ctrl+C・Ctrl+X・Ctrl+Insert・Shift+Delete を捨てる。Android の IME からのコピーは GameTextInput の InputConnection が受けない |
+| コピー・切り取りの禁止（PC） | Ctrl+C・Ctrl+X・Ctrl+Insert・Shift+Delete を捨てる。Android の IME からのコピーは GameTextInput の InputConnection が受けない。`TextField` は `AllowCopy = false` の欄に加えて、選択を許さない欄（`AllowSelection = false`）でも立てる（2026-10-03。§8） |
 
 ## 5. 受け口の流れ（フレームの中）
 
@@ -135,6 +135,7 @@ CanvasClip〉の下に Selection・Content〈Text〉・Composition・Caret・Pla
 - **選択の禁止**（2026-10-02）: `AllowSelection = false`（`SetAllowSelection`。Flutter の `enableInteractiveSelection: false`。W3-2b (6)）で、長押しは全選択にせず
   タップと同じ（押した位置へカーソル）、`SelectAllOnFocus` と `SelectAll()` も選ばない、キーボード（PC の Shift ＋ 矢印・Ctrl＋A）・IME が作った選択は次の出来事で
   カーソルの位置（選択の動いた端）へ畳む（`TextFieldSelectionPolicy`）。選択が無いのでコピー・切り取りも起きない（貼り付けは別の `AllowPaste`）。
+  畳むのは C# の Update の後追いなので、2026-10-03 から選択を許さない欄はフォーカスで始める場へ**コピー・切り取りの禁止も渡す**（`TextInputOptions.AllowCopy = AllowCopy && AllowSelection`。`TextFieldSelectionPolicy.SessionAllowsCopy`）。以前は Ctrl+A と Ctrl+C が 2 回の Update の間に届くと、エンジンの場が全選択のままクリップボードへ書けた（レビュー #10。場は `EditKey::Copy`・`Cut` を `allow_copy && !is_collapsed()` で判定する）。場の設定は始めるときに渡すので、フォーカスの間に `SetAllowSelection(false)` にしたときのコピーの禁止は次のフォーカスから（今の選択はその呼び出しで畳む）。
 - **文字の置き場**: Content は枠つきの Text（枠の高さの中で縦の中央・左寄せ・折り返さない）。左端 `TextFieldLayout.TextStartX`: 収まれば揃え（左・中央）、
   はみ出すなら横のスクロール（`ScrollToReveal`: カーソルが枠の外へ出たときだけ、枠の端へ来るまで動かす）。本文は記法を逃がして描く（`TextMarkupEscape`。
   `[` と `{` の前にバックスラッシュ）ので、利用者の打った `[icon:x]`・`{0}` もそのまま出る。カーソルの位置は元の文字で測る（`SEED.TextMeasure.CaretOffsets`）。

@@ -62,6 +62,38 @@ public static class DialogExtensionTests
             Check.Equal(DialogModel.NoSelection, dismissed.SelectedIndex, "Selected 以外は番号を残さない");
         });
 
+        // ── 外から閉じる（2026-10-03。レビュー #9）──────────────────
+        h.Add("外から閉じる: 結果の直し方（そのまま・番号の無い Selected と null と別の型と定義の無い値は Dismissed）", () =>
+        {
+            foreach (var r in new[] { DialogResult.Positive, DialogResult.Negative, DialogResult.Neutral, DialogResult.Dismissed })
+                Check.Equal(r, DialogModel.ExternalCloseResult(r), $"{r} はそのまま");
+            Check.Equal(DialogResult.Dismissed, DialogModel.ExternalCloseResult(DialogResult.Selected),
+                "Selected は選んだ項目の番号を外から渡せないので Dismissed（SelectedIndex = −1 のまま Selected にしない）");
+            Check.Equal(DialogResult.Dismissed, DialogModel.ExternalCloseResult(null), "null（ModalHandle.Close() の既定）は Dismissed");
+            Check.Equal(DialogResult.Dismissed, DialogModel.ExternalCloseResult("ok"), "DialogResult 以外は Dismissed");
+            Check.Equal(DialogResult.Dismissed, DialogModel.ExternalCloseResult((DialogResult)99), "定義の無い値は Dismissed");
+            Check.Equal(DialogResult.Dismissed, DialogModel.ExternalCloseResult(ModalCloseOrder.ResultFor(ModalKind.Dialog)),
+                "全部閉じる（ModalHost.CloseAll）のダイアログの結果も Dismissed のまま");
+            // 留め金と組み合わせると、外から Selected で閉じても番号の無い Selected は残らない（Dialog.Choose の流れ）
+            var latch = new DialogResultLatch();
+            latch.TryComplete(DialogModel.ExternalCloseResult(DialogResult.Selected), DialogModel.NoSelection);
+            Check.True(latch.Result == DialogResult.Dismissed && latch.SelectedIndex == DialogModel.NoSelection, "留め金も Dismissed・番号なし");
+        });
+
+        h.Add("外から閉じる: 入力欄の結果の文字（Positive だけ・読めなければ初めの文字・TrimResult・入力の無いダイアログは null）", () =>
+        {
+            var options = new DialogOptions { Title = "名前の変更", Input = new DialogInputOptions { Text = "  たろう ", TrimResult = true } };
+            Check.Equal("じろう", DialogModel.InputResultText(options, DialogResult.Positive, " じろう  "), "入力欄の文字（前後の空白を落とす）");
+            Check.Equal("たろう", DialogModel.InputResultText(options, DialogResult.Positive, null),
+                "入力欄のスクリプトがまだ始まっていない（開いてすぐ外から Close(Positive)）なら初めの文字");
+            Check.Equal("", DialogModel.InputResultText(options, DialogResult.Positive, ""), "空にした欄は空（初めの文字に戻さない）");
+            foreach (var r in new[] { DialogResult.Negative, DialogResult.Neutral, DialogResult.Dismissed, DialogResult.Selected })
+                Check.True(DialogModel.InputResultText(options, r, "じろう") is null, $"{r} は入れない（null）");
+            var raw = new DialogOptions { Input = new DialogInputOptions { Text = " a ", TrimResult = false } };
+            Check.Equal(" a ", DialogModel.InputResultText(raw, DialogResult.Positive, null), "TrimResult = false は空白を残す");
+            Check.True(DialogModel.InputResultText(new DialogOptions(), DialogResult.Positive, "x") is null, "入力の無いダイアログは null");
+        });
+
         // ── ボタンの行 ───────────────────────────────────────────
         h.Add("拡充 ダイアログ: ボタンが中の幅に入れば横に並べ、入らなければ縦に積む（Flutter の OverflowBar・間 0）", () =>
         {

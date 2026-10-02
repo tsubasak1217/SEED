@@ -275,6 +275,98 @@ public static class WheelTests
             Check.Equal(7, WheelLoop.RowAtPosition(WheelLoop.PositionOfRow(7, Extent), Extent, hourRows), "中の行は普通に往復する");
         });
 
+        // ── 行の使い回し（作って置く行の範囲。2026-10-03。WheelRowWindow と一覧の ListViewLayout・ListViewRecycler）────
+        h.Add("ホイールの行: 窓の外の余裕 = 描ける上限 − 窓の半分 ＋ 1 行（少なくとも 1 行）・作る行の上限は項目の数と周の数によらない", () =>
+        {
+            float limit = WheelLook.MaxVisibleDistance(Viewport, look);
+            float cache = WheelRowWindow.CacheExtent(Viewport, Extent, look);
+            Check.Close(Math.Max(Extent, limit - Viewport * 0.5f + Extent), cache, Eps, "WheelPicker の以前の式と同じ値");
+            Check.Close(131.3, limit, 0.1, "190・32 の描ける上限 ≈ 131.3（docs §11.2）");
+            Check.Close(68.3, cache, 0.1, "余裕 ≈ 68.3");
+            Check.True(WheelRowWindow.CreatedDistance(Viewport, Extent, look) > limit + Extent, "作る距離は描ける上限より 1 行以上先まで");
+            // 時刻ホイールの列（時 24・分 60・分 5 刻み 12）を、つなげる（約 20 万の長さ）・つながないの両方で
+            foreach (int count in new[] { TimeWheelMath.HourRows, TimeWheelMath.MinuteRows(1), TimeWheelMath.MinuteRows(5) })
+            {
+                foreach (bool looping in new[] { true, false })
+                {
+                    int total = WheelLoop.TotalRows(count, WheelLoop.CycleCount(count, Extent, looping));
+                    Check.Equal(12, WheelRowWindow.MaxCreatedRows(Viewport, Extent, look, total), $"count={count} looping={looping} は作る行が 12 まで");
+                    Check.Equal(9, WheelRowWindow.MaxDrawnRows(Viewport, Extent, look, total), $"count={count} looping={looping} は描く行が 9 まで");
+                }
+            }
+            // 窓が 0（まだ測れていない）・行より低い窓でも余裕は 1 行より短くならない
+            Check.Close(Extent, WheelRowWindow.CacheExtent(0f, Extent, look), Eps, "窓 0 は 1 行");
+            Check.True(WheelRowWindow.CacheExtent(Extent, Extent, look) >= Extent, "行と同じ高さの窓でも 1 行以上");
+            Check.Equal(0, WheelRowWindow.MaxDrawnRows(0f, Extent, look, 60), "窓 0 は描かない（一覧も窓の大きさが分かるまで置かない）");
+            Check.Equal(0, WheelRowWindow.MaxCreatedRows(Viewport, Extent, look, 0), "行が無ければ作らない");
+            Check.Close(WheelLoop.MinItemExtent, WheelRowWindow.CacheExtent(Viewport, float.NaN, look) - (limit - Viewport * 0.5f), Eps,
+                "壊れた行の高さは下限（1）で数える");
+        });
+
+        h.Add("ホイールの行: 1/8 行ずつ・速いフリックで動かしても、作る行（一覧の割り当ての入れ物）は上限以下で、描く行はすべて作った行の中", () =>
+        {
+            float cache = WheelRowWindow.CacheExtent(Viewport, Extent, look);
+            float lead = WheelLoop.LeadPadding(Viewport, Extent);
+            foreach (int count in new[] { TimeWheelMath.HourRows, TimeWheelMath.MinuteRows(1) })
+            {
+                int cycles = WheelLoop.CycleCount(count, Extent, looping: true);
+                int total = WheelLoop.TotalRows(count, cycles);
+                int limit = WheelRowWindow.MaxCreatedRows(Viewport, Extent, look, total);
+                var layout = ListViewLayout.Fixed(total, Extent, 0f, lead, lead);
+                var recycler = new ListViewRecycler();
+                int pending = 0, maxBound = 0;
+                int start = WheelLoop.CenterRowOfItem(0, count, cycles);
+                // 真ん中の周から: 1/8 行ずつ 3 周ぶん下へ → 1 フレーム 5 行の速いフリックで戻る（作った行は次のフレームから使える＝ListView と同じ）
+                var positions = new System.Collections.Generic.List<float>();
+                for (int step = 0; step <= count * 3 * 8; step++) positions.Add((start + step / 8f) * Extent);
+                for (int step = count * 3; step >= -count; step -= 5) positions.Add((start + step) * Extent);
+                foreach (float p in positions)
+                {
+                    for (int i = 0; i < pending; i++) recycler.AddSlot();
+                    var range = layout.VisibleRange(p, Viewport, cache);
+                    var result = recycler.Assign(range);
+                    pending = result.Missing.Count;
+                    maxBound = Math.Max(maxBound, range.Count);
+                    // 描く行（円柱の裏へ回らない行）はすべて範囲の中（＝作って置かれる行）
+                    int center = WheelLoop.RowAtPosition(p, Extent, total);
+                    for (int row = center - limit; row <= center + limit; row++)
+                    {
+                        if (row < 0 || row >= total) continue;
+                        if (WheelLook.Resolve(row * Extent - p, Viewport, Extent, look).Visible && !range.Contains(row))
+                            throw new Exception($"count={count} 位置 {p}: 描く行 {row} が範囲 {range} の外");
+                    }
+                }
+                Check.True(recycler.SlotCount <= limit, $"count={count}: 作った行 {recycler.SlotCount} ≦ 上限 {limit}");
+                Check.True(maxBound <= limit, $"count={count}: 範囲の行の数 {maxBound} ≦ 上限 {limit}");
+                Check.True(recycler.SlotCount < count, $"count={count}: 列の全項目ぶん（{count}）は作らない");
+            }
+        });
+
+        h.Add("ホイールの行: 項目が窓より少ない列は項目の数だけ作る（午前/午後 2 行）・つなげる 2 項目は周のくり返しで窓を埋める", () =>
+        {
+            float cache = WheelRowWindow.CacheExtent(Viewport, Extent, look);
+            float lead = WheelLoop.LeadPadding(Viewport, Extent);
+            // つながない 2 項目（午前/午後の列）: 行は 2 つだけ・どちらの位置でも両方の行が範囲に入る
+            int meridiem = TimeWheelMath.MeridiemCount;
+            Check.Equal(meridiem, WheelRowWindow.MaxCreatedRows(Viewport, Extent, look, meridiem), "上限 = 項目の数 2");
+            var fixedLayout = ListViewLayout.Fixed(meridiem, Extent, 0f, lead, lead);
+            foreach (int row in new[] { 0, 1 })
+            {
+                var range = fixedLayout.VisibleRange(WheelLoop.PositionOfRow(row, Extent), Viewport, cache);
+                Check.Equal("[0..1]", range.ToString(), $"行 {row} が中央のとき 2 行とも置く");
+            }
+            // つなげる 2 項目: 周のくり返し（行 r の項目 = r mod 2）で窓いっぱいに並ぶ。作る行は上限まで（項目の数ではない）
+            int cycles = WheelLoop.CycleCount(meridiem, Extent, looping: true);
+            int total = WheelLoop.TotalRows(meridiem, cycles);
+            Check.Equal(12, WheelRowWindow.MaxCreatedRows(Viewport, Extent, look, total), "つなげる 2 項目は窓の分（12 まで）");
+            var loopLayout = ListViewLayout.Fixed(total, Extent, 0f, lead, lead);
+            int centerRow = WheelLoop.CenterRowOfItem(1, meridiem, cycles);
+            var loopRange = loopLayout.VisibleRange(WheelLoop.PositionOfRow(centerRow, Extent), Viewport, cache);
+            Check.Equal(11, loopRange.Count, "止まっているときは 11 行（中央 ± 5）");
+            Check.Equal(1, WheelLoop.ItemOfRow(centerRow, meridiem), "中央の行は項目 1");
+            Check.Equal(0, WheelLoop.ItemOfRow(centerRow + 1, meridiem), "隣の行は項目 0（くり返し）");
+        });
+
         // ── 12/24 時間と午前/午後の連動・分の刻み ─────────────────────
         h.Add("時刻ホイール: 12/24 時間の表示の時", () =>
         {

@@ -82,9 +82,14 @@
     <Compile Include="..\..\..\scripting\src\Api\UI\SwipeModel.cs">
       <Link>Linked\SwipeModel.cs</Link>
     </Compile>
-    <!-- W2-5: ホイールの純粋な計算（行の曲面の見た目・循環の添字と位置・時刻の 12/24 時間と連動と分の刻み） -->
+    <!-- W2-5: ホイールの純粋な計算（行の曲面の見た目・循環の添字と位置・時刻の 12/24 時間と連動と分の刻み）。
+         2026-10-03: 作って置く行の範囲（WheelRowWindow）も Wheel/ にある -->
     <Compile Include="..\..\..\scripting\src\Api\UI\Wheel\*.cs">
       <Link>Linked\Wheel\%(Filename)%(Extension)</Link>
+    </Compile>
+    <!-- 2026-10-03: ホイールの行の使い回しを、一覧（W2-3）の並びと割り当ての純粋な計算でそのまま模して確かめる（WheelTests） -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\ListViewLayout.cs;..\..\..\scripting\src\Api\UI\ListViewRecycler.cs">
+      <Link>Linked\ListView\%(Filename)%(Extension)</Link>
     </Compile>
     <!-- W2-7: 画面の組み立ての純粋な計算（出入りの置き方・スタック・タブ・戻るの段・ダイアログ・シート・トースト・フォーカス・レイヤー）。
          W2 の手直し 3b: 戻るの段の問い・予測型の戻るのプレビューの移り変わり・受ける層の知らせ（BackPreviewModel ほか） -->
@@ -131,6 +136,11 @@
          2026-10-02: 新しい区画（進捗・本文の窓・選択肢の窓）と、選択肢の行・スピナー・アイコンつきのトーストのプレハブの作り -->
     <!-- 2026-10-02（lane3）: 中央のポップアップのプレハブ（SEED.UI.Popup の子の作り。NavigationExtensionTests） -->
     <None Include="..\..\..\templates\ui\prefabs\dialog.actor;..\..\..\templates\ui\prefabs\dialog_item.actor;..\..\..\templates\ui\prefabs\progress_spinner.actor;..\..\..\templates\ui\prefabs\toast.actor;..\..\..\templates\ui\prefabs\popup.actor">
+      <Link>prefabs\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- 2026-10-03: スライダの刻みの点（slider.actor の Ticks が Fill と Thumb の間・点のプレハブ slider_tick.actor の作り。SliderSpinnerTests） -->
+    <None Include="..\..\..\templates\ui\prefabs\slider.actor;..\..\..\templates\ui\prefabs\slider_tick.actor">
       <Link>prefabs\%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -119,6 +119,7 @@ public static class UiTokenCatalog
         new(UiTokens.SizeSliderTrack, UiTokenKind.Number, "Slider（溝の太さ）"),
         new(UiTokens.SizeSliderThumb, UiTokenKind.Number, "Slider（つまみ）"),
         new(UiTokens.SizeSliderThumbPressed, UiTokenKind.Number, "Slider（ドラッグ中のつまみ）"),
+        new(UiTokens.SizeSliderTick, UiTokenKind.Number, "Slider（刻みの点の直径。TickCount > 0 のとき）"),
         new(UiTokens.SizeProgressBar, UiTokenKind.Number, GuideOnly),
         new(UiTokens.SizeRingThickness, UiTokenKind.Number, "ProgressRing（輪の太さ。部品の Thickness が 0 のとき）"),
         new(UiTokens.SizeRadioDot, UiTokenKind.Number, GuideOnly),

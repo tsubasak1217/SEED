@@ -10,9 +10,10 @@ namespace SEED.UI;
 //  終わりの分からない待ち（通信・購入・復元）に出す。値の輪（ProgressRing）と違い値を持たず、弧が伸び縮みしながら回り続ける
 //  （Flutter の CircularProgressIndicator の不定の動き。式は SpinnerMotion）。色は color.primary（無効は opacity.disabled で薄く・止める）。
 //  大きさ（弧の外側の直径）と太さは部品ごとに指定でき（Size・Thickness）、0 以下ならテーマの size.spinner・size.spinner_thickness。
-//  【描き続け】回っている間（Spinning かつ 押せる かつ 自分と祖先が表示 かつ 画面と重なる）は毎フレーム弧を書き、少しだけ描き続けを頼む
-//  （Redraw.KeepAlive。隠した・止めた・スクロールで画面の外へ出たら次のフレームから頼まない＝render_policy: on_demand で描画が止まる）。
-//  親の切り抜き（CanvasClip）で見えないだけの所にあるときは見分けられず回り続ける（docs/ui_components.md §10）。
+//  【描き続け】回っている間（Spinning かつ 押せる かつ 自分と祖先が表示 かつ「画面 ∩ 祖先の切り抜き」と重なる）は毎フレーム弧を書き、
+//  少しだけ描き続けを頼む（Redraw.KeepAlive。隠した・止めた・スクロールで画面の外や窓の外へ出たら次のフレームから頼まない＝
+//  render_policy: on_demand で描画が止まる）。2026-10-03: 祖先の切り抜き（CanvasClip。スクロールの窓・ダイアログの本文の窓）の外に
+//  あるだけで見えないときも止める（UiVisibility.IsVisibleInView・ClipVisibility。以前は画面との重なりだけを見て回り続けた）。
 //  形と塗りの弧（SpriteShapeKind.Arc。W2-4 の SDF）で描くので、毎フレーム SEED.Draw を呼ばない。
 // ============================================================
 
@@ -78,9 +79,9 @@ public sealed class ProgressSpinner : UiWidget
     /// <inheritdoc />
     protected override void OnWidgetUpdate(float dt)
     {
-        // 回すのは「回す・押せる・自分と祖先が表示・画面と重なる」の間だけ（見えていない間・スクロールで画面の外へ出た間は
-        // 描き続けを頼まない。画面へ戻ればスクロールの描画のフレームで再び回り出す）
-        if (!Spinning || !IsEnabled || !UiVisibility.IsShownInHierarchy(gameObject) || !UiVisibility.IsOnScreen(gameObject)) return;
+        // 回すのは「回す・押せる・自分と祖先が表示・画面と祖先の切り抜きの積と重なる」の間だけ（見えていない間・スクロールで画面や
+        // 窓の外へ出た間は描き続けを頼まない。戻ればスクロールの描画のフレームで再び回り出す。2026-10-03 から切り抜きも見る）
+        if (!Spinning || !IsEnabled || !UiVisibility.IsVisibleInView(gameObject)) return;
         // 実時間で進める（ゲームの時間の倍率に依らない。1 フレームが重くても動きは途切れず、そのぶん進んで見えるだけ）
         float step = Time.UnscaledDeltaTime;
         if (float.IsFinite(step) && step > 0f) _elapsed += step;

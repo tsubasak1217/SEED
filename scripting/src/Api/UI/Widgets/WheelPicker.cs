@@ -446,8 +446,9 @@ public sealed class WheelPicker : UiWidget, IFocusable
         list.TrailingPadding = lead;
         list.SetRowExtent(_extent);
         list.SetCount(_totalRows);
-        // 円柱の裏へ回る手前まで（と 1 行の余裕）を前もって作る（窓の外でも曲面で内側に映る行がある）
-        list.CacheExtent = Math.Max(_extent, WheelLook.MaxVisibleDistance(_viewport, LookParams) - _viewport * Half + _extent);
+        // 円柱の裏へ回る手前まで（と 1 行の余裕）を前もって作る（窓の外でも曲面で内側に映る行がある）。作る行はこの範囲と交わる行だけで、
+        // 範囲から外れた行は入ってきた行へ付け替える（ListView。列の全項目ぶんは作らない。作る数の上限は WheelRowWindow.MaxCreatedRows）
+        list.CacheExtent = WheelRowWindow.CacheExtent(_viewport, _extent, LookParams);
         scroll.Direction = ScrollDirection.Vertical;
         scroll.Snap = ScrollSnap.Interval;
         scroll.SnapInterval = _extent;
