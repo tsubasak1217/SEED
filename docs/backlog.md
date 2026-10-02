@@ -3947,3 +3947,39 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **Android の実行中の差し替え（RELOAD_ASSET）は `.actor` でシーンを読み直したまま** — 2026-10-02。`hot_reload/asset_kind.rs` の表で `.actor` は `RebuildScene`。当て直し（`live_patch_prefab_path`）へ振り替えれば端末でも状態を保てる。
 - [ ] **Play 開始時に参照パスごとに 1 回 `.actor` を読む** — 2026-10-02。元の版の控え（3 方向の材料）のため。エディタとつながっているときだけ。計測は 1 本で 0.8〜1.7 ms（画面外の SEED.exe）。参照パスが多いシーンでは Play 開始が少し延びる。
 - [ ] **MCP 化の候補** — 2026-10-02。`seed_prefab_live_patch(prefab_path)` → `PREFAB_LIVE_PATCH_PATH`、`seed_prefab_write_back(actor_dfs_id|name)` → `PREFAB_WRITE_BACK`（ファイルを上書きするので confirm 必須）。ツール表と `seed_batch` の enum も更新すること。
+
+## ローカライズ（SEED.Localization）— 2026-10-02 実装時の残件（正典: docs/localization.md）
+
+- [ ] **【中】端末の言語を確実に取る `App.Locale`（runtime の仕事）** — 2026-10-02。Android の CoreCLR は `runtime/android/dotnet_runtime.json` の
+  `runtime_properties` で `System.Globalization.Invariant=true` なので `CultureInfo.CurrentUICulture` が不変文化になり、`L10n.SystemLanguage` は null。
+  起動の言語が「保存した値 → 既定の言語」になり、端末の言語で始められない（PC は OS の表示言語が取れている）。候補: SEED.Platform に
+  `App.Locale`（Android は `LocaleList.getDefault()` の先頭の `Locale.toLanguageTag()`、PC は `GetUserDefaultLocaleName`）と変化の知らせ
+  （`platform.locale_changed`）を足し、`L10n` の端末の言語の口（`L10n.cs` の `CreateCatalog` が渡す `LocaleCulture.DetectSystemLanguage`）を
+  「`App.Locale` → CurrentUICulture」の順にする。関連: docs/android.md §17.6・docs/localization.md §9。
+- [ ] **【中】Play での確かめ（未検証）** — 2026-10-02。`L10n`・`LocalizedText`・`LocalizedLabel`・`LocalizationReloader` はエンジンの上でしか動かず、
+  今回確かめたのはビルドと純粋な部分の単体テスト（`editor/tests/LocalizationTests` 61 件）だけ。見本のシーン（言語の切り替えのボタン・
+  LocalizedLabel を付けた Button と SegmentedControl・子 Label を足した Toggle・LocalizedText）を作り、エディタの Play と Android の実機で
+  ①切り替えで全部の文字がその場で入れ替わる ②次の起動も同じ言語 ③LocalizationReloader で JSON の保存が反映される
+  ④Android では端末の言語が null で既定の言語から始まる、を確かめる。
+- [ ] **【低】Android の数・日付の書式は不変文化** — 2026-10-02。言語ごとの書式は表に書く運用（docs/localization.md §9）。言語どおりの書式を
+  自動で出すなら ICU を APK に同梱する（`System.Globalization.AppLocalIcu`。APK が数 MB 増える）案。
+- [ ] **【低】テンプレートのカテゴリの表示名が「locale」のまま（editor 側）** — 2026-10-02。`editor/src/Templates/TemplateCategoryNames.cs` の表に
+  `["locale"] = "多言語（文字列の表）"` を 1 行足す。取り込みそのものは今のままで動く（`LocalizationTests` が計画・コピー・読み込みまで確かめている）。
+- [ ] **【低】`index.json` だけを選んで取り込むと言語の表が付いてこない** — 2026-10-02。言語の表は参照（assets:// のパス）で辿れないので、
+  取り込みでは `locale` のカテゴリごと選ぶ運用。直すなら `TemplateImporter` に「同じフォルダの言語の表を同伴する」規則を足す（editor 側）。
+- [ ] **【低】SEED.UI の部品の既定の文字列を L10n から引くか** — 2026-10-02。`DialogOptions.DefaultPositiveText`（"OK"）・`TimeWheel` の
+  `AmLabel`／`PmLabel`／`MeridiemOnLeft`・`ChartView.EmptyText`・`ChartFormat` の "M/d" は部品の中の固定。今回は部品に手を入れない方針で、
+  見本のキー（`templates/locale` の `ui.*`）と対応表（docs/localization.md §10）だけ。引くなら「表にキーがあれば使う」形にして、表の無い
+  プロジェクトの見た目を変えない。
+- [ ] **【低】LocalizedLabel の当てる先の表は固定** — 2026-10-02。Button・選択のグループ・Toggle・Checkbox・Text だけ（`LocalizedTargetTable`）。
+  アプリの自作の部品を足す口（登録の API）は無い。足すなら登録したデリゲートをスクリプトの読み直しで外す（`UiTheme.Changed` と同じ扱い）。
+- [ ] **【低】エディタの常駐の Play は前の Play の言語・表を持ち越す** — 2026-10-02。SEED.UI のテーマと同じ（スクリプトの読み直しでは
+  `L10n.ResetForReload` で捨てる）。LocalizationReloader が無いと、Play を止めて直した JSON が次の Play に効かない。Play の始まりで捨てる口が
+  SEEDScripting にあれば直せる。
+- [ ] **【低】複数形・言語の引き当ての簡略** — 2026-10-02。複数形は整数だけ（小数の形・fr／es／it／pt の「百万の many」・序数・性別は無い）。
+  `zh-CN` → `zh-Hans` のような書記体系の対応は無い（一覧に `zh-CN` か `zh` を書く）。更新の印は秒の単位なので同じ秒の 2 回目の保存は拾わない。
+- [ ] **【参考】§7.21（Localization）も AI 補完に届かない** — 2026-10-02。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」
+  の範囲（`ScriptApiReference.MaxChars = 12000` に対し、Compact の後は約 203,000 字。2026-10-02 に数えた）。
+- [ ] **【中・アプリ側】Wake or Pay の `StringTable` を L10n へ移す** — 2026-10-02。データの形（入れ子・`_` の説明・`{名前}`・`{{ }}`）は同じなので、
+  `assets/common/data/strings.ja.json` → `assets/locale/ja.json` と `index.json`、`Strings.Get/Format` → `L10n.Get` の置き換えで移せる
+  （手順は docs/localization.md §11。欠けの印は `⟦key⟧` → `[key]`）。W3 のアプリ側の作業。

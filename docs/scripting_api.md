@@ -4711,6 +4711,105 @@ scroll.EndInset = new Vector2(0f, 300f);
 > **重要**: 入力欄にフォーカスがある間も、キーの状態（`Input.GetKey` など）は従来どおり届く（入力欄が受けたキーもゲームの入力に残る）。ゲームのショートカットを
 > 打鍵で動かしたくない画面は `SEED.TextInput.ActiveSession != 0` の間は止める。エディタのショートカット（Play 中の Ctrl+Z など）は入力欄が受けたキーでは動かない。
 
+## 7.21 Localization（多言語：文字列の表・言語の切り替え・UI への結び付け。SEED.Localization）
+
+ゲーム・アプリの文字列を言語ごとに差し替える。データは `assets://locale/index.json`（言語の一覧）と `assets://locale/<言語>.json`（キー → 文。
+入れ子は `.` でつないだキー）。見本は `templates/locale`（テンプレートの取り込みで `assets/locale` へ入る）。正典は `docs/localization.md`。
+起動の言語は 保存した値（SaveData の `l10n.language`）→ 端末の言語 → index の `default` の順で決まる。
+
+```csharp
+using SEED.Localization;
+
+// 文を引く（無いキーは欠けの方針どおり: 開発中 "[key]"・配布用 "key"。キーごとに 1 回だけ警告）
+string s = L10n.Get("menu.start");                                   // 今の言語 → fallback → 既定の言語 の順に探す
+string g = L10n.Get("greeting", ("name", playerName));               // {name} の差し込み（params (string name, object? value)[]）
+string f = L10n.Format("score", 1200);                               // {0} の差し込み（params object?[]。名前つきの組は Get へ渡す）
+string m = L10n.Get("money", ("amount", 1234567));                   // 表の "{amount:N0}" → 今の言語の文化で "1,234,567"
+string c = L10n.Plural("coins", n);                                  // 複数形（0 は zero を先に → 言語の規則の形 → other → 普通のキー。数は {n}）
+string c2 = L10n.Plural("coins", n, ("who", name));                  // ほかの差し込みも渡せる（("n", …) を渡すとそちらが勝つ）
+bool has = L10n.Has("menu.start");                                   // あるか（警告しない）
+bool ok = L10n.TryGet("menu.start", out string text);                // 無ければ false（警告しない）
+
+// 言語
+string lang = L10n.Language;                                         // 今の言語のコード（"ja"。言語の一覧が無ければ空）
+LocaleLanguage? cur = L10n.CurrentLanguage;                          // 今の言語（Code・Name・Fallback・CultureName）
+IReadOnlyList<LocaleLanguage> all = L10n.Languages;                  // 言語の一覧（index.json の順。Name は言語を選ぶ画面に出す名前）
+string def = L10n.DefaultLanguage;                                   // 既定の言語（index の default）
+string? sys = L10n.SystemLanguage;                                   // 端末の言語（"ja-JP"。Android〈Invariant〉・取れない環境では null）
+bool known = L10n.SetLanguage("en");                                 // 切り替え（表を読み替えて Changed・SaveData の "l10n.language" へ保存。一覧に無ければ false）
+L10n.SetLanguage("en", save: false);                                 // この実行の間だけ切り替える
+L10n.FollowSystemLanguage();                                         // 保存を消して端末の言語（当たらなければ既定の言語）へ
+bool follows = L10n.IsFollowingSystem;                               // 保存していない（端末に従っている）か
+IReadOnlyList<string> chain = L10n.FallbackChain;                   // 探す順（例 ["en", "ja"]）
+
+// 知らせ（SEED.Events のイベント名 "l10n.changed"。引数は今の言語のコードの string）
+this.On(L10n.Changed, (string code) => Refresh());
+
+// 置き場・読み直し・欠け
+L10n.Configure("assets://mygame/locale");                            // 置き場（既定 L10n.DefaultRoot = "assets://locale"。読み込み済みなら読み直して Changed）
+bool reloaded = L10n.PollChanges();                                  // データファイルが書き換わっていたら読み直して Changed（既定では誰も呼ばない）
+L10n.Reload();                                                       // index.json と表を読み直して Changed（今の言語を保つ）
+L10n.MissingPolicy = MissingKeyPolicy.Key;                           // 欠けの方針（Key = "key"・Marked = "[key]"・Empty = ""。既定は IsDebugAllowed なら Marked、そうでなければ Key）
+IReadOnlyCollection<string> missing = L10n.MissingKeys;             // 欠けていたキー（翻訳の漏れの確かめ。言語の切り替え・読み直しで数え直す）
+
+// 数・日付・時刻（今の言語の文化。Android〈Invariant〉では不変文化 → 言語ごとの書式は表に書いて渡す）
+string num = L10n.FormatNumber(1234.5, 1);                           // "1,234.5"（en-US）/ "1.234,5"（de-DE）。小数の桁 0〜15（既定 0）
+string day = L10n.FormatDate(date, L10n.Get("format.date"));         // .NET の日付の書式（既定 "d"）
+string time = L10n.FormatTime(new TimeOnly(7, 5), "H:mm");           // .NET の時刻の書式（既定 "t"）
+System.Globalization.CultureInfo culture = L10n.Culture;             // 今の言語の文化（index の culture。Invariant では Name が空）
+```
+
+```csharp
+// UI への結び付け（アクタに ScriptComponent を付ける。型名は完全名で書く）
+//   SEED.Localization.LocalizedText        … 同じアクタの Text へ「キー」の文字を入れる（言語が替わると入れ直す）
+//   SEED.Localization.LocalizedLabel       … 部品の文字へ当てる。判定は Button → 選択のグループ（SegmentedControl・ChipGroup・RadioGroup。
+//                                            項目ごとに「キー.番号」）→ Toggle・Checkbox（子 Label の Text）→ アクタ自身の Text の順
+//   SEED.Localization.LocalizationReloader … 開発中（IsDebugAllowed）だけ IntervalSeconds ごとに L10n.PollChanges()
+public string Key;                          // LocalizedText・LocalizedLabel の欄: 言語の表のキー（空なら文字を変えない）
+public List<LocalizedArg> Args;             // 同: 差し込み（LocalizedArg { Name, Value }。値は文字列のまま）
+public float IntervalSeconds;               // LocalizationReloader の欄: 調べる間隔（秒・実時間・0.25〜60・既定 1）
+
+// スクリプトから（相手の OnStart の前は null）
+LocalizedText? label = LocalizedBinding.Of<LocalizedText>(actor);   // LocalizedLabel も同じ
+label.SetArg("amount", 1200);               // 実行中の差し込み（同じ名前はインスペクタの差し込みより勝つ。数は文化で書く）
+label.ClearArgs();                          // 実行中の差し込みを外す
+label.SetCount(3);                          // 複数形として引く（ClearCount() で戻す）
+label.SetKey("hud.money");                  // キーを変えて当て直す
+label.Apply();                              // 当て直す
+ILocalizedTarget? target = label.Target;    // 今の当てる先（KindName・IsAlive・Apply(LocalizedRequest)）
+
+// 当てる先を直接使う（ILocalizedTarget: TextLabelTarget・ButtonLabelTarget・ChildLabelTarget<T>（Toggle・Checkbox の子 Label）・SelectionLabelTarget）
+new TextLabelTarget(text).Apply(new LocalizedRequest("menu.start"));
+new ButtonLabelTarget(button).Apply(new LocalizedRequest("ui.dialog.ok"));
+string r1 = new LocalizedRequest("coins", args, count: 3).Resolve();   // 今の言語の文（count があれば複数形）
+string r2 = new LocalizedRequest("theme_mode").ResolveChild("0");      // "theme_mode.0" の文
+ILocalizedTarget? found = LocalizedTargetTable.Find(actor);           // 判定の表で当てる先を探す
+```
+
+| データ（`<言語>.json`） | 読み方 |
+|---|---|
+| `"menu": { "start": "…" }` | 入れ子は `.` でつないだキー（`menu.start`） |
+| `"_about": "…"` | `_` で始まる鍵は説明（読まない） |
+| `"coins": { "one": "{n} coin", "other": "{n} coins" }` | 子がすべて `zero`・`one`・`two`・`few`・`many`・`other` なら複数形のまとまり |
+| `"days": ["日", "月"]` | 配列は番号のキー（`days.0`） |
+| `"todo": null` | 訳していない（次の言語を探す） |
+| `{name}`・`{0}`・`{name:N0}`・`{{` `}}` | 差し込み・順・書式・波かっこそのもの。**渡していない `{…}` はそのまま残す**（Text の `{num}`・`{color}` などの記法と共存） |
+
+| 複数形の規則 | 言語 |
+|---|---|
+| other だけ | ja・zh・ko・th・vi・id など |
+| 1 = one | en・de・es・it・nl・pt-PT など（表に無い言語の既定） |
+| 0 と 1 = one | fr・pt（ブラジル）・hi など |
+| one / few / many | ru・uk・be・pl |
+| one / few / other | cs・sk |
+| zero / one / two / few / many / other | ar |
+
+> **重要**: `L10n.Changed` は今の言語のコードの **string で発火**する。購読は `this.On(L10n.Changed, (string code) => …)`。引数なしの `() => …` では呼ばれない（SEED.Events は引数の型が合う購読だけを呼ぶ）。
+
+> **重要**（Android）: Android の CoreCLR は Invariant（`runtime/android/dotnet_runtime.json` の `System.Globalization.Invariant=true`）なので、`L10n.SystemLanguage` は null（起動の言語は 保存した値 → 既定の言語）、数・日付の書式は不変文化（月・曜日の名前は英語）。言語ごとの書式（`"format.date": "M月d日"`）と曜日の名前は表に書いて引く。
+
+> **重要**: Edit（Play していないとき）はスクリプトが動かないので、LocalizedText のアクタはプレハブの文字のまま見える。SEED.UI の部品の既定の文字列（`DialogOptions.DefaultPositiveText` の "OK"・`TimeWheel` の午前/午後・`ChartView.EmptyText`）は L10n を読まない。`Dialog.Show` などへは `L10n.Get` で引いて渡す（対応表は `docs/localization.md` §10）。
+
 ---
 
 ## 8. （メンテナ向け）新しいコンポーネントをスクリプトへ公開する手順
