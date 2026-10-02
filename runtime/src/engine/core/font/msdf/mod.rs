@@ -24,6 +24,7 @@
 //    distance.rs         … テクセルごとの距離（輪郭ごと → 重なりを考えて合成。打ち切り・行の並列化・符号の直し）
 //    error_correction.rs … 補間の誤り（偽の縁）の補正
 //    verify.rs           … 字形ごとの検査（参照のラスタとの比較。安全弁）
+//    raster_fallback.rs  … 安全弁の最後の落ち先（アルファも落ちた字をラスタからの真の SDF で作る。2026-10-03）
 //    bake.rs             … 1 グリフを焼く流れ（上を順に呼ぶ・各段の時間）
 //    params.rs           … 定数（大きさ・距離の幅・余白・補正と検査の閾値）
 // ============================================================
@@ -35,6 +36,7 @@ pub mod error_correction;
 pub mod geometry;
 pub mod outline;
 pub mod params;
+pub mod raster_fallback;
 pub mod segment;
 pub mod verify;
 /// 計測（焼き時間・検査の結果）と目視用の画像（`--ignored` で走らせる）

@@ -16,6 +16,10 @@ use super::msdf::BakeStats;
 
 /// 例として覚える落ちた字の数（ログの長さを抑える）。
 const MAX_FALLBACK_EXAMPLES: usize = 24;
+/// 細い線で em を上げた字を 1 字ずつログに出す数（これを超えたら `THIN_RAISE_LOG_EVERY` 字ごとの集計の 1 行だけ。細字の書体で行が溢れないように）。
+const MAX_THIN_RAISE_LOG_LINES: usize = 24;
+/// 細い線で em を上げた字の集計の行を出す間隔（字数）。
+const THIN_RAISE_LOG_EVERY: usize = 100;
 /// ミリ秒への換算。
 const MS_PER_SEC: f64 = 1000.0;
 
@@ -42,6 +46,15 @@ pub struct FieldBakeStats {
     pub baked: usize,
     /// 検査に落ちて真の SDF で描く字の数。
     pub fallback: usize,
+    /// そのうち、アルファも落ちてラスタからの真の SDF で作り直した字の数（2026-10-03）。
+    pub raster_fallback: usize,
+    /// 細い線が消えるので em を上げて焼き直した字の数（2026-10-03。レビュー #5）。
+    pub thin_raised: usize,
+    /// 焼いた距離場の面積の合計（テクセル²。アトラスの使い方の目安）と、そのうち em を上げて増えた分。
+    pub field_texels: usize,
+    pub thin_raised_extra_texels: usize,
+    /// 焼いた em の合計（平均の em の計算用）。
+    pub em_sum: f64,
     /// 落ちた字の例（最初の MAX_FALLBACK_EXAMPLES 字）。
     pub fallback_examples: Vec<char>,
     /// 焼いた時間の合計・最大（とその字）。
@@ -67,6 +80,32 @@ impl FieldBakeStats {
     /// 1 字ぶんを記録し、必要ならログを出す。
     pub fn record(&mut self, ch: char, s: &BakeStats) {
         self.baked += 1;
+        self.field_texels += s.width * s.height;
+        self.em_sum += f64::from(s.em_px);
+        if let Some(from) = s.thin_raised_from_em {
+            self.thin_raised += 1;
+            self.thin_raised_extra_texels += s.thin_raised_extra_texels;
+            // em を上げた字はログに出す（アトラスの容量への影響が分かるように。最初の数字は 1 字ずつ、その後は一定の字数ごとの集計）
+            if self.thin_raised <= MAX_THIN_RAISE_LOG_LINES {
+                eprintln!(
+                    "{LOG_TAG} 細い線が消えるので em を上げて焼き直しました: '{ch}' U+{:04X}（em {from} → {}・消えた画素 {}・距離場 {}x{}）。これまでに {} 字（面積 +{} テクセル²）",
+                    ch as u32,
+                    s.em_px,
+                    s.verify.vanished_px,
+                    s.width,
+                    s.height,
+                    self.thin_raised,
+                    self.thin_raised_extra_texels
+                );
+            } else if self.thin_raised % THIN_RAISE_LOG_EVERY == 0 {
+                eprintln!(
+                    "{LOG_TAG} 細い線で em を上げた字がこれまでに {} 字（距離場の面積 +{} テクセル²。焼いた全体の {:.1}%）",
+                    self.thin_raised,
+                    self.thin_raised_extra_texels,
+                    self.thin_raised_extra_texels as f32 / self.field_texels.max(1) as f32 * PERCENT
+                );
+            }
+        }
         let total = s.total();
         self.total_time += total;
         if total > self.max_time {
@@ -79,8 +118,16 @@ impl FieldBakeStats {
                 self.fallback_examples.push(ch);
             }
             let alpha = s.alpha_verify.map(|a| format!("{} 画素", a.artifact_px)).unwrap_or_else(|| "-".to_string());
+            // アルファも落ちてラスタからの真の SDF で作り直した字（最後の落ち先。bake.rs の apply_safety_valve）
+            let raster = match (s.raster_fallback, s.raster_verify) {
+                (true, Some(r)) => format!("。アルファも落ちたのでラスタからの真の SDF で作り直しました（{} 画素）", r.artifact_px),
+                _ => String::new(),
+            };
+            if s.raster_fallback {
+                self.raster_fallback += 1;
+            }
             eprintln!(
-                "{LOG_TAG} MTSDF の検査に落ちた字を真の SDF で描きます: '{ch}' U+{:04X}（食い違い {} 画素 > {}。真の SDF では {alpha}）。これまでに {} 字（例: {}）",
+                "{LOG_TAG} MTSDF の検査に落ちた字を真の SDF で描きます: '{ch}' U+{:04X}（食い違い {} 画素 > {}。真の SDF では {alpha}{raster}）。これまでに {} 字（例: {}）",
                 ch as u32,
                 s.verify.artifact_px,
                 s.verify.threshold,
@@ -90,8 +137,9 @@ impl FieldBakeStats {
         }
         if self.log_each {
             eprintln!(
-                "{LOG_TAG} mtsdf '{ch}' U+{:04X} {}x{} 輪郭 {} 辺 {} 時間 {:.2} ms（輪郭 {:.2} / 距離 {:.2} / 補正 {:.2} / 検査 {:.2}） 補正 {} テクセル 検査 {}/{}{}",
+                "{LOG_TAG} mtsdf '{ch}' U+{:04X} em {} {}x{} 輪郭 {} 辺 {} 時間 {:.2} ms（輪郭 {:.2} / 距離 {:.2} / 補正 {:.2} / 検査 {:.2}） 補正 {} テクセル 検査 {}/{} 消えた画素 {}{}",
                 ch as u32,
+                s.em_px,
                 s.width,
                 s.height,
                 s.contours,
@@ -104,6 +152,7 @@ impl FieldBakeStats {
                 s.correction.corrected,
                 s.verify.artifact_px,
                 s.verify.threshold,
+                s.verify.vanished_px,
                 if s.fallback { " → 真の SDF" } else { "" }
             );
         }
@@ -142,7 +191,7 @@ impl FieldBakeStats {
     pub fn summary_line(&self) -> String {
         let avg = if self.baked > 0 { ms(self.total_time) / self.baked as f64 } else { 0.0 };
         format!(
-            "MTSDF 焼いた字 {} 平均 {:.2} ms 最大 {:.2} ms（{}） まとめて焼いた最長 {:.2} ms（{} 字） 検査に落ちた字 {}（例: {}） アトラス {}/{} ページ・{} 字・上限に対する使用率 {:.1}%",
+            "MTSDF 焼いた字 {} 平均 {:.2} ms 最大 {:.2} ms（{}） まとめて焼いた最長 {:.2} ms（{} 字） 検査に落ちた字 {}（うちラスタから作り直し {}。例: {}） 細い線で em を上げた字 {}（距離場の面積 +{:.1}%）平均の em {:.1} アトラス {}/{} ページ・{} 字・上限に対する使用率 {:.1}%",
             self.baked,
             avg,
             ms(self.max_time),
@@ -150,7 +199,11 @@ impl FieldBakeStats {
             ms(self.max_batch_time),
             self.max_batch_count,
             self.fallback,
+            self.raster_fallback,
             self.examples_text(),
+            self.thin_raised,
+            if self.field_texels > 0 { self.thin_raised_extra_texels as f32 / self.field_texels as f32 * PERCENT } else { 0.0 },
+            if self.baked > 0 { self.em_sum / self.baked as f64 } else { 0.0 },
             self.atlas.pages,
             self.atlas.max_pages,
             self.atlas.glyphs,
@@ -173,8 +226,8 @@ mod tests {
     #[test]
     fn records_fallbacks_and_times() {
         let mut st = FieldBakeStats::new(false);
-        let ok = BakeStats { time_distance: Duration::from_millis(2), verify: VerifyReport { artifact_px: 0, threshold: 8, sampled_px: 100, detail_px: 0 }, ..Default::default() };
-        let bad = BakeStats { time_distance: Duration::from_millis(5), fallback: true, verify: VerifyReport { artifact_px: 30, threshold: 8, sampled_px: 100, detail_px: 0 }, ..Default::default() };
+        let ok = BakeStats { time_distance: Duration::from_millis(2), verify: VerifyReport { artifact_px: 0, threshold: 8, sampled_px: 100, detail_px: 0, vanished_px: 0 }, ..Default::default() };
+        let bad = BakeStats { time_distance: Duration::from_millis(5), fallback: true, verify: VerifyReport { artifact_px: 30, threshold: 8, sampled_px: 100, detail_px: 0, vanished_px: 0 }, ..Default::default() };
         st.record('あ', &ok);
         st.record('鬱', &bad);
         st.record_batch(2, Duration::from_millis(6), "mtsdf");
@@ -185,6 +238,11 @@ mod tests {
         assert_eq!(st.max_char, Some('鬱'));
         assert_eq!(st.total_time, Duration::from_millis(7));
         assert!(st.summary_line().contains("検査に落ちた字 1"));
+        // 細い線で em を上げた字は数と面積の増分に残る
+        let raised = BakeStats { em_px: 64.0, width: 10, height: 10, thin_raised_from_em: Some(40.0), thin_raised_extra_texels: 60, ..Default::default() };
+        st.record('一', &raised);
+        assert_eq!((st.thin_raised, st.thin_raised_extra_texels, st.field_texels), (1, 60, 100));
+        assert!(st.summary_line().contains("細い線で em を上げた字 1（距離場の面積 +60.0%）"), "{}", st.summary_line());
         // アトラスの状態は最後に写したものが集計に出る
         st.record_atlas(AtlasStatsSnapshot { pages: 2, max_pages: 4, glyphs: 3100, used_fraction_of_limit: 0.375 });
         let line = st.summary_line();

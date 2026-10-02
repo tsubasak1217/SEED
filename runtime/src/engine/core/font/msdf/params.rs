@@ -135,6 +135,37 @@ pub const VERIFY_DETAIL_TOLERANCE_PX: f32 = 1.0;
 /// 参照のラスタの画素の数（4 × 4 = 1 テクセルの 16 画素の半分 = 0.5 テクセル²）。
 pub const VERIFY_MAX_ARTIFACT_PX: usize = 8;
 
+/// 消えた細部の画素（参照では内側なのに描くと外側で、まわり `VERIFY_EDGE_TOLERANCE_PX` の中の参照の内側が 1 つも描かれない画素＝
+/// 線の幅ごと消えた所。verify.rs の `vanished_px`）がこれを超えたら、その字は em を上げて焼き直す（`thin_stroke_em_candidates`。
+/// 1 テクセルより細い線が大きな表示で薄れる・消えるのを防ぐ。2026-10-03。レビュー #5）。
+///
+/// 参照のラスタの画素の数（16 = 1 テクセル²。丸い書体の線の端・点の縁の小さな欠けは数えない）。
+pub const VERIFY_MAX_VANISHED_PX: usize = 16;
+
+/// 細い線の字の em を上げるときの刻み（テクセル）。上げる前の em からこの刻みで上限 `MTSDF_MAX_EM_PX` まで試す。
+///
+/// 1 テクセルより細い線が消えるかは線とテクセルの中心の位置の関係で決まる（em を上げても、線がテクセルの中心の間に来れば消える）ので、
+/// 上限だけでなく途中の em も試し、消えた細部（em² あたり）がいちばん少ない em を選ぶ（同じなら小さい em＝アトラスを食わない）。
+pub const MTSDF_THIN_EM_STEP: f32 = 8.0;
+
+/// 細い線の字で試す em の並び（上げる前の `em_px` より大きく、刻み `MTSDF_THIN_EM_STEP`・上限 `MTSDF_MAX_EM_PX` を必ず含む）。
+pub fn thin_stroke_em_candidates(em_px: f32) -> Vec<f32> {
+    let mut out = Vec::new();
+    let mut em = em_px + MTSDF_THIN_EM_STEP;
+    while em < MTSDF_MAX_EM_PX {
+        out.push(em);
+        em += MTSDF_THIN_EM_STEP;
+    }
+    if em_px < MTSDF_MAX_EM_PX {
+        out.push(MTSDF_MAX_EM_PX);
+    }
+    out
+}
+
+/// 安全弁の最後の落ち先（raster_fallback.rs。アルファも検査に落ちた字）で字を塗る細かさ（MTSDF の 1 テクセルを何画素で塗るか）。
+/// 距離はこの分の 1 テクセルの細かさで求まる（1 チャネルの SDF の em 64 の 2 値化より細かい）。
+pub const RASTER_FALLBACK_OVERSAMPLE: u32 = 4;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +190,10 @@ mod tests {
         assert_eq!(em_for_outline_length(MTSDF_DETAIL_LENGTH_EM), MTSDF_EM_PX);
         assert_eq!(em_for_outline_length(MTSDF_DETAIL_LENGTH_EM * 1.25), 50.0);
         assert_eq!(em_for_outline_length(100.0), MTSDF_MAX_EM_PX);
+        // 細い線の字で試す em: 40 → 48・56・64、60 → 64、64 → なし
+        assert_eq!(thin_stroke_em_candidates(MTSDF_EM_PX), vec![48.0, 56.0, 64.0]);
+        assert_eq!(thin_stroke_em_candidates(60.0), vec![64.0]);
+        assert!(thin_stroke_em_candidates(MTSDF_MAX_EM_PX).is_empty());
         // どの em でも余白は距離の片側の幅以上（縁取りの上限 MTSDF_MAX_OUTLINE_VALUE は em 40 がいちばん厳しい）
         for em in 40..=64 {
             let s = FieldScale::with_em(em as f32);

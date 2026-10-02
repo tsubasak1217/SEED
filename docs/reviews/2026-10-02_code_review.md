@@ -79,6 +79,10 @@
 - 根拠: 深さは「サンプル点（最初の辺の中点）を含むほかの輪郭の数」（distance.rs:341）なので、重なりがあると入れ子の順と一致しない。テスト `far_nested_contours_do_not_hide_near_contour` は重なりの無い形だけ。
 - 確認: 未（サブレビュアの手追い。**推測**: 組み込みの書体は輪郭が重ならないので起きない。可変フォントの静的化をしていない書体など、輪郭の重なる利用者の書体で起きうる）
 - 直し方の案: `alpha_verify` も落ちたら、打ち切りなし（cutoff・far を無限大）で焼き直すか、`rasterize_glyph_sdf` の結果を RGBA へ広げて使う。遠い輪郭どうしの同点を作らない決め方にする。
+- → 2026-10-03 に済（L1-5）: アルファも落ちたら、ラスタ（4 倍の細かさ）からの真の SDF を MTSDF の置き場で作り直して RGBA へ広げる（`msdf/raster_fallback.rs`・`bake.rs` の
+  `apply_safety_valve`。最後の落ち先）。遠い輪郭の深さを「全ての辺の中点を含む輪郭の数」で数え、同じ深さは輪郭の番号で崩す（`distance.rs` の `nesting_depths`・
+  `assign_far_by_depth`）。サブレビュアの O・H・I・Q の形を単体テストにした（`overlapping_small_contour_does_not_tie_outer_and_hole`。直す前の決め方では O と H が同点）。
+  docs/ui_components.md §12.11。
 
 ## 5. MTSDF で 1 テクセルより細い線が大きな表示で薄れる・消えるのを、検査が原理的に数えない  【重さ: 中（書体次第・推測を含む）】
 - 場所: runtime/src/engine/core/font/msdf/verify.rs:216-231、params.rs:129-136、bake.rs:139-146（em を決めるのは輪郭の長さだけ）（コミット 65951959）
@@ -86,6 +90,9 @@
 - 根拠: 消える画素は参照の縁から 2 画素（0.5 テクセル）以内に入るので `artifact_px` に数えられない。`detail_px` は計算しているがどこでも使っていない。「一」のような輪郭の短い字は em 40 のまま。テスト `thin_horizontal_strokes_never_vanish_at_1x` は組み込みの書体の 12〜20 px だけ。
 - 確認: 未（サブレビュアの手計算。監督役は verify.rs の許す幅が参照の画素 2.0 ＝ 0.5 テクセルであることだけ確かめた）
 - 直し方の案: 距離場の山が 0.5 に届かない細部を検出したら em を上げる、または `detail_px` を em の引き上げの判定に使う。
+- → 2026-10-03 に済（L1-5）: 検査が「線の幅ごと消えた画素」（`vanished_px`）を数え、16 画素を超えた字は em を 8 刻みで上限 64 まで試して消えた細部の最も少ない em で焼き直す
+  （`detail_px` は 2 画素幅以下の線を数えないので使わなかった）。組み込みの書体の Thin（横画 0.02 em）の「一」は em 40 で線が消えていた（描いた線 0）→ em 56 で戻る。
+  組み込みの Regular（最も細い線 0.06 em）は漢字 4,954 字で上げた字 0。docs/ui_components.md §12.12。
 
 ## 6. MTSDF のアトラスの容量が約半分になり、満杯のあとは新しい字が警告 1 回のあと描かれない  【重さ: 中（既知・backlog と docs/ui_components.md §12.14 に記載済み）】
 - 場所: runtime/src/engine/core/font/atlas.rs:200-219・293-318、font/mod.rs:130-137・506-508（コミット 65951959）
@@ -179,6 +186,8 @@
 - 何が起きるか: 合成の符号と走査線の内外が食い違う所（自己交差・向きの誤った輪郭）で、基準の値が 0.5 を挟んで反転し、本当は 0.45 の細い隙間を「直したほうが近い」と平らにする、または偽の縁を残す。
 - 確認: 未（サブレビュアの読み。msdfgen が走査線で符号を直すとき距離の確かめを切る、という対比は記憶によるもの）
 - 直し方の案: 基準の距離にも同じ内外の符号を当てる。
+- → 2026-10-03 に済（L1-5）: `PreparedShape::pseudo_distance_at` が走査線の内外の符号を当てて返す（`corrected_pseudo_distance`）。自己交差の輪郭（向きの逆な小さな輪のある 8 の字）の
+  試験 `self_intersecting_contour_reference_distance_follows_fill`。docs/ui_components.md §12.11。
 
 ## 17. サムネイルの道具の見張りスレッドが Dispose 後の `Process.Id` を読み、道具ごと落ちうる  【重さ: 低】
 - 場所: editor/tools/SeedTemplateThumbnails/Runtime/QuietProcess.cs:180-182・206・229-233（コミット 7cc55bbb）

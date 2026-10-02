@@ -16,13 +16,21 @@
 //    深さは「食い違った画素のまわり（許す幅の円の中）に参照の反対側の画素があるか」で決める（食い違いは少ないので、
 //    画像全体の距離変換をしない。2026-10-02 の計測で検査が 1 字 1.2〜2.3 ms〈release〉→ 短縮）。
 //  - 画素の読みは行ごとに並列（rayon）。補間の内外がセルの中で決まる所は読まない（classify_cells）。
+//
+//  【消えた細部（`vanished_px`。2026-10-03。レビュー #5）】
+//  1 テクセルより細い線は、2 つのテクセルの中心の間に来ると両方が外側の値になり、補間しても 0.5 に届かない（線ごと消える）。
+//  消えた画素は参照の縁から 0.5 テクセル以内に入るので `artifact_px` には数えない。そこで「参照では内側なのに描くと外側で、
+//  まわり（許す幅の円の中）の参照の内側の画素が 1 つも描かれていない」画素を数える（縁が少しずれただけなら、線の内側の
+//  画素は描かれている）。これが `VERIFY_MAX_VANISHED_PX` を超えた字は、bake.rs が em を上げて焼き直す。
 // ============================================================
 
 use ab_glyph::{point, Font, FontArc, GlyphId, PxScale};
 use rayon::prelude::*;
 
 use super::geometry::median3_f32;
-use super::params::{MTSDF_BYTES_PER_TEXEL, VERIFY_DETAIL_TOLERANCE_PX, VERIFY_EDGE_TOLERANCE_PX, VERIFY_MAX_ARTIFACT_PX, VERIFY_OVERSAMPLE};
+use super::params::{
+    MTSDF_BYTES_PER_TEXEL, VERIFY_DETAIL_TOLERANCE_PX, VERIFY_EDGE_TOLERANCE_PX, VERIFY_MAX_ARTIFACT_PX, VERIFY_MAX_VANISHED_PX, VERIFY_OVERSAMPLE,
+};
 
 /// 参照の被覆率でこれ以上を内側とする。
 const REFERENCE_INSIDE_COVERAGE: f32 = 0.5;
@@ -49,14 +57,27 @@ pub struct VerifyReport {
     pub threshold: usize,
     /// 比べた画素の数。
     pub sampled_px: usize,
-    /// 縁から `VERIFY_DETAIL_TOLERANCE_PX`（0.25 テクセル）より深い所で食い違った画素の数（細部が潰れた量。解像度を上げるかの判断）。
+    /// 縁から `VERIFY_DETAIL_TOLERANCE_PX`（0.25 テクセル）より深い所で食い違った画素の数（細部が潰れた量。計測用）。
     pub detail_px: usize,
+    /// 線の幅ごと消えた画素の数（冒頭の【消えた細部】。em を上げるかの判断。`needs_finer_field`）。
+    pub vanished_px: usize,
 }
 
 impl VerifyReport {
     /// 検査に通ったか。
     pub fn passed(&self) -> bool {
         self.artifact_px <= self.threshold
+    }
+
+    /// 線の幅ごと消えた細部が多く、em を上げて焼き直すべきか（`VERIFY_MAX_VANISHED_PX` を超えた）。
+    pub fn needs_finer_field(&self) -> bool {
+        self.vanished_px > VERIFY_MAX_VANISHED_PX
+    }
+
+    /// 消えた細部の面積（em² の単位。検査の画素は em × `VERIFY_OVERSAMPLE` 画素で 1 em なので、違う em どうしで比べられる）。
+    pub fn vanished_area_em2(&self, em_px: f32) -> f32 {
+        let px_per_em = em_px * VERIFY_OVERSAMPLE as f32;
+        self.vanished_px as f32 / (px_per_em * px_per_em)
     }
 }
 
@@ -163,7 +184,7 @@ pub fn verify_glyph(font: &FontArc, glyph_id: GlyphId, em_px: f32, data: &[u8], 
     // 参照のラスタ（MTSDF の k 倍の大きさ。ペンの基点を原点に置く）
     let glyph = glyph_id.with_scale_and_position(PxScale::from(em_px * k as f32), point(0.0, 0.0));
     let Some(outlined) = font.outline_glyph(glyph) else {
-        return VerifyReport { artifact_px: 0, threshold, sampled_px: 0, detail_px: 0 };
+        return VerifyReport { artifact_px: 0, threshold, sampled_px: 0, detail_px: 0, vanished_px: 0 };
     };
     let bounds = outlined.px_bounds();
     let (rx0, ry0) = (bounds.min.x.round() as i32, bounds.min.y.round() as i32);
@@ -189,29 +210,53 @@ pub fn verify_glyph(font: &FontArc, glyph_id: GlyphId, em_px: f32, data: &[u8], 
     // 補間した値の内外がセルの中で決まる所は画素ごとに読まない
     let cells = classify_cells(data, place.width, place.height, channel);
     let cell_w = place.width + 1;
+    // 描いた形の内外（画素 hx, hy。範囲の外は外側）
+    let rendered_at = |hx: i64, hy: i64| -> bool {
+        if hx < 0 || hy < 0 || hx as usize >= hw || hy as usize >= hh {
+            return false;
+        }
+        // 画素の中心の格子の座標（テクセル）と、その画素が入るセル（左上の角のテクセル + 1）
+        let gx = (hx as f32 + 0.5) / k as f32;
+        let gy = (hy as f32 + 0.5) / k as f32;
+        let cx = ((gx - 0.5).floor() as i64 + 1) as usize;
+        let cy = ((gy - 0.5).floor() as i64 + 1) as usize;
+        match cells[cy * cell_w + cx] {
+            CELL_OUTSIDE => false,
+            CELL_INSIDE => true,
+            _ => sample_field(data, place.width, place.height, gx, gy, channel) >= FIELD_EDGE,
+        }
+    };
     let tol_sq = (VERIFY_EDGE_TOLERANCE_PX * VERIFY_EDGE_TOLERANCE_PX) as i64;
     let detail_tol_sq = (VERIFY_DETAIL_TOLERANCE_PX * VERIFY_DETAIL_TOLERANCE_PX) as i64;
     let reach = VERIFY_EDGE_TOLERANCE_PX.ceil() as i64;
     // 行ごとに（並列）: 食い違った画素を数え、そのまわりに参照の反対側があるかで深さを決める
-    let (artifacts, detail) = (0..hh)
+    let (artifacts, detail, vanished) = (0..hh)
         .into_par_iter()
         .map(|hy| {
             let mut artifacts = 0usize;
             let mut detail = 0usize;
+            let mut vanished = 0usize;
             for hx in 0..hw {
                 let inside_ref = reference_at(hx as i64, hy as i64);
-                // 画素の中心の格子の座標（テクセル）と、その画素が入るセル（左上の角のテクセル + 1）
-                let gx = (hx as f32 + 0.5) / k as f32;
-                let gy = (hy as f32 + 0.5) / k as f32;
-                let cx = ((gx - 0.5).floor() as i64 + 1) as usize;
-                let cy = ((gy - 0.5).floor() as i64 + 1) as usize;
-                let rendered = match cells[cy * cell_w + cx] {
-                    CELL_OUTSIDE => false,
-                    CELL_INSIDE => true,
-                    _ => sample_field(data, place.width, place.height, gx, gy, channel) >= FIELD_EDGE,
-                };
+                let rendered = rendered_at(hx as i64, hy as i64);
                 if rendered == inside_ref {
                     continue;
+                }
+                // 欠け（参照では内側なのに描くと外側）: まわりの参照の内側が 1 つも描かれていなければ、線の幅ごと消えた画素
+                if inside_ref {
+                    let mut any_drawn = false;
+                    'search: for dy in -reach..=reach {
+                        for dx in -reach..=reach {
+                            let (nx, ny) = (hx as i64 + dx, hy as i64 + dy);
+                            if dx * dx + dy * dy <= tol_sq && reference_at(nx, ny) && rendered_at(nx, ny) {
+                                any_drawn = true;
+                                break 'search;
+                            }
+                        }
+                    }
+                    if !any_drawn {
+                        vanished += 1;
+                    }
                 }
                 // 参照の反対側の画素までの二乗距離の最小（許す幅の円の中だけを見る。無ければ幅より深い）
                 let mut nearest_sq = i64::MAX;
@@ -230,8 +275,9 @@ pub fn verify_glyph(font: &FontArc, glyph_id: GlyphId, em_px: f32, data: &[u8], 
                     detail += 1;
                 }
             }
-            (artifacts, detail)
+            (artifacts, detail, vanished)
         })
-        .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-    VerifyReport { artifact_px: artifacts, threshold, sampled_px: hw * hh, detail_px: detail }
+        .reduce(|| (0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2));
+    debug_assert!(VERIFY_MAX_VANISHED_PX > 0);
+    VerifyReport { artifact_px: artifacts, threshold, sampled_px: hw * hh, detail_px: detail, vanished_px: vanished }
 }

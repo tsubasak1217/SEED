@@ -17,7 +17,14 @@
 //
 //  【符号の直し】
 //  走査線の巻き数（非ゼロ規則）で決めた内外と、中央値の符号が食い違うテクセルは全チャネルの符号を反転する
-//  （msdfgen の distanceSignCorrection）。アルファは常に巻き数の内外の符号にする。
+//  （msdfgen の distanceSignCorrection）。アルファは常に巻き数の内外の符号にする。誤差の補正が比べる基準の
+//  1 チャネルの疑似距離（`pseudo_distance_at`）にも同じ内外の符号を当てる（2026-10-03。レビュー #16）。
+//
+//  【遠い輪郭の入れ子の深さと同点（2026-10-03。レビュー #4）】
+//  辺の残らない（遠い）輪郭の距離の大きさは入れ子の深さで決める（深いほど近い）。深さ = 「その輪郭の **全ての辺の中点** を
+//  内側に含む、ほかの輪郭の数」（以前は最初の辺の中点 1 つだけで数えたので、小さな輪郭が重なると外枠の深さが 1 増え、
+//  外枠と穴が同点になって穴の中の点で外枠を選んでいた）。深さが同じ輪郭どうしは輪郭の番号で決める（番号の大きい輪郭ほど
+//  わずかに近い。差は深さ 1 段の半分未満なので深さの順は崩れない）＝ 遠い輪郭の距離に同点が無く、合成の結果が決まる。
 // ============================================================
 
 use rayon::prelude::*;
@@ -38,6 +45,11 @@ const FAR_DEPTH_STEP: f64 = 0.5;
 /// 巻き数の折れ線の索引の帯の高さ（テクセル）。点の y の帯に掛かる折れ線だけを見る（全部を見ると誤差の補正の候補ごとに
 /// 数千本を調べて遅かった。2026-10-02 の計測で画数の多い字の補正が 3.4 ms → 帯の索引で短縮）。
 const POLY_BAND_HEIGHT: f64 = 1.0;
+/// 深さが同じ遠い輪郭の同点を崩す幅の上限（`FAR_DEPTH_STEP` に対する割合）。輪郭 c は c ÷ 輪郭の数 × これ × 深さ 1 段だけ近くする
+/// （全輪郭の差の合計が深さ 1 段の半分未満＝深さの順は崩れない）。
+const FAR_TIE_FRACTION: f64 = 0.5;
+/// 辺の中点（入れ子の深さの判定に使う、輪郭の上の点）。
+const EDGE_MIDPOINT: f64 = 0.5;
 
 /// MTSDF の 1 テクセルの距離（テクセルの単位・内側が正）: [赤, 緑, 青, 真の距離]。
 pub type MtsdfDistances = [f64; 4];
@@ -330,19 +342,46 @@ impl PreparedShape {
         &self.poly_bands[k as usize]
     }
 
-    /// 輪郭ごとの「遠い」距離の大きさを入れ子の深さで決める（深さ = その輪郭の上の点を含む、ほかの輪郭の数）。
+    /// 輪郭ごとの「遠い」距離の大きさを入れ子の深さで決める（冒頭の【遠い輪郭の入れ子の深さと同点】）。
+    ///
+    /// 深さ = その輪郭の全ての辺の中点を内側に含む、ほかの輪郭の数（`nesting_depths`）。深さが同じ輪郭は番号の大きいほうを
+    /// わずかに近くして同点を無くす（距離 → 輪郭の番号の順に決まる）。
     fn assign_far_by_depth(&mut self, shape: &Shape) {
         let n = self.contours.len();
-        let mut windings = vec![0i32; n];
-        for (c, contour) in shape.contours.iter().enumerate() {
-            // 輪郭の上の点（最初の辺の真ん中）がほかの輪郭の内側にあるか
-            let sample = contour.edges[0].point(0.5);
-            self.windings_at(sample, &mut windings);
-            let depth = (0..n).filter(|&d| d != c && windings[d] != 0).count();
+        let depths = self.nesting_depths(shape);
+        // 同点を崩す 1 輪郭ぶんの幅（全輪郭で合わせても深さ 1 段の半分未満）
+        let tie_step = FAR_DEPTH_STEP * FAR_TIE_FRACTION / n.max(1) as f64;
+        for (c, depth) in depths.into_iter().enumerate() {
             // 打ち切りより遠いまま（値が必ず張り付く）にする
-            let far = (self.far - depth as f64 * FAR_DEPTH_STEP).max(self.cutoff + FAR_DEPTH_STEP);
-            self.contours[c].far = far;
+            let by_depth = (self.far - depth as f64 * FAR_DEPTH_STEP).max(self.cutoff + FAR_DEPTH_STEP);
+            self.contours[c].far = by_depth - c as f64 * tie_step;
         }
+    }
+
+    /// 輪郭ごとの入れ子の深さ（その輪郭の **全ての** 辺の中点を内側〈巻き数が 0 でない〉に含む、ほかの輪郭の数）。
+    ///
+    /// 1 点だけで数えると、その点にたまたま重なった小さな輪郭まで「外側の親」に数えてしまう（レビュー #4 の O・Q）。
+    /// 入れ子の親は輪郭を丸ごと含むので、全ての辺の中点で確かめれば重なっただけの輪郭は数えない。
+    fn nesting_depths(&self, shape: &Shape) -> Vec<usize> {
+        let n = self.contours.len();
+        let mut windings = vec![0i32; n];
+        shape
+            .contours
+            .iter()
+            .enumerate()
+            .map(|(c, contour)| {
+                // contains[d] = これまでの全ての中点が輪郭 d の内側だったか
+                let mut contains = vec![true; n];
+                contains[c] = false;
+                for edge in &contour.edges {
+                    self.windings_at(edge.point(EDGE_MIDPOINT), &mut windings);
+                    for (d, inside) in contains.iter_mut().enumerate() {
+                        *inside &= windings[d] != 0;
+                    }
+                }
+                contains.iter().filter(|&&inside| inside).count()
+            })
+            .collect()
     }
 
     /// 1 点の作業領域を作る。
@@ -521,14 +560,19 @@ impl PreparedShape {
     }
 
     /// 任意の点の 1 チャネルの疑似距離（全ての辺を 1 色とみなす。誤差の補正で「本来の値」に使う）。
+    ///
+    /// 符号は `generate` のテクセルと同じく走査線の内外（非ゼロ規則）に直す（2026-10-03。レビュー #16）。
+    /// 直さないと、合成の符号と内外が食い違う所（自己交差・向きの誤った輪郭）で基準が 0.5 を挟んで反転し、
+    /// 補正が細い隙間を平らにしたり偽の縁を残したりする。
     pub fn pseudo_distance_at(&self, p: Vec2, scratch: &mut PointScratch) -> f64 {
         let mut windings = std::mem::take(&mut scratch.windings);
         let all = std::mem::take(&mut scratch.all_edges);
         self.windings_at(p, &mut windings);
+        let inside = windings.iter().sum::<i32>() != 0;
         let d = self.evaluate(p, &all, &windings, true, scratch);
         scratch.windings = windings;
         scratch.all_edges = all;
-        d[0]
+        corrected_pseudo_distance(d[0], inside)
     }
 
     /// 点が字の内側か（全輪郭の巻き数の和が 0 でない＝非ゼロ規則）。
@@ -640,6 +684,16 @@ fn crossing(s: &PolySegment, y: f64) -> Option<(f64, i32)> {
         Some((x, dir))
     } else {
         None
+    }
+}
+
+/// 1 チャネルの疑似距離の符号を内外にそろえる（`correct_sign` の 1 チャネル版。0 はそのまま）。
+#[inline]
+fn corrected_pseudo_distance(d: f64, inside: bool) -> f64 {
+    if d != 0.0 && (d > 0.0) != inside {
+        -d
+    } else {
+        d
     }
 }
 
@@ -781,20 +835,7 @@ mod tests {
     /// 遠い輪郭どうしが同点にならず、近い小さな四角への距離（外側・負）が選ばれる。
     #[test]
     fn far_nested_contours_do_not_hide_near_contour() {
-        let rect = |x0: f64, y0: f64, x1: f64, y1: f64, clockwise: bool| {
-            let mut c = Contour {
-                edges: vec![
-                    EdgeSegment::line(v2(x0, y0), v2(x0, y1)),
-                    EdgeSegment::line(v2(x0, y1), v2(x1, y1)),
-                    EdgeSegment::line(v2(x1, y1), v2(x1, y0)),
-                    EdgeSegment::line(v2(x1, y0), v2(x0, y0)),
-                ],
-            };
-            if !clockwise {
-                c.reverse();
-            }
-            c
-        };
+        let rect = rect_contour;
         // 枠: 外 [0,60]²・穴 [4,56]²（反時計回り）・中の四角 [28,32]×[28,32]
         let mut shape = Shape { contours: vec![rect(0.0, 0.0, 60.0, 60.0, true), rect(4.0, 4.0, 56.0, 56.0, false), rect(28.0, 28.0, 32.0, 32.0, true)] };
         color_edges(&mut shape, ColoringStrategy::InkTrap);
@@ -809,6 +850,122 @@ mod tests {
         assert!((b[3] + 2.0).abs() < 1e-9, "打ち切らない真の距離 {}", b[3]);
         assert!((a[3] - b[3]).abs() < 1e-9, "打ち切っても近い輪郭の距離 {}（{}）", a[3], b[3]);
         assert!((median3(a[0], a[1], a[2]) - median3(b[0], b[1], b[2])).abs() < 1e-9);
+    }
+
+    /// 時計回り（y 上向き）の長方形の輪郭（`clockwise` が偽なら反時計回り＝穴）。
+    fn rect_contour(x0: f64, y0: f64, x1: f64, y1: f64, clockwise: bool) -> Contour {
+        let mut c = Contour {
+            edges: vec![
+                EdgeSegment::line(v2(x0, y0), v2(x0, y1)),
+                EdgeSegment::line(v2(x0, y1), v2(x1, y1)),
+                EdgeSegment::line(v2(x1, y1), v2(x1, y0)),
+                EdgeSegment::line(v2(x1, y0), v2(x0, y0)),
+            ],
+        };
+        if !clockwise {
+            c.reverse();
+        }
+        c
+    }
+
+    /// 【レビュー #4】外枠 O[0,60]²・穴 H[4,56]²・中の四角 I[28,32]²・O の最初の辺の中点 (0,30) に重なる小さな輪郭 Q[-2,2]×[28,32]。
+    /// 以前は Q が (0,30) を含むので O の深さが 1 になり、穴 H と同点 → 点 (26,30) で O が選ばれて I の左の傾き（-2）が消えていた。
+    /// 深さを全ての辺の中点で数えると O は 0・H は 1・I は 2 で、打ち切っても打ち切らない値（-2）と同じになる。
+    #[test]
+    fn overlapping_small_contour_does_not_tie_outer_and_hole() {
+        let mut shape = Shape {
+            contours: vec![
+                rect_contour(0.0, 0.0, 60.0, 60.0, true),
+                rect_contour(4.0, 4.0, 56.0, 56.0, false),
+                rect_contour(28.0, 28.0, 32.0, 32.0, true),
+                rect_contour(-2.0, 28.0, 2.0, 32.0, true),
+            ],
+        };
+        color_edges(&mut shape, ColoringStrategy::InkTrap);
+        let cut = PreparedShape::new(&shape, 6.5, 13.0);
+        assert_eq!(cut.nesting_depths(&shape), vec![0, 1, 2, 0], "O・H・I・Q の深さ");
+        // 遠い距離はどの 2 つも同点にならない（深さ → 輪郭の番号の順）
+        for a in 0..4 {
+            for b in (a + 1)..4 {
+                assert!(cut.contours[a].far != cut.contours[b].far, "輪郭 {a} と {b} の遠い距離が同点");
+            }
+        }
+        assert!(cut.contours[0].far > cut.contours[1].far && cut.contours[1].far > cut.contours[2].far, "深いほど近い");
+        let full = PreparedShape::new(&shape, 1000.0, 10000.0);
+        let (mut s1, mut s2) = (cut.scratch(), full.scratch());
+        for p in [v2(26.0, 30.0), v2(27.0, 30.0), v2(30.0, 26.5), v2(33.5, 30.0)] {
+            let a = cut.mtsdf_at(p, &mut s1);
+            let b = full.mtsdf_at(p, &mut s2);
+            assert!((a[3] - b[3]).abs() < 1e-9, "{p:?}: 打ち切った真の距離 {} と打ち切らない {}", a[3], b[3]);
+            assert!((median3(a[0], a[1], a[2]) - median3(b[0], b[1], b[2])).abs() < 1e-9, "{p:?}: 中央値");
+        }
+        let d = cut.mtsdf_at(v2(26.0, 30.0), &mut s1);
+        assert!((d[3] + 2.0).abs() < 1e-9, "I の左 2 テクセル（穴の中＝字の外）: {}", d[3]);
+        // 格子の全体を焼いても、I のまわり（I から 3 テクセル以内）は打ち切らない値と同じ
+        let grid = FieldGrid { width: 70, height: 70, origin: v2(-4.5, 64.5) };
+        let (fa, fb) = (cut.generate(&grid), full.generate(&grid));
+        for j in 0..grid.height {
+            for i in 0..grid.width {
+                let p = grid.center(i, j);
+                let near_i = p.x > 25.0 && p.x < 35.0 && p.y > 25.0 && p.y < 35.0;
+                if near_i {
+                    let k = j * grid.width + i;
+                    assert!((fa.texels[k][3] - fb.texels[k][3]).abs() < 1e-9, "{p:?}: {} vs {}", fa.texels[k][3], fb.texels[k][3]);
+                }
+            }
+        }
+    }
+
+    /// 深さが同じ輪郭どうし（離れた 2 つの外側の四角）は番号で決まる（番号の大きいほうがわずかに近い）。差は深さ 1 段の半分未満。
+    #[test]
+    fn equal_depth_far_contours_are_ordered_by_index() {
+        let mut shape = Shape { contours: vec![rect_contour(0.0, 0.0, 10.0, 10.0, true), rect_contour(40.0, 0.0, 50.0, 10.0, true)] };
+        color_edges(&mut shape, ColoringStrategy::Simple);
+        let prepared = PreparedShape::new(&shape, 6.5, 13.0);
+        assert_eq!(prepared.nesting_depths(&shape), vec![0, 0]);
+        let (f0, f1) = (prepared.contours[0].far, prepared.contours[1].far);
+        assert!(f0 > f1, "番号の大きい輪郭ほど近い: {f0} {f1}");
+        assert!(f0 - f1 < FAR_DEPTH_STEP * 0.5, "同点を崩す差は深さ 1 段の半分未満");
+        assert!(f1 > 6.5, "打ち切りより遠いまま（値が張り付く）");
+    }
+
+    /// 【レビュー #16】自己交差した輪郭（向きの逆な小さな輪がある 8 の字）: 小さな輪の中は非ゼロ規則で内側だが、
+    /// 合成の疑似距離は外側（負）になる。誤差の補正の基準（`pseudo_distance_at`）は走査線の内外の符号にそろう。
+    #[test]
+    fn self_intersecting_contour_reference_distance_follows_fill() {
+        // (0,0) → (0,20) → (30,0) → (30,10) → (0,0): 2 本の斜めの辺が (20, 20/3) で交わる。
+        // 左の大きな三角は時計回り（面積 200）、右の小さな三角は反時計回り（面積 50）＝輪郭の向きは外側
+        let mut shape = Shape {
+            contours: vec![Contour {
+                edges: vec![
+                    EdgeSegment::line(v2(0.0, 0.0), v2(0.0, 20.0)),
+                    EdgeSegment::line(v2(0.0, 20.0), v2(30.0, 0.0)),
+                    EdgeSegment::line(v2(30.0, 0.0), v2(30.0, 10.0)),
+                    EdgeSegment::line(v2(30.0, 10.0), v2(0.0, 0.0)),
+                ],
+            }],
+        };
+        color_edges(&mut shape, ColoringStrategy::InkTrap);
+        let prepared = PreparedShape::new(&shape, 100.0, 1000.0);
+        let mut scratch = prepared.scratch();
+        // 小さな輪の中（右の縦の辺から 2）・大きな輪の中・外
+        for (p, inside) in [(v2(28.0, 5.0), true), (v2(3.0, 8.0), true), (v2(15.0, 15.0), false), (v2(33.0, 5.0), false)] {
+            assert_eq!(prepared.is_inside(p, &mut scratch), inside, "{p:?} の内外");
+            let d = prepared.pseudo_distance_at(p, &mut scratch);
+            assert_eq!(d > 0.0, inside, "{p:?}: 基準の疑似距離 {d} の符号が内外と食い違う");
+        }
+        // 小さな輪の中の値の大きさは、いちばん近い辺（右の縦の辺）までの距離
+        let d = prepared.pseudo_distance_at(v2(28.0, 5.0), &mut scratch);
+        assert!((d - 2.0).abs() < 1e-9, "小さな輪の中の基準の距離 {d}");
+        // 焼いた距離場も同じ: 縁から 1 テクセルより深いテクセルは、中央値の符号が内外と一致する
+        let grid = FieldGrid { width: 40, height: 30, origin: v2(-4.5, 24.5) };
+        let field = prepared.generate(&grid);
+        for k in 0..grid.width * grid.height {
+            let d = field.texels[k];
+            if d[3].abs() > 1.0 {
+                assert_eq!(median3(d[0], d[1], d[2]) > 0.0, field.inside[k], "テクセル {k} の中央値の符号");
+            }
+        }
     }
 
     /// 帯の索引で数えた巻き数は、全ての折れ線を見た巻き数と同じ（実際の字のいろいろな点で）。

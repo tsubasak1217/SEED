@@ -312,6 +312,8 @@
 ## テストの独立性（2026-09-13 に気付いた既存不具合・シャドウ改修とは無関係）
 
 - [ ] **`font::inline::icon_set::tests::poll_keeps_previous_content_on_parse_failure` が並べて走らせると時々落ちる** — 2026-10-02（MTSDF の作業で `cargo test --lib engine::core::font::` を回したときに 1 回だけ「壊れていた内容が直ったので次回は再読込されるはず」で落ちた。単独では 3 回とも通る）。アイコンの一覧のキャッシュ（プロセスで共有）を同じ時に別のテストが `invalidate_all()` で消すためと思われる（推定）。直すならテストごとに別のキャッシュを使うか、キャッシュに触るテストを直列にする。関連: `runtime/src/engine/core/font/inline/icon_set.rs`。
+  2026-10-03（L1-5）にも `cargo test --lib font` の 6 回で 2 回落ちた（単独では 3 回とも通る）。同じくプロセスで共有するキャッシュを読む
+  `font::inline::image_meta::tests::missing_path_is_cached_as_failure` も 1 回落ちた（`inline/image_meta.rs`。同じ直し方）。
 
 - [ ] **`plugin::host::tests::set_save_int_writes_flag_and_keeps_other_keys` が全体実行だと落ちる**
   — 2026-09-13。単体（`cargo test set_save_int_writes_flag_and_keeps_other_keys`）では通るが、
@@ -3803,8 +3805,11 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   約 2 秒使われていないページを丸ごと追い出して使い直す（docs/ui_components.md §12.15）。残り: ページ単位なので、よく使う字（かな・英数）が残るページは追い出せない
   （見えている字が上限を超える画面では欠ける。グリフ単位の追い出しか、よく使う字を固定のページへ集める案）。ページを足す瞬間に全ページを送り直す転送（32〜64 MiB）の
   実機（Android）での詰まりは未計測。
-  (3) 尖りが逆向きに戻る辺（カスプ）の押し広げ（msdfgen の deconverge）が無い・重なった輪郭の距離は近似（msdfgen と同じ）。どちらも字形ごとの検査で落ちれば真の SDF で描かれる（組み込みの書体では落ちる字 0）。ほかの書体（可変フォント・CFF）では未確認。
+  (3) 尖りが逆向きに戻る辺（カスプ）の押し広げ（msdfgen の deconverge）が無い・重なった輪郭の距離は近似（msdfgen と同じ）。どちらも字形ごとの検査で落ちれば真の SDF で描かれる（組み込みの書体では落ちる字 0）。
+  2026-10-03 から、アルファも落ちた字はラスタからの真の SDF で作り直す（最後の落ち先。レビュー #4）。ほかの書体（可変フォント・CFF）では未確認。
   (4) Android の起動オプションでの切り替え（PC の `--font-distance-field=` に当たるもの）が無い（`project_settings.json` の `font.distance_field` で切り替える）。
+  (5) **1 テクセルを切る細い線（2026-10-03。レビュー #5 の残り）**: 消える字は em を上限 64 まで上げるが、0.02 em の Thin は em 64 でも 0.92 テクセルで、位置によっては薄い。
+  em を 64 より上げる（アトラスの面積は em² に比例）か、字の置き場を半テクセルずらして線をテクセルの中心へ寄せる案。明朝の書体では未確認（組み込みに明朝が無い）。
 - [ ] **下からのシート（`BottomSheet`）の開く・閉じる動きに出入りの時計の規則が効いていない** — 2026-09-30（遷移の時計の直しで、当てられなかった所として確認）。
   動きは Rust の `CanvasScroll.ScrollTo`（`motion.sheet` 0.25 秒・easeInOut）がスクロールの物理の時計で進めるので、C# から「始めのフレームを数えない・1 フレームの上限
   （1/30 秒）」を置けない。中身（`SheetOptions.ContentPrefab`）の組み立てが重いと開く動きが飛ぶ見込み（推論。Wake or Pay は今は使っていない）。案: `ScrollTo` に

@@ -428,7 +428,7 @@ TimeWheel（Sprite = 全体〈透明〉・SEED.UI.TimeWheel）
 |---|---|
 | `runtime/src/engine/core/font/sdf.rs` | SDF の焼き方の定数（em 64・spread 8・1 テクセルあたりの値の変化 `SDF_VALUE_PER_TEXEL`・画素の中心から縁まで `SDF_PIXEL_CENTER_TO_EDGE_PX`・縁取りの上限 `MAX_OUTLINE_SDF`）と px → 値の変換（`FieldValueSpec`。MTSDF と共通） |
 | `runtime/src/engine/core/font/rasterizer.rs`・`sdf_edt.rs` | グリフを em 64 で 2 値にして距離変換 → 縁までの距離の SDF（`generate_sdf`・値の式は `sdf_value` の 1 か所） |
-| `runtime/src/engine/core/font/msdf/`（`params.rs`・`geometry.rs`・`segment.rs`・`outline.rs`・`edge_color.rs`・`distance.rs`・`error_correction.rs`・`verify.rs`・`bake.rs`） | 輪郭から MTSDF を焼く（§12.8〜§12.12。定数は `params.rs` の 1 か所） |
+| `runtime/src/engine/core/font/msdf/`（`params.rs`・`geometry.rs`・`segment.rs`・`outline.rs`・`edge_color.rs`・`distance.rs`・`error_correction.rs`・`verify.rs`・`raster_fallback.rs`・`bake.rs`） | 輪郭から MTSDF を焼く（§12.8〜§12.12。定数は `params.rs` の 1 か所） |
 | `runtime/src/engine/core/font/atlas.rs`・`atlas_pages.rs` | グリフアトラス（テクスチャ配列＝複数ページ・棚詰め・ページの追加と上限・GPU への転送。§12.15） |
 | `runtime/src/engine/core/font/glyph_field.rs`・`field_settings.rs`・`field_stats.rs` | 焼いた距離場の形と種類（SDF / MTSDF）・設定（§12.10）・焼いた数と時間と検査に落ちた字の記録とログ |
 | `runtime/src/engine/core/renderer/shaders/text.wgsl` | 読み取り・平滑化の幅・小さな文字の太らせ・縁取り・影（定数は名前つき。§12.2〜§12.4）。入口 `fs_sdf`（R8）・`fs_mtsdf`（RGBA8。§12.9） |
@@ -530,10 +530,15 @@ PC・Android のビルドが重くなる）、(3) 字形ごとの検査（§12.1
 3. 辺の色分け（`edge_color.rs`。既定 ink trap。角 = 向きが約 8 度〈3.0 rad の sin〉より大きく変わる所）。
 4. テクセルごとの距離（`distance.rs`）: 輪郭ごとに 3 チャネルの疑似距離と真の距離を求め、輪郭の向きと内外で合成する（重なりの合成）。
    片側の幅 + 余裕（1.5 テクセル）より遠い辺は外接矩形で読み飛ばし、辺の残らない輪郭は「遠い」値にする（符号は走査線の巻き数〈非ゼロ規則〉から。入れ子が深い輪郭ほど
-   近いとみなす＝穴の中の点で外側の輪郭を選ばない）。行ごとに並列（rayon）。最後に走査線の内外と中央値の符号が食い違うテクセルの全チャネルを反転し、
+   近いとみなす＝穴の中の点で外側の輪郭を選ばない。深さ = その輪郭の**全ての辺の中点**を内側に含むほかの輪郭の数〈2026-10-03。以前は最初の辺の中点 1 つで、重なった
+   小さな輪郭まで親に数えて外枠と穴が同点になっていた。レビュー #4〉。深さが同じ輪郭は番号の大きいほうをわずかに近くして同点を無くす〈距離 → 輪郭の番号の順〉）。
+   行ごとに並列（rayon）。最後に走査線の内外と中央値の符号が食い違うテクセルの全チャネルを反転し、
    アルファは内外の符号にそろえる（msdfgen の distanceSignCorrection）。
-5. 正規化（`0.5 + 距離 ÷ (2 × 片側の幅)`）→ 補間の誤りの補正（`error_correction.rs`。偽の縁を作るテクセルの 3 チャネルを中央値にそろえる。行ごとに並列）→ RGBA8 へ四捨五入。
-6. 字形ごとの検査（`verify.rs`。§12.11）。落ちたら RGB にアルファを写す（その字は真の SDF で描かれる）。
+5. 正規化（`0.5 + 距離 ÷ (2 × 片側の幅)`）→ 補間の誤りの補正（`error_correction.rs`。偽の縁を作るテクセルの 3 チャネルを中央値にそろえる。行ごとに並列。
+   形から求める基準の疑似距離にも走査線の内外の符号を当てる〈2026-10-03。レビュー #16〉）→ RGBA8 へ四捨五入。
+6. 字形ごとの検査（`verify.rs`。§12.11）。落ちたら RGB にアルファを写す（その字は真の SDF で描かれる）。アルファも落ちたら、ラスタからの真の SDF で作り直す
+   （`raster_fallback.rs`。最後の落ち先。2026-10-03）。
+7. 線の幅ごと消えた細部が多い字（1 テクセルより細い線）は em を上げて焼き直す（§12.12。2026-10-03）。
 
 **定数（`msdf/params.rs`。シェーダーと一致すべきものは `text_aa_tests` が text.wgsl の本文から読んで確かめる）**:
 
@@ -549,6 +554,8 @@ PC・Android のビルドが重くなる）、(3) 字形ごとの検査（§12.1
 | `DISTANCE_CUTOFF_PX` | 6.5 | これより遠い辺は読み飛ばす（em 40。片側の幅 + 1.5） |
 | `MIN_DEVIATION_RATIO` / `MIN_IMPROVE_RATIO` | 10/9 / 10/9 | 誤差の補正の閾値（msdfgen の既定） |
 | `VERIFY_OVERSAMPLE` / `VERIFY_EDGE_TOLERANCE_PX` / `VERIFY_MAX_ARTIFACT_PX` | 4 / 2 画素 / 8 画素 | 検査: 4 倍の参照ラスタ・縁から 0.5 テクセル以内の食い違いは数えない・8 画素（0.5 テクセル²）を超えたら落ちる |
+| `VERIFY_MAX_VANISHED_PX` / `MTSDF_THIN_EM_STEP` | 16 画素 / 8 | 線の幅ごと消えた画素が 16（1 テクセル²）を超えた字は em を 8 刻みで上限 64 まで試して焼き直す（§12.12。2026-10-03） |
+| `RASTER_FALLBACK_OVERSAMPLE` | 4 | 最後の落ち先（ラスタからの真の SDF）で字を塗る細かさ（1 テクセルを 4 画素。§12.11） |
 | `CORNER_ANGLE_THRESHOLD`・`COLORING_SEED` | 3.0 rad・0 | 色分け（msdfgen の既定。同じ字は毎回同じ色分け） |
 
 容量: 全角の字は余白込みで約 40 × 40 テクセル → 2048² の 1 ページに全角だけなら約 2,500 字（ふつうの字。画数の多い字は §12.12 で大きくなる。組み込みの書体の
@@ -576,10 +583,12 @@ PC・Android のビルドが重くなる）、(3) 字形ごとの検査（§12.1
 - 起動引数（PC。検証・A/B 用）`--font-distance-field=sdf|mtsdf` が設定より優先する（Android の起動オプションは無い）。
 - 起動時に 1 回決めてプロセスへ登録し（`App::resolve_font_field`）、キャンバスの文字の描画器（`FontConfig::canvas`）がアトラスの形式とシェーダーの入口を決める
   （実行中は変わらない）。起動ログ `[SEED FONT] distance_field=… msdf_coloring=… source=…`。読めない値は `[SEED FONT][WARN]`。
-- 検査（§12.11）に落ちた字は焼いたときに必ず 1 行出す: `[SEED FONT] MTSDF の検査に落ちた字を真の SDF で描きます: （字） U+XXXX（食い違い N 画素 > 8。真の SDF では M 画素）。これまでに K 字（例: …）`。
-- 環境変数 `SEED_FONT_FIELD_LOG=1` で字ごとに大きさ・辺の数・各段の時間（輪郭 / 距離 / 補正 / 検査）・検査の結果を、まとめて焼いた回ごとに字数と壁時計の時間を出す（計測用）。
-  まとめて焼いた回ごとにアトラスのページ数・使用率の 1 行も出す（2026-10-03）。
 - 起動ログに `atlas_pages=auto|N`（アトラスのページの上限の設定。§12.15）。
+- 検査（§12.11）に落ちた字は焼いたときに必ず 1 行出す: `[SEED FONT] MTSDF の検査に落ちた字を真の SDF で描きます: （字） U+XXXX（食い違い N 画素 > 8。真の SDF では M 画素）。これまでに K 字（例: …）`。
+  アルファも落ちて作り直した字は「…。アルファも落ちたのでラスタからの真の SDF で作り直しました（L 画素）」が付く。
+- 細い線で em を上げた字は必ず 1 行出す: `[SEED FONT] 細い線が消えるので em を上げて焼き直しました: （字） U+XXXX（em 40 → 56・消えた画素 N・距離場 WxH）。これまでに K 字（面積 +A テクセル²）`。
+- 環境変数 `SEED_FONT_FIELD_LOG=1` で字ごとに大きさ（em）・辺の数・各段の時間（輪郭 / 距離 / 補正 / 検査）・検査の結果（消えた画素も）を、まとめて焼いた回ごとに字数と壁時計の時間と
+  アトラスのページ数・使用率の 1 行を出す（計測用）。
 - アトラスにページを足したとき・上限まで満杯になったときは必ず 1 行出す（§12.15。`[SEED FONT] グリフアトラスにページを足しました: 1 → 2 ページ（アトラス mtsdf 2048x2048 ページ 2/4（32 MiB）・字 2142・…［ページごとの字数・高さ・面積の使用率］）`
   ／`[SEED FONT] グリフアトラスが上限まで満杯です（…）。以降の新規グリフは描画されません。…font.atlas_pages でページの上限を上げてください`）。
 
@@ -594,6 +603,17 @@ PC・Android のビルドが重くなる）、(3) 字形ごとの検査（§12.1
   選んでいたこと（§12.8 の 4 の「入れ子が深い輪郭ほど近い」で直した。`far_nested_contours_do_not_hide_near_contour`）。直した後は計測の 92 字と画数の多い漢字 50 字
   （書体にある 35 字）で落ちる字は 0（食い違いは最大 1 画素）。
 - 試験: 余白に偽の点を入れると落ち、真の SDF は通り、RGB へアルファを写すと通る（`safety_valve_detects_broken_median_and_alpha_fallback_passes`）。
+- **最後の落ち先（2026-10-03。レビュー #4）**: アルファも同じ合成（`combine`・遠い輪郭の深さ）から作るので、重なった輪郭で選び間違えるとアルファも崩れる。アルファも
+  検査に落ちたら、輪郭の合成を使わずに **ラスタからの真の SDF** で作り直す（`raster_fallback.rs`。ab_glyph で 4 倍〈`RASTER_FALLBACK_OVERSAMPLE`〉の細かさで塗った 2 値から
+  厳密な距離変換〈`sdf_edt.rs`〉で縁までの距離を求め、テクセルの中心で双線形に読んで MTSDF と同じ値の決まりで RGBA の 4 チャネルへ。置き場・em は焼いた MTSDF と同じ）。
+  形はラスタと必ず一致する（`BakeStats::raster_fallback`・`raster_verify`）。組み込みの書体の字ではアルファとの値の差が縁の近くで平均 0.02 未満
+  （`raster_sdf_matches_contour_alpha_and_passes_verify`）。試験: RGBA の全部を壊した字は作り直されて中央値・アルファの両方の検査に通り、アルファが無事な字は従来どおり
+  アルファで止まる（`safety_valve_falls_back_to_raster_when_alpha_is_broken_too`）。合成の直し（深さを全ての辺の中点で数える・同点を番号で崩す）はレビューの
+  「外枠 O[0,60]²・穴 H[4,56]²・中の四角 I[28,32]²・O の最初の辺の中点に重なる小さな輪郭 Q[-2,2]×[28,32]」で、深さ O 0・H 1・I 2・Q 0、点 (26,30) の距離 −2 を
+  打ち切っても保つ（`overlapping_small_contour_does_not_tie_outer_and_hole`・`equal_depth_far_contours_are_ordered_by_index`）。
+- **誤差の補正の基準の符号（2026-10-03。レビュー #16）**: 補正が「直したほうが近いか」を比べる基準の 1 チャネルの疑似距離（`PreparedShape::pseudo_distance_at`）にも、
+  テクセルと同じく走査線の内外の符号を当てる（以前は合成の符号のままで、自己交差・向きの誤った輪郭で基準が 0.5 を挟んで反転していた）。試験: 向きの逆な小さな輪のある
+  8 の字の輪郭で、小さな輪の中（内側）・輪の外の右（外側）とも基準の符号が内外と一致する（`self_intersecting_contour_reference_distance_follows_fill`）。
 
 ### 12.12 字ごとの解像度（輪郭の長さで em 40〜64）
 
@@ -601,6 +621,18 @@ em 40 は画数の多い漢字の細部（狭い隙間）を潰す（150 px で�
 曲線の分割の仕方によらない複雑さの目安。この書体で英数 0.5〜4.8・かな 1.2〜5.1・ふつうの漢字 5〜8・画数の多い漢字 8〜12）を測り、7.5 em を超える字は
 `em = 40 × 長さ ÷ 7.5`（整数に丸め、上限 64）で焼く（`em_for_outline_length`）。距離の片側の幅はどの字も 0.125 em のままなので px → 値の変換は変わらず、
 字ごとの解像度（em あたりのテクセル数）は頂点の `field_em` でシェーダーへ渡す（`TextVertex` は 64 → 68 バイト。2026-10-03 にページ番号で 72 バイト）。画数の多い漢字 24 字の平均の em は 52。
+
+**細い線（2026-10-03。レビュー #5）**: 輪郭の長さは細かさの目安にならない（「一」は短い）。1 テクセルより細い線（組み込みの書体の倍率で約 0.035 em の正方形以下。
+明朝の横画・Light / Thin）は、2 つのテクセルの中心の間に来ると両方が外側の値になり、補間しても 0.5 に届かず大きな表示で線ごと消える（中央値もアルファも同じ）。
+消えた画素は参照の縁から 0.5 テクセル以内に入るので食い違い（`artifact_px`）には数えない。そこで検査が **線の幅ごと消えた画素**（参照では内側なのに描くと外側で、まわり
+0.5 テクセルの中の参照の内側が 1 つも描かれていない画素。`VerifyReport::vanished_px`）を数え、16 画素（1 テクセル²。`VERIFY_MAX_VANISHED_PX`）を超えた字は em を
+8 刻み（`MTSDF_THIN_EM_STEP`）で上限 64 まで試して焼き直し、消えた細部（em² あたり）がいちばん少ない em を使う（同じなら小さい em。消えなくなった em で打ち切る。
+`bake_glyph_mtsdf`・`thin_stroke_em_candidates`）。上限だけを試すと、線がまたテクセルの中心の間に来て悪くなる字がある（Thin の「二」は em 64 で描いた線の面積が
+em 40 の 4 割に減った）ので途中の em も試す。結果（`thin_strokes_raise_em_and_keep_ink`。M PLUS Rounded 1c Thin＝横画 20/1000 em ≒ 0.02 em・em 40 で 0.57 テクセル）:
+「一」em 40 で消えた画素 300・描いた線 0 → em 56 で 0・0.0055 em²、「二」194 → em 48 で 4（描いた線 0.0056 → 0.0085 em²）、「三」291 → em 48 で 4、「ー」は em 40 のまま。
+組み込みの Regular（最も細い線 0.06 em）の漢字 4,954 字では上げた字 0（アトラスの使い方は変わらない）。上げた字は数と距離場の面積の増分を `[SEED FONT]` のログと
+集計（`FieldBakeStats::summary_line`）に出す（アトラスの容量への影響）。上限の em 64 でも 1 テクセルを切る線（0.02 em の Thin は em 64 で 0.92 テクセル）は、
+位置によっては薄くなる（em を 64 より上げる・字の置き場を半テクセルずらすのは未実装）。
 
 ### 12.13 計測と検証（2026-10-02・PC。作業フォルダ `tmp/msdf/`）
 

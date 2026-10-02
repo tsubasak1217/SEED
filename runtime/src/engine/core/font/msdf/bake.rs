@@ -7,7 +7,11 @@
 //    3. 辺の色分け（edge_color.rs。既定 ink trap）
 //    4. テクセルごとの距離（distance.rs。行ごとに並列）と、走査線の内外での符号の直し
 //    5. 正規化（0.5 + 距離 ÷ (2 × 片側の幅)）→ 補間の誤りの補正（error_correction.rs）→ RGBA8 へ四捨五入
-//    6. 字形ごとの検査（verify.rs）。落ちたら RGB にアルファ（真の SDF）を写す（その字は 1 チャネルの SDF と同じ描かれ方）
+//    6. 字形ごとの検査（verify.rs。安全弁 `apply_safety_valve`）。落ちたら RGB にアルファ（真の SDF）を写す（その字は 1 チャネルの
+//       SDF と同じ描かれ方）。アルファも落ちたら、ラスタからの真の SDF（raster_fallback.rs）で作り直す（最後の落ち先。形は必ず
+//       ラスタと一致する。2026-10-03。レビュー #4）
+//    7. 線の幅ごと消えた細部が多い字（verify.rs の `needs_finer_field`。1 テクセルより細い線）は、em を刻みで上限
+//       `MTSDF_MAX_EM_PX` まで上げて焼き直し、消えた細部のいちばん少ない em を使う（`bake_glyph_mtsdf`。2026-10-03。レビュー #5）
 //  各段の時間を `BakeStats` に残す（ログ・計測用）。
 // ============================================================
 
@@ -20,8 +24,10 @@ use super::edge_color::{color_edges, ColoringStrategy};
 use super::error_correction::{correct_errors, distance_to_value, CorrectionStats, Texel};
 use super::geometry::v2;
 use super::outline::Shape;
-use super::params::{em_for_outline_length, FieldScale, MTSDF_BYTES_PER_TEXEL};
+use super::params::{em_for_outline_length, thin_stroke_em_candidates, FieldScale, MTSDF_BYTES_PER_TEXEL};
+use super::raster_fallback::raster_true_sdf_rgba;
 use super::verify::{verify_glyph, FieldPlacement, VerifyChannel, VerifyReport};
+use ab_glyph::GlyphId;
 use crate::engine::core::font::glyph_field::{DistanceFieldKind, GlyphField};
 
 /// u8 の値の最大。
@@ -51,6 +57,16 @@ pub struct BakeStats {
     pub alpha_verify: Option<VerifyReport>,
     /// 検査に落ちて真の SDF で描く字か。
     pub fallback: bool,
+    /// アルファも検査に落ちて、ラスタからの真の SDF（最後の落ち先）で作り直した字か（2026-10-03）。
+    pub raster_fallback: bool,
+    /// ラスタからの真の SDF の検査の結果（ログ用。作り直したときだけ Some）。
+    pub raster_verify: Option<VerifyReport>,
+    /// 焼いた em（テクセル。最後に使った大きさ）。
+    pub em_px: f32,
+    /// 細い線が消えるので em を上げて焼き直した字なら、上げる前の em（2026-10-03。レビュー #5）。
+    pub thin_raised_from_em: Option<f32>,
+    /// em を上げたことで増えた距離場の面積（テクセル²。アトラスの容量への影響の計測用。上げていなければ 0）。
+    pub thin_raised_extra_texels: usize,
 }
 
 impl BakeStats {
@@ -136,18 +152,51 @@ pub fn render_shape(shape: &mut Shape, coloring: ColoringStrategy, scale: &Field
 
 /// グリフの MTSDF を焼く（em は輪郭の長さで決める: ふつうの字は既定の 40、画数の多い字は大きく。`em_for_outline_length`）。
 /// 輪郭の無い字（スペースなど）は None。
+///
+/// 焼いた字の検査で線の幅ごと消えた細部が多ければ（`VerifyReport::needs_finer_field`。1 テクセルより細い線）、
+/// em を刻みで上限まで上げて焼き直し（`thin_stroke_em_candidates`）、消えた細部（em² あたり）がいちばん少ない em を使う
+/// （同じなら小さい em。消えなくなった em で打ち切る）。上げた字は `BakeStats::thin_raised_from_em` に上げる前の em が残る。
 pub fn bake_glyph_mtsdf(font: &FontArc, codepoint: char, coloring: ColoringStrategy) -> Option<(GlyphField, BakeStats)> {
     let outline = font.outline(font.glyph_id(codepoint))?;
     // 輪郭の長さ（em 単位）。em 1 テクセルの形で測る
     let unit = f64::from(font.as_scaled(PxScale::from(1.0)).h_scale_factor());
     let length_em = outline_length(&Shape::from_outline_curves(&outline.curves, unit)) as f32;
     let scale = FieldScale::with_em(em_for_outline_length(length_em));
-    bake_glyph_mtsdf_at(font, codepoint, coloring, &scale)
+    let (first, first_stats) = bake_glyph_mtsdf_at(font, codepoint, coloring, &scale)?;
+    if !first_stats.verify.needs_finer_field() {
+        return Some((first, first_stats));
+    }
+    // ── 細い線が消える字: em を上げて焼き直し、消えた細部のいちばん少ない em を選ぶ ──
+    let first_area = first.width as usize * first.height as usize;
+    let mut total_time = first_stats.total();
+    let mut best_score = first_stats.verify.vanished_area_em2(scale.em_px);
+    let mut best = (first, first_stats);
+    for em in thin_stroke_em_candidates(scale.em_px) {
+        let (glyph, stats) = bake_glyph_mtsdf_at(font, codepoint, coloring, &FieldScale::with_em(em))?;
+        total_time += stats.total();
+        let score = stats.verify.vanished_area_em2(em);
+        let good_enough = !stats.verify.needs_finer_field();
+        if score < best_score {
+            best_score = score;
+            best = (glyph, stats);
+        }
+        if good_enough {
+            break;
+        }
+    }
+    let (glyph, mut stats) = best;
+    if glyph.em_px != scale.em_px {
+        stats.thin_raised_from_em = Some(scale.em_px);
+        stats.thin_raised_extra_texels = (glyph.width as usize * glyph.height as usize).saturating_sub(first_area);
+    }
+    // 時間は試した全部の合計を検査の段に足す（初めて出る画面の詰まりの計測に効く）
+    stats.time_verify += total_time.saturating_sub(stats.total());
+    Some((glyph, stats))
 }
 
 /// グリフの MTSDF を大きさ `scale` で焼く。
 pub fn bake_glyph_mtsdf_at(font: &FontArc, codepoint: char, coloring: ColoringStrategy, scale: &FieldScale) -> Option<(GlyphField, BakeStats)> {
-    let mut stats = BakeStats::default();
+    let mut stats = BakeStats { em_px: scale.em_px, ..Default::default() };
     let t0 = Instant::now();
 
     // ── 輪郭を組み直す（フォントの単位 → テクセル。ab_glyph の PxScale と同じ倍率）──
@@ -160,15 +209,9 @@ pub fn bake_glyph_mtsdf_at(font: &FontArc, codepoint: char, coloring: ColoringSt
     // ── 距離場を作る ──
     let (mut data, layout) = render_shape(&mut shape, coloring, scale, &mut stats)?;
 
-    // ── 検査（安全弁）。落ちたら RGB へアルファを写して真の SDF で描く ──
+    // ── 検査（安全弁）。落ちたら RGB へアルファを写して真の SDF で描く（アルファも落ちたらラスタからの真の SDF）──
     let t3 = Instant::now();
-    let place = layout.placement();
-    stats.verify = verify_glyph(font, glyph_id, scale.em_px, &data, place, VerifyChannel::Median);
-    if !stats.verify.passed() {
-        stats.fallback = true;
-        copy_alpha_to_rgb(&mut data);
-        stats.alpha_verify = Some(verify_glyph(font, glyph_id, scale.em_px, &data, place, VerifyChannel::Alpha));
-    }
+    apply_safety_valve(font, glyph_id, scale, layout.placement(), &mut data, &mut stats);
     stats.time_verify = t3.elapsed();
 
     // ── メトリクス（em 単位。送り幅の定義は text_layout に一本化＝描画とピックで同じ値）──
@@ -186,6 +229,33 @@ pub fn bake_glyph_mtsdf_at(font: &FontArc, codepoint: char, coloring: ColoringSt
         msdf_fallback: stats.fallback,
     };
     Some((glyph, stats))
+}
+
+/// 字形ごとの検査（安全弁）。検査に通るまで、次の順に落とす（結果は `stats` の verify・alpha_verify・raster_verify と旗）:
+///   1. MSDF（中央値）のまま
+///   2. RGB へアルファ（輪郭からの真の SDF）を写す（その字は 1 チャネルの SDF と同じ描かれ方）
+///   3. ラスタからの真の SDF で作り直す（輪郭の合成を使わない最後の落ち先。形はラスタと必ず一致する。raster_fallback.rs）
+/// 3 は 2 が落ちたら必ず使う（ラスタからの作り直しの検査の結果はログに残すだけ）。
+pub fn apply_safety_valve(font: &FontArc, glyph_id: GlyphId, scale: &FieldScale, place: FieldPlacement, data: &mut Vec<u8>, stats: &mut BakeStats) {
+    // ── 1. 中央値 ──
+    stats.verify = verify_glyph(font, glyph_id, scale.em_px, data, place, VerifyChannel::Median);
+    if stats.verify.passed() {
+        return;
+    }
+    // ── 2. アルファを RGB へ写す ──
+    stats.fallback = true;
+    copy_alpha_to_rgb(data);
+    let alpha = verify_glyph(font, glyph_id, scale.em_px, data, place, VerifyChannel::Alpha);
+    stats.alpha_verify = Some(alpha);
+    if alpha.passed() {
+        return;
+    }
+    // ── 3. ラスタからの真の SDF（輪郭の無い字はここへ来ない＝作れなければアルファのまま）──
+    if let Some(raster) = raster_true_sdf_rgba(font, glyph_id, scale, place) {
+        stats.raster_verify = Some(verify_glyph(font, glyph_id, scale.em_px, &raster, place, VerifyChannel::Median));
+        stats.raster_fallback = true;
+        *data = raster;
+    }
 }
 
 /// 形の輪郭の全長（形の単位。曲線は `EDGE_LENGTH_STEPS` 本の折れ線で測る）。字の細かさの目安（解像度を上げる字の判定）。
@@ -291,6 +361,108 @@ mod tests {
         copy_alpha_to_rgb(&mut data);
         let fixed = verify_glyph(&font, id, em, &data, place, VerifyChannel::Median);
         assert!(fixed.passed(), "RGB へアルファを写すと中央値も通る: {fixed:?}");
+    }
+
+    /// 【最後の落ち先（レビュー #4）】中央値もアルファも壊れた字（余白の 3×3 テクセルを RGBA の全部で内側にする）は、
+    /// ラスタからの真の SDF で作り直され、検査に通る（中央値・アルファの両方で）。壊れていない字は作り直さない。
+    #[test]
+    fn safety_valve_falls_back_to_raster_when_alpha_is_broken_too() {
+        let font = builtin();
+        let (g, stats) = bake_glyph_mtsdf(&font, 'A', ColoringStrategy::InkTrap).expect("輪郭がある");
+        assert!(!stats.raster_fallback && stats.raster_verify.is_none(), "ふつうの字は作り直さない");
+        let (w, h) = (g.width as usize, g.height as usize);
+        let em = g.em_px;
+        let place = FieldPlacement { left: (g.bearing_em[0] * em).round() as i32, top: (g.bearing_em[1] * em).round() as i32, width: w, height: h };
+        let id = font.glyph_id('A');
+        let scale = FieldScale::with_em(em);
+        // アルファまで壊す（合成の選び間違いでアルファも同じく崩れた場合の写し）
+        let mut data = g.data.clone();
+        for y in 1..4 {
+            for x in 1..4 {
+                let k = (y * w + x) * MTSDF_BYTES_PER_TEXEL;
+                data[k..k + MTSDF_BYTES_PER_TEXEL].fill(255);
+            }
+        }
+        let mut st = BakeStats::default();
+        apply_safety_valve(&font, id, &scale, place, &mut data, &mut st);
+        assert!(st.fallback && !st.verify.passed(), "中央値は落ちる: {:?}", st.verify);
+        assert!(!st.alpha_verify.expect("アルファも確かめる").passed(), "アルファも落ちる");
+        assert!(st.raster_fallback, "ラスタからの真の SDF で作り直す");
+        assert!(st.raster_verify.expect("作り直しの検査").passed(), "作り直した字は通る: {:?}", st.raster_verify);
+        for channel in [VerifyChannel::Median, VerifyChannel::Alpha] {
+            let r = verify_glyph(&font, id, em, &data, place, channel);
+            assert!(r.passed(), "作り直した後の {channel:?}: {r:?}");
+        }
+        // アルファだけ壊れていない字は従来どおりアルファで止まる（作り直さない）
+        let mut data2 = g.data.clone();
+        for y in 1..4 {
+            for x in 1..4 {
+                let k = (y * w + x) * MTSDF_BYTES_PER_TEXEL;
+                data2[k..k + 3].fill(255);
+            }
+        }
+        let mut st2 = BakeStats::default();
+        apply_safety_valve(&font, id, &scale, place, &mut data2, &mut st2);
+        assert!(st2.fallback && st2.alpha_verify.expect("アルファ").passed() && !st2.raster_fallback);
+    }
+
+    /// 【細い線（レビュー #5）】組み込みの書体の Thin（M PLUS Rounded 1c Thin。横画の太さ 20/1000 em ≒ 0.02 em。em 40 で 0.57 テクセル）の
+    /// 横画の字は、em 40 だと線が消える（検査の vanished_px が多い）ので em 64 へ上げて焼き直され、大きな表示での線の濃さが戻る。
+    /// Regular（0.06 em 以上）の同じ字は上げない。
+    #[test]
+    fn thin_strokes_raise_em_and_keep_ink() {
+        let thin = FontArc::try_from_slice(include_bytes!("../../../engine_resources/fonts/M_PLUS_Rounded_1c/MPLUSRounded1c-Thin.ttf"))
+            .expect("Thin の書体");
+        let regular = builtin();
+        // 描いた形（中央値 ≥ 0.5）の内側の画素の数（距離場の 4 倍の細かさで数える。線が消えると減る）
+        let drawn_px = |g: &GlyphField| -> f32 {
+            let k = crate::engine::core::font::msdf::params::VERIFY_OVERSAMPLE as usize;
+            let (hw, hh) = (g.width as usize * k, g.height as usize * k);
+            let mut drawn = 0usize;
+            for hy in 0..hh {
+                for hx in 0..hw {
+                    let (gx, gy) = ((hx as f32 + 0.5) / k as f32, (hy as f32 + 0.5) / k as f32);
+                    if sample_field(&g.data, g.width as usize, g.height as usize, gx, gy, VerifyChannel::Median) >= 0.5 {
+                        drawn += 1;
+                    }
+                }
+            }
+            drawn as f32
+        };
+        let mut raised_any = false;
+        for ch in ['一', 'ー', '二', '三'] {
+            let base = FieldScale::with_em(crate::engine::core::font::msdf::params::MTSDF_EM_PX);
+            let (at40, st40) = bake_glyph_mtsdf_at(&thin, ch, ColoringStrategy::InkTrap, &base).expect("輪郭がある");
+            let (g, st) = bake_glyph_mtsdf(&thin, ch, ColoringStrategy::InkTrap).expect("輪郭がある");
+            // 4 倍の画素の数 ÷ (em × 4)² = em² の単位の面積
+            let px_per_em = |em: f32| (em * crate::engine::core::font::msdf::params::VERIFY_OVERSAMPLE as f32).powi(2);
+            let area40 = drawn_px(&at40) / px_per_em(base.em_px);
+            let area = drawn_px(&g) / px_per_em(g.em_px);
+            eprintln!(
+                "{ch} em40: 消えた {} 画素（{:.5} em²）描いた {area40:.5} em² → em {}: 消えた {} 画素（{:.5} em²）描いた {area:.5} em²",
+                st40.verify.vanished_px,
+                st40.verify.vanished_area_em2(base.em_px),
+                g.em_px,
+                st.verify.vanished_px,
+                st.verify.vanished_area_em2(g.em_px)
+            );
+            if st40.verify.needs_finer_field() {
+                raised_any = true;
+                assert!(g.em_px > base.em_px, "{ch} は em を上げる: {:?}", st40.verify);
+                assert_eq!(st.thin_raised_from_em, Some(base.em_px));
+                assert!(st.thin_raised_extra_texels > 0);
+                // 消えた細部（em² あたり）が減り、描いた線の面積が em 40 より増える＝消えていた線が戻る
+                assert!(st.verify.vanished_area_em2(g.em_px) < st40.verify.vanished_area_em2(base.em_px), "{ch} 消えた細部が減らない");
+                assert!(area > area40, "{ch} 描いた線の面積 em40 {area40} → em {} {area}", g.em_px);
+            } else {
+                assert_eq!(st.thin_raised_from_em, None);
+            }
+            // Regular は線が太いので上げない
+            let (gr, sr) = bake_glyph_mtsdf(&regular, ch, ColoringStrategy::InkTrap).expect("輪郭がある");
+            assert_eq!(sr.thin_raised_from_em, None, "Regular の '{ch}' は上げない: {:?}", sr.verify);
+            assert_eq!(gr.em_px, base.em_px);
+        }
+        assert!(raised_any, "Thin の横画の字のどれかは em 40 で線が消えて上げられるはず");
     }
 
     /// 余白の外周（クアッドの端）は外側（値 < 0.5）、字の中央付近は内側（「口」の枠の線の上）。
