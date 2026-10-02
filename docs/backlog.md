@@ -3601,6 +3601,19 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (2) `ChipGroup`・`RadioGroup`・`SegmentedControl` の `LabelSize`（トークンの名前か数）、(3) `DialogButtonKind.Danger`（`ButtonTone.Danger`）と選択肢の一覧のダイアログ
   （`Dialog.ShowMenu`・`DialogMenuItem`・`DialogResult.Selected`・`SelectedIndex`）。Wake or Pay の `FullWidthSlider` の刻みの点（divisions）は SEED の Slider に無い（下の別項目）。
   (4)〜(9) は残り。
+  → **(6) は 2026-10-03 に済**（動的ノード API: `GameObject.ChildCount`・`GetChild`・`Children`・`SiblingIndex`・`SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling`・
+  `GameObject.Create` / `Create2D` / `Create3D`・`AddComponent<T>()` / `RemoveComponent<T>()` / `AddScript<T>()`・`CanvasTransform.Size`。docs/scripting_api.md §7「動的ノード」）。
+- [ ] **動的ノード API（2026-10-03）の残した制限** — 2026-10-03（実装時に決めた範囲。直していない）。
+  (1) **`AddScript<T>()` のインスタンスを受け取る口が無い**（インスタンスはフレーム末尾にでき、`GetScript<T>()` に当たる API も無い。値は足したスクリプトの OnStart で自分から読む。
+  `[SerializeField]` の参照フィールドの解決〈`ResolveScriptInstance`〉はあるので、型名で引く `GetScript<T>()` を足すのが次の手）。
+  (2) **`AddComponent<T>()` で足せない種別**: Model・Skybox（GPU の資源・ファイルの読み込みが要る）、Camera・InputMap・Canvas・物理・水・ControlPoint（エディタで設定する前提）。
+  足すなら `runtime/src/engine/core/scripting/host_api/component_kinds.rs` の表と docs の表に 1 行ずつ。
+  (3) **スクリプトのスロットは `RemoveComponent` で外せない**（`RemoveScript<T>()` が無い。外すならエディタの削除と同じ `remove_slot_components` を通す）。
+  (4) **Play 中に選択中のアクタへスクリプトが足した・外したコンポーネントは、インスペクタ（`ACTOR_COMPONENTS`）を送り直さない**（ヒエラルキーは送る。次に選び直すと出る）。
+  (5) **`CanvasTransform.Size` は `CanvasLayoutItem.PreferredSize` の近道**で、効くのはレイアウトが測るノードの並べる矩形だけ（自由なノードの大きさ・Sprite の描く大きさは変わらない）。
+  CanvasTransform に大きさの欄を足すのは形式の変更（`.actor` / `.scene` の欄の追加・レイアウトの測り方の段の追加・インスペクタ）になるので見送った。
+  (6) **読み（`ChildCount` 等）はフレームの始めの木**（同じフレームに作った子は数えない）。同じフレームの生成・並べ替えを読みに反映するには、`node_pending` のような保留の表を木の形で持つ必要がある。
+  (7) Play 中の `HIERARCHY` は 400 ms ごとにまとめて送るので、エディタのヒエラルキーは並べ替えの途中の順を飛ばして最後の順だけを表示する（既存の間引き。`hierarchy_sync.rs`）。
 - [x] **PC の 1 倍で小さな文字の横線が欠けて別の字に見える** — 2026-09-30（W3-1 で発見。上の「PC の 1 倍で小さな文字の細い横線が消える・かすれる」の続き）。
   → **2026-10-01 に済**: 原因は text.wgsl が平滑化の幅を距離場の値の微分 fwidth(d) から決めていたこと（線の尾根を 2×2 の画素の組が挟むと fwidth ≒ 0 → しきい値の
   切り捨て）。測定: 17 px の「ー」を 0.1 dp ずつ下げた行で、横画のいちばん濃い alpha が 0.94〜0.98 → +0.5 dp で 0.25 → +0.6 dp で 0.00（消える）。
@@ -3935,6 +3948,15 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 ## Play 中のプレハブのホットリロード — 2026-10-02 実装時の残件（正典: docs/editor_prefab.md 8 章）
 
 - [ ] **Play 中にプレハブを保存する UI の経路が無い** — 2026-10-02。`DoQuickSave` は `State != Edit` で何もしない・アクタータブのタブバーは Edit 以外で無効・`OnActorFileOpened` も Edit 限定（Play の世界とアクタータブは同じランタイムの別の世界線で、Play 中は EDIT_VIEW を無視するため）。保存に続く `PREFAB_LIVE_PATCH_PATH` の配線（`MainWindow.Prefab.cs::PropagateSavedPrefabToScene`）は入れたが、いま当て直しが走るのは書き戻しの続きと IPC（MCP `seed_send_ipc`）だけ。候補: (a) Play 中だけ `.actor` を監視して外部の書き換え（テキストエディタ・AI）で当て直す（`AutoReloadPolicy` と同じ流儀の監視クラス。自分の書き戻しは除外）、(b) Play 中もアクタータブを表示・保存できるようにする（ランタイムの EDIT_VIEW の扱いから要設計）。
+  → **(a) は 2026-10-03 に済**（docs/editor_auto_reload.md §7.1。`PrefabAutoReloader`・`PrefabExternalChangeTracker`。Play 中に限らず Edit でも `PREFAB_REAPPLY_PATH` / `PREFAB_STATUS` を送る。設定「プレハブを自動再読込」）。(b) は残り。
+- [ ] **アクタータブで開いているプレハブを外部で書き換えても、タブの中身は古い版のまま** — 2026-10-03（A の外部変更の取り込みの実装で気付いた。直していない）。
+  シーンのインスタンスへは当て直す（§7.1）が、そのファイルを開いているアクタータブは読み直さない。そのままタブで保存すると外部の変更を上書きする
+  （取り込み以前からの挙動）。書き戻しの `MarkActorTabStale` と同じ印を付ける案があるが、タブに未保存の編集があると読み直しで消えるので、
+  タブの未保存の判定（今は `_isDirty` がシーンとタブで共有）を分けてから。関連: `editor/src/MainWindow.PrefabAutoReload.cs`・`MainWindow.Prefab.cs`。
+- [ ] **アクタファイル化（`EXPORT_ACTOR`）は自己書き込みの「開始」を知らない** — 2026-10-03（同上）。パネル（ヒエラルキー・プロジェクト）が直接送るため、
+  監視は `EXPORT_ACTOR_OK` を受けた時点で終了として除外する。ランタイムは書いた直後に OK を返すのでデバウンス（600 ms）の満了に間に合うが、
+  エディタの UI スレッドが 600 ms 以上詰まると、書き出したばかりのプレハブへ 1 回 `PREFAB_REAPPLY_PATH` が飛ぶ（元のアクタが再展開される。中身は同じで Undo できる）。
+  直すなら送る口を `RuntimeManager` に 1 本化して開始を知らせる。書き戻し（`PREFAB_WRITE_BACK`）もプレハブの参照パスが分からないときは開始の窓を開けない（同じ扱い）。
 - [ ] **Play 中の「プレハブから更新」（`PREFAB_REAPPLY` / `_PATH` / `_ALL`）は丸ごとの再展開のまま** — 2026-10-02。ヒエラルキーの右クリックは Play 中も出るので、押すとスクリプトが作り直されて OnStart が走り直し、スクリプトが持っていた根のハンドルも無効になる（今回の当て直しを作った理由そのもの）。Play 中は当て直しへ振り替えるか、メニューを出さないのが筋。ランタイムの `handle_reapply_prefab*` にもモードの判定が無い。
 - [ ] **3D の子ノードの Transform は当て直さない** — 2026-10-02（仕様）。子の Transform・インスタンス行列はワールド空間で持つため、ファイル（原点基準）の値を当てると位置が飛ぶ。根の配置行列 × ファイルの根の逆行列で変換すれば当てられる（新しく作るノードはそうしている）。2D（CanvasTransform は親基準）は当てている。
 - [ ] **名前の突き合わせの限界** — 2026-10-02。ファイルでノードの名前を変えると「消えて増えた」扱い（3 方向は消して作る。2 方向は古い方を残して新しい方を作る＝二重に見える）。スクリプトが `GameObject.Name` で名前を変えたノードは「実行中に足されたノード」扱いになり、以後そのノードへは当たらない（ファイル側の同名ノードは「実行中に消された」扱いで作り直さない）。
