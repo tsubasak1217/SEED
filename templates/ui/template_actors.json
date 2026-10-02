@@ -113,7 +113,7 @@
     {
       "path": "prefabs/slider.actor",
       "name": "スライダー",
-      "description": "つまみを動かして値を選ぶ（SEED.UI.Slider）。値が変わると ValueChanged が届く。",
+      "description": "つまみを動かして値を選ぶ（SEED.UI.Slider）。値が変わると ValueChanged が届く。TickCount で溝の上に刻みの点を描く（点の部品 ui/prefabs/slider_tick.actor がコピーされる）。",
       "category": "UI/入力",
       "tags": ["slider", "スライダー", "つまみ", "値", "音量", "volume", "range"],
       "thumbnail": "",

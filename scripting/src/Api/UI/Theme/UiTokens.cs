@@ -100,6 +100,11 @@ public static class UiTokens
     public const string SizeSliderThumb = "size.slider_thumb";
     /// <summary>スライダのつまみ（押している間）。</summary>
     public const string SizeSliderThumbPressed = "size.slider_thumb_pressed";
+    /// <summary>
+    /// スライダの刻みの点の直径（2026-10-03。Slider.TickCount〈Flutter の divisions〉の点。既定 3 は Wake or Pay の FullWidthSlider の
+    /// app.size.slider_tick と同じ値＝移植先の見た目に合わせた）。
+    /// </summary>
+    public const string SizeSliderTick = "size.slider_tick";
     /// <summary>進捗の棒の太さ。</summary>
     public const string SizeProgressBar = "size.progress_bar";
     /// <summary>進捗の輪の太さ。</summary>
@@ -216,7 +221,7 @@ public static class UiTokens
         RadiusButton, RadiusChip, RadiusCard, RadiusField, RadiusSegment, RadiusCheckbox, RadiusProgress, RadiusWheelBand,
         SpaceXs, SpaceS, SpaceM, SpaceL, SpaceXl,
         SizeTouchMin, SizeBorder, SizeCheckBorder, SizeToggleKnob, SizeToggleKnobOff, SizeToggleInset,
-        SizeSliderTrack, SizeSliderThumb, SizeSliderThumbPressed, SizeProgressBar, SizeRingThickness,
+        SizeSliderTrack, SizeSliderThumb, SizeSliderThumbPressed, SizeSliderTick, SizeProgressBar, SizeRingThickness,
         SizeRadioDot, SizeShadowBlur, SizeShadowOffset, SizeWheelItem, SizeWheelBandInset,
         SizeIcon, SizeIconGap, SizeSpinner, SizeSpinnerThickness,
         TextTitle, TextBody, TextLabel, TextCaption, TextWheel,

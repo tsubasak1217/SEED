@@ -213,6 +213,19 @@ public static class WidgetExtensionTests
             Check.Equal<int?>(1, TextFieldSelectionPolicy.CollapseTo(false, reversed), "逆向きの選択も動いた端（1）へ");
         });
 
+        h.Add("入力欄: 選択を許さない欄は場へコピー・切り取りの禁止も渡す（畳む前の Ctrl+A → Ctrl+C を写さない。レビュー #10）", () =>
+        {
+            Check.True(TextFieldSelectionPolicy.SessionAllowsCopy(true, true), "コピーも選択も許す欄だけ写せる（既定の欄は従来どおり）");
+            Check.True(!TextFieldSelectionPolicy.SessionAllowsCopy(true, false), "選択を許さない欄は AllowCopy = true でも写さない");
+            Check.True(!TextFieldSelectionPolicy.SessionAllowsCopy(false, true), "コピーを許さない欄は写さない（従来どおり）");
+            Check.True(!TextFieldSelectionPolicy.SessionAllowsCopy(false, false), "どちらも許さない欄は写さない");
+            // エンジンへ渡す旗（Rust の config.rs の FLAG_DISALLOW_COPY。session.rs は EditKey::Copy / Cut を allow_copy で判定する）
+            var locked = new TextInputOptions { AllowCopy = TextFieldSelectionPolicy.SessionAllowsCopy(true, false) };
+            Check.Equal(TextInputOptions.FlagDisallowCopy, locked.Flags & TextInputOptions.FlagDisallowCopy, "選択を許さない欄の場は FLAG_DISALLOW_COPY を立てる");
+            var open = new TextInputOptions { AllowCopy = TextFieldSelectionPolicy.SessionAllowsCopy(true, true) };
+            Check.Equal(0, open.Flags, "既定の欄の場は旗なし（従来どおり）");
+        });
+
         // ── トークン ─────────────────────────────────────────────
         h.Add("拡充 トークン: 新しいトークンが既定のテーマに出典どおりの値である", () =>
         {

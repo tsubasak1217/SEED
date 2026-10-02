@@ -15,6 +15,8 @@ namespace SEED.UI;
 //  - 幕（背景を暗くする面）のタップ: DismissOnScrimTap なら Dismissed で閉じる、そうでなければ何もしない
 //  - 戻る: CancelableByBack なら Dismissed で閉じる。そうでなくても戻るは受ける（後ろの画面へ回さない。確認を必ず答えさせる）
 //  - 結果は 1 回だけ（DialogResultLatch。ボタンの連打・閉じる動きの途中の戻るで 2 度出さない）
+//  - 外から閉じる（DialogHandle.Close / Dismiss・ModalHost.CloseAll。2026-10-03）もボタンと同じ決め方を通る: 結果は ExternalCloseResult
+//    （番号の無い Selected・DialogResult 以外は Dismissed）、Positive の入力欄の文字は InputResultText（読めなければ初めの文字）
 //  - 本文の行の数の見積もりは DialogLayout.cs（Text.Measure は W2-6c）、札の縦の割り付けと出入りの倍率は DialogMetrics.cs、
 //    ボタンの横並び・縦積みは DialogActionsLayout.cs
 // ============================================================
@@ -230,6 +232,26 @@ public static class DialogModel
     /// </summary>
     public static (bool Consumed, DialogResult? Result) OnBack(DialogOptions options)
         => (true, options.CancelableByBack ? DialogResult.Dismissed : null);
+
+    /// <summary>
+    /// 外から（DialogHandle.Close・Dismiss・ModalHandle.Close・ModalHost.CloseAll）閉じるときの結果（2026-10-03。レビュー #9）。
+    /// DialogResult の値はそのまま。null・DialogResult 以外・定義の無い値は Dismissed。<see cref="DialogResult.Selected"/> は選んだ項目の
+    /// 番号を外から渡せないので Dismissed に倒す（Selected の結果は「SelectedIndex が Items の添字」の約束を守れるときだけ＝項目を押したときだけ）。
+    /// </summary>
+    /// <param name="result">渡された結果。</param>
+    public static DialogResult ExternalCloseResult(object? result)
+        => result is DialogResult r && r != DialogResult.Selected && Enum.IsDefined(r) ? r : DialogResult.Dismissed;
+
+    /// <summary>
+    /// 閉じたときの入力欄の結果の文字（2026-10-03。DialogHandle.InputText へ置く値）。入力（<see cref="DialogOptions.Input"/>）があり
+    /// 結果が Positive のときだけ文字を返し（TrimResult なら前後の空白を落とす）、それ以外は null。入力欄の文字が読めない
+    /// （入力欄のスクリプトがまだ始まっていない・古いプレハブで入力の枠が無い）ときは初めの文字（<see cref="DialogInputOptions.Text"/>）。
+    /// </summary>
+    /// <param name="options">ダイアログの中身。</param>
+    /// <param name="result">結果。</param>
+    /// <param name="fieldText">入力欄の今の文字（読めなければ null）。</param>
+    public static string? InputResultText(DialogOptions options, DialogResult result, string? fieldText)
+        => result == DialogResult.Positive && options.Input is { } spec ? spec.Finish(fieldText ?? spec.Text) : null;
 }
 
 /// <summary>結果を 1 回だけ受ける留め金。</summary>

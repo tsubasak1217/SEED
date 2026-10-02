@@ -207,7 +207,7 @@ ScreenHandle? h = root.Push(myBody, NavTransition.Push, args, options, ScreenCon
 | 項目 | 規則 |
 |---|---|
 | 順 | 戻るの段と同じく上の層から: ダイアログ → シート → 覆い（ポップアップを含む）。同じ種類の中は後から開いた面から（戻るを 1 回ずつ押したのと同じ） |
-| 結果 | ダイアログは `DialogResult.Dismissed`（`Dismiss()` と同じ。入力欄の `InputText` は null のまま）、シート・覆い・ポップアップは null（幕・戻るで閉じたのと同じ） |
+| 結果 | ダイアログは `DialogResult.Dismissed`（`Dismiss()` と同じ。入力欄の `InputText` は null のまま。2026-10-03 から手札の Close と同じくボタンと同じ決め方〈`Dialog.Choose`〉を通る＝入力欄のフォーカスとキーボードの持ち上げを片付ける。§3.2）、シート・覆い・ポップアップは null（幕・戻るで閉じたのと同じ） |
 | 閉じない設定の面 | `DismissOnScrimTap`・`CancelableByBack` = false の面・進捗の札も閉じる（指・戻るでは閉じない面を、アプリの都合で閉じる口） |
 | 動き | animate = true: 各面が出る動きの後に手札が閉じる（もう閉じる動きの途中の面はそのまま・数えない）。false: 出る動きを見せずにこの呼び出しの中で閉じ、手札の `Closed`・`Completed` も**閉じる順に**この中で届く（閉じる動きの途中の面もすぐ閉じ終える） |
 | 作りかけ | 面のスクリプトがまだ動いていない面は、見せずに取りやめて手札をこの呼び出しの中で閉じる（動きの有無によらない。後で面のスクリプトが始まっても黙って消える） |
@@ -222,7 +222,7 @@ ScreenHandle? h = root.Push(myBody, NavTransition.Push, args, options, ScreenCon
 |---|---|
 | 作り | `Scrim`（幕・タップ）と `Card`（面・角丸 `radius.dialog`・遮る板・縦の CanvasStack〈余白・間隔 0〉に Title・Progress・Body・Items・Input・Buttons。2026-10-02 の形は下の「区画」）は兄弟（札の上のタップが幕に届かない） |
 | ボタン | 0〜3 つ。左から中立・いいえ・はい（Material 3 の並び）。文字が空のボタンは出さない。どれも空なら「OK」の Positive だけ（選択肢の一覧・進捗の札は出さない。`HideButtons` は文字があっても出さない。2026-10-02）。幅 = 文字の幅の見積もり ＋ 左右 1.5 em（高さより狭くしない）、ボタンの間 8（プレハブ）。中の幅に入らなければ縦に積む（下の「ボタンの縦積み」）。種類 `PositiveKind`・`NegativeKind`・`NeutralKind` = `DialogButtonKind.Danger` で color.error（Positive は塗り、ほかは文字。`ButtonTone.Danger`。2026-10-02） |
-| 結果 | `Positive` / `Negative` / `Neutral` / `Dismissed`（幕のタップ・戻る・`Dismiss()`）/ `Selected`（選択肢の一覧の項目。番号は `DialogHandle.SelectedIndex`。2026-10-02）。1 回だけ（連打・閉じる途中の戻るで 2 度出さない）。外から結果つきで閉じる `DialogHandle.Close(DialogResult)` |
+| 結果 | `Positive` / `Negative` / `Neutral` / `Dismissed`（幕のタップ・戻る・`Dismiss()`）/ `Selected`（選択肢の一覧の項目。番号は `DialogHandle.SelectedIndex`。2026-10-02）。1 回だけ（連打・閉じる途中の戻るで 2 度出さない）。外から結果つきで閉じる `DialogHandle.Close(DialogResult)`。**外から閉じてもボタンと同じ決め方を通る**（2026-10-03。レビュー #9。`Close(DialogResult[, animate])`・`Dismiss()`・基底の `ModalHandle.Close`・`ModalHost.CloseAll`・面ができる前の Close の当て直しは `ModalPlane.CloseFromOutside` → `Dialog.Choose`）: 結果の留め金を立て、入力欄のフォーカスを外し（変換中の文字を確定）、Positive なら入力欄の文字を `InputText` へ置き（入力欄のスクリプトがまだ始まっていなければ初めの文字。`DialogModel.InputResultText`）、キーボードの持ち上げを片付けてから閉じる。以前は面の `RequestClose` へ直行し、`Close(Positive)` で `InputText` が null のままだった。**外からの `Selected` は `Dismissed` に倒す**（選んだ項目の番号を外から渡せないため。`SelectedIndex` が −1 のまま `Selected` で閉じると受け手の `Items[h.SelectedIndex]` が範囲の外になる。警告を出す。null・`DialogResult` 以外・定義の無い値も `Dismissed`。`DialogModel.ExternalCloseResult`） |
 | 幕のタップ | `DismissOnScrimTap`（既定 true）なら Dismissed。false なら何もしない |
 | 戻る | `CancelableByBack`（既定 true）なら Dismissed。false でも**戻るは受ける**（後ろの画面へ回さない＝必ず答えさせる） |
 | 動き | 幕の濃さ 0 → `opacity.dialog_scrim`（0.32）、札の大きさ `ratio.dialog_scale_from`（0.9）→ 1（`motion.dialog` 0.2 秒・`motion.dialog_curve`）。出るときは逆。札の大きさは実行中の見た目の倍率（`CanvasLayoutItem.VisualScale`。札の矩形の中心の周りに背景・題・本文・ボタンが一体で縮む。§6）に「開き具合の倍率 × 予測型の戻るのプレビューの倍率（§5.1）」を書く（W2 の手直し P2-1。`DialogMetrics.CardScale`）。戻るを確定した後は、プレビューの倍率を保ったまま出る（縮めた姿勢から閉じる）。1 フレームで進める時間は上限つきで、入る動きの始めのフレームは数えない（§2 の「出入りの時計」） |

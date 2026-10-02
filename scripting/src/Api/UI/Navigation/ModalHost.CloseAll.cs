@@ -42,7 +42,8 @@ public sealed partial class ModalHost
             if (plane.Phase == ModalPhase.Closed) continue;
             // 閉じる動きの途中の面: 動きありならそのまま（数えない）、動きなしなら今すぐ閉じ終える
             if (plane.Phase == ModalPhase.Exiting && animate) continue;
-            plane.RequestClose(ModalCloseOrder.ResultFor(plane.Kind), animate);
+            // 外から閉じる入口を通す（ダイアログは手札の Close と同じくボタンと同じ決め方で片付ける。2026-10-03）
+            plane.CloseFromOutside(ModalCloseOrder.ResultFor(plane.Kind), animate);
             closed++;
         }
         if (closed > 0) Debug.Log($"{LogPrefix} close all {(only?.ToString() ?? "all")} count={closed}{(animate ? string.Empty : " (no motion)")}");

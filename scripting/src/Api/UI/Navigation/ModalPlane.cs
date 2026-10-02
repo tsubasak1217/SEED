@@ -85,7 +85,8 @@ public abstract class ModalPlane : UiWidget, IBackPreviewTarget
         Host!.Register(this, claim.Value.Kind);
         _scope = UiFocus.CreateScope(Owner, $"{Kind}:{Owner.Name}", overlay: true);
         OnPlaneStart();
-        if (Handle.EarlyClose.Requested) RequestClose(Handle.EarlyClose.Result, Handle.EarlyClose.Animate);
+        // 面ができる前に手札の Close が呼ばれていた: 外から閉じる入口で閉じる（ダイアログはボタンと同じ決め方を通る。2026-10-03）
+        if (Handle.EarlyClose.Requested) CloseFromOutside(Handle.EarlyClose.Result, Handle.EarlyClose.Animate);
         // 開く前に頼まれた「画面の下へ回す」を当てる（面ができてから。ModalHost.Park）
         Host.ApplyPendingPark(this);
     }
@@ -156,6 +157,15 @@ public abstract class ModalPlane : UiWidget, IBackPreviewTarget
         }
         Redraw.Request();
     }
+
+    /// <summary>
+    /// 外から閉じる（2026-10-03。レビュー #9）: 手札の Close・Dismiss、ModalHost.CloseAll、面ができる前に頼まれた Close の当て直しの入口。
+    /// 既定は <see cref="RequestClose(object?, bool)"/> と同じ。ダイアログ（Dialog）はボタンと同じ決め方（結果の留め金・入力欄の文字の確定・
+    /// フォーカスとキーボードの持ち上げの片付け）を通すよう上書きする。
+    /// </summary>
+    /// <param name="result">結果（手札が整えた値）。</param>
+    /// <param name="animate">出る動きを見せるか。</param>
+    internal virtual void CloseFromOutside(object? result, bool animate) => RequestClose(result, animate);
 
     /// <summary>
     /// 中身の画面のスクリプト（UiScreen）へ渡す値を届ける（2026-10-02。自前の面〈ModalPlane の派生〉が中身のプレハブを作ったときに使う。

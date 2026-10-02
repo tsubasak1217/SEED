@@ -3821,6 +3821,13 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   トークン size.popup_margin・size.popup_max_width・size.popup_padding・ratio.popup_max_height・radius.popup）。
   (4) `OverlayOptions.Animate`・`SheetOptions.Animate`・`PopupOptions.Animate`（動きなしで開く）と `ModalHandle.Close(結果, animate: false)`（動きなしで閉じる）。
   (2)(5)(6)〈作り置き以外の文字〉は残り。Wake or Pay の `PrebuiltContent`・`PopupPlane`・`OverlayPrefab` の一時の差し替えは、SEED.UI へ乗り換えれば外せる（アプリ側は未着手）。
+  → **(1) の後半（`WheelPicker`/`TimeWheel` の行の使い回し）は 2026-10-03 に確かめて済（lane3。docs/ui_components.md §11.3）**: 行の使い回しは **W2-5 から済んでいた**
+  （`WheelRows` が W2-3 の `ListView` で、見えている行と前後の余白〈描ける上限 ＋ 1 行〉だけを作り、範囲から外れた行を付け替える。列の全項目ぶんは作らない）。
+  上の「行の使い回し（仮想化）も要る」「時刻ホイールの行の生成」は誤った見込み。作る行は列あたり 12 行まで（窓 190・行 32。止まっているときは 11 行。項目の数・周の数によらない）で、
+  計算を `Wheel/WheelRowWindow.cs`（`CacheExtent`・`MaxCreatedRows`・`MaxDrawnRows`）に切り出し、一覧の並びと割り当て（`ListViewLayout`・`ListViewRecycler`）で 1/8 行ずつ・
+  速い払いを模して上限と「描く行はすべて作った行の中」を単体テストで固定した（振る舞いは変えていない）。**残り**: 組み立てた列の行が見えるまで数フレーム
+  （窓の大きさ〈前のフレームの描画〉待ち → 中身の長さが効くのを待つ → 行を作る → 次のフレームに付ける）かかり、行を前もって作る・窓の大きさを待たずに作る口は無い。
+  編集画面の 4 フレーム × 95 ms のうちホイールの分は計測していない（ホイールの行は時刻ホイール 1 つで 24〜26 行 = アクタ 48〜52。作り置き〈`ScreenStack.Prewarm`〉で隠すのが主）。
 - [ ] **W3-7（Wake or Pay の磨き 2）で見つかった UI 部品の不具合・制限** — 2026-10-02（プロジェクト側で回避済み）。
   (1) **【不具合】隠れた `CanvasScroll`（中身の大きさが自動）は見えている子だけで中身を測る**（`canvas_layout/pass.rs` の `accumulate_far_edge`）ため、画面が覆われている間に
   中身が 0 になりスクロール位置が 0 へ戻る（編集画面のサブ画面から戻ると一番上へ。アクティビティのタブでも 123 → 0）。Wake or Pay は編集画面だけ範囲を固定して回避（`HiddenScrollKeeper`）。
@@ -3837,7 +3844,10 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   新しい DLL で落ちはしないが、選択肢の一覧・本文のスクロール・進捗の札のスピナー・トーストのアイコンは出ない。templates/ui を取り込み直してから回避のコード
   （`FullWidthSlider`〈刻みの点を除く〉・`WrappedText.FitWidth`〈ボタンの文字〉・`DialogInputFit`・長押しのメニューのボタンのダイアログ・手作りの回転・`ProgressRing` の太さの共有）を外す。
   (2) **`Slider` に刻みの点（Flutter の divisions）が無い**（`FullWidthSlider` の `TickCount`。値の段階 `Step` はある）。
+  → **2026-10-03 に済（lane3。docs/ui_components.md §13.2）**: `Slider.TickCount`・`SetTickCount`・`TickPrefab`（点は子 `Ticks`〈Fill と Thumb の間〉の下に `slider_tick.actor` から作る。
+  塗りの上 color.on_primary・外 color.on_surface_muted・直径 `size.slider_tick` 3。`Looks/SliderTicks.cs`・`Widgets/SliderTickDots.cs`）。残りは下の「2026-10-03 の UI 部品の手直し」。
   (3) **`ProgressSpinner` は親の切り抜きで見えないだけの所でも回り続ける**（祖先の Visible と画面との重なりだけを見る）。
+  → **2026-10-03 に済（lane3。docs/ui_components.md §13.1）**: 祖先の有効な `CanvasClip` の矩形を画面に重ねた積と自分の矩形の重なりを見る（`UiVisibility.IsVisibleInView`・`Looks/ClipVisibility.cs`）。
   (4) ダイアログの札の幅は `size.dialog_width` で一定（Flutter の insetPadding の横 40 のような狭い画面での縮めが無い）・中の幅より長いボタンの文字は折り返さない・
   選択肢の一覧の行は開いた後に増減できない・`ButtonVariant.Tonal` の危険は Filled と同じ（errorContainer のトークンが無い）。
   (5) 実機（Pixel 6a）では未確認（PC の Play の撮影と単体テストまで。選択肢の行のタップ・スクロールの指の手触り・スピナーの滑らかさ）。
@@ -3856,6 +3866,24 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (6) Wake or Pay の回避コード（`PrebuiltContent`・`PopupPlane`・`OverlayPrefab` の一時の差し替え・`TopSheetFit`・`ModalParking`/`ModalUnderPage`/`ParkedPagePreview`・
   `DismissModals`）はまだ外していない（プロジェクト側の作業。templates/ui の popup.actor の取り込みも要る）。
   (7) `ProgressSpinner` の切り抜きの件（lane2 残件 (3)）と `Slider` の刻みの点（lane2 残件 (2)）は時間が足りず手を付けていない。
+  → **2026-10-03 に済（lane3）**（上の lane2 の節の (2)(3)）。
+
+- [ ] **2026-10-03 の UI 部品の手直し（lane3）で残したもの** — 2026-10-03（docs/reviews/2026-10-02_code_review.md の #9・#10・#20 の 4 件目、W3-6 (1) の後半、lane2 残件 (2)(3)）。
+  済んだもの: **#9** `DialogHandle.Close(DialogResult)`・`Dismiss()`・基底の `ModalHandle.Close`・`ModalHost.CloseAll`・面ができる前の Close の当て直しは、面の「外から閉じる」入口
+  （`ModalPlane.CloseFromOutside`。ダイアログは `Dialog.Choose`）を通る＝結果の留め金・入力欄のフォーカスを外す・Positive なら `InputText`（入力欄がまだできていなければ初めの文字。
+  `DialogModel.InputResultText`）・キーボードの持ち上げと KeyboardInsets の登録の片付け。外からの `Selected` は番号が無いので `Dismissed` に倒す（警告。`DialogModel.ExternalCloseResult`）。
+  **#10** 選択を許さない欄（`AllowSelection = false`）は場へコピー・切り取りの禁止も渡す（`TextFieldSelectionPolicy.SessionAllowsCopy`）。**#20 の 4 件目** docs/scripting_api.md のスピナーの例を
+  `SetSize`・`SetThickness` に直した。単体テスト UiComponentsTests 186 → 197 件。
+  (1) **Play・実機の目視は未確認**（単体テストと C# のビルドまで）: 外から `Close(Positive)` したダイアログの `InputText` とキーボードの片付け、刻みの点の見た目と描く順（塗りの上・つまみの下）・
+  点が次のフレームに出ること、スピナーがスクロールの窓の外で止まり戻ると回ること（`[SEED REDRAW]` のログで見られる）。
+  (2) 選択を許さない欄: フォーカスの間に `SetAllowSelection(false)` にしたときのコピーの禁止は**次のフォーカスから**（エンジンの文字入力の場に設定を途中で変える口が無い。
+  今の選択はその呼び出しで畳む）。Ctrl+A の後の文字・Backspace・Delete が同じ 2 回の Update の間に届くと、C# が畳む前に全体が置き換わる・消える（場に「選択を許さない」旗が無い。
+  直すなら Rust の `TextInputConfig` に選択の禁止を足して `EditKey::SelectAll`・Shift ＋ 矢印を場で捨てる）。
+  (3) ダイアログ: 外から項目を選んで閉じる口（`DialogHandle.Select(番号)` のような）は無い。
+  (4) 刻みの点: Flutter の divisions は値も寄せるが SEED は `Step` を別に指定する・点の形は丸だけ・ギャラリーの見本は無い（入力の見本 ui_text_input.scene の起床猶予のスライダだけ 4 刻み）。
+  Wake or Pay の `assets/ui` の slider.actor は古い（`Ticks` が無い）ので、`FullWidthSlider` を外すときに templates/ui の slider.actor と slider_tick.actor を取り込み直す。
+  (5) スピナー: 面積の無い切り抜き（畳んで高さ 0 の枠）の中・角丸／楕円の切り抜きの角の外だけ・別の不透明な面に覆われているだけのときは回り続ける（見えるほうへ倒す）。
+  祖先を 1 回たどる FFI は 1 段あたり 3 回ほど（深さ 15 で毎フレーム約 45 回。回っている間だけ）。
 
 ## 描画の構成（render.profile）と GPU メモリの計測 — 2026-10-02 実装時の残件（正典: docs/rendering_profiles.md）
 

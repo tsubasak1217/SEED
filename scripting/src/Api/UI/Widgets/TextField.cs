@@ -110,6 +110,7 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
     /// <summary>
     /// 選択を許すか（2026-10-02。既定 true。false で長押しの全選択・フォーカスで全選択・キーボードや IME の選択をさせない。
     /// Flutter の enableInteractiveSelection: false。Wake or Pay の W3-2b (6)。決め方は TextFieldSelectionPolicy）。
+    /// 2026-10-03: false の欄はフォーカスで始める場へコピー・切り取りの禁止も渡す（AllowCopy によらない。畳む前の Ctrl+C も写さない）。
     /// </summary>
     [SerializeField(Label = "選択を許す")]
     public bool AllowSelection = true;
@@ -249,7 +250,10 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
         Refresh();
     }
 
-    /// <summary>選択を許すかを変える（2026-10-02。false にすると今の選択も畳む）。</summary>
+    /// <summary>
+    /// 選択を許すかを変える（2026-10-02。false にすると今の選択も畳む）。コピー・切り取りの禁止（エンジンの場の設定）は場を始めるときに
+    /// 渡すので、フォーカスの間に変えたときは次のフォーカスから効く（2026-10-03。今の選択はこの呼び出しで畳む）。
+    /// </summary>
     /// <param name="allow">選択を許すか。</param>
     public void SetAllowSelection(bool allow)
     {
@@ -369,9 +373,12 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
     /// <summary>場を始める（フォーカスを得た）。</summary>
     private void BeginSession()
     {
+        // コピー・切り取りは「コピーを許す」かつ「選択を許す」欄だけ（選択を許さない欄は、C# が選択を畳む前に届いた Ctrl+A → Ctrl+C も
+        // エンジンが捨てる。2026-10-03。レビュー #10。TextFieldSelectionPolicy.SessionAllowsCopy）
         var options = new TextInputOptions
         {
-            Kind = Kind, Action = Action, MaxLength = MaxLength, AllowPaste = AllowPaste, AllowCopy = AllowCopy,
+            Kind = Kind, Action = Action, MaxLength = MaxLength, AllowPaste = AllowPaste,
+            AllowCopy = TextFieldSelectionPolicy.SessionAllowsCopy(AllowCopy, AllowSelection),
         };
         int start = TextInput.EndOfText, end = TextInput.EndOfText;
         // 全選択は選択を許す欄だけ（TextFieldSelectionPolicy。2026-10-02）

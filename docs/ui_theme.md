@@ -315,6 +315,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `size.slider_track` | 数 | 4 | 〃 | Slider（溝の太さ） |
 | `size.slider_thumb` | 数 | 20 | 〃 | Slider（つまみ） |
 | `size.slider_thumb_pressed` | 数 | 24 | 〃 | Slider（ドラッグ中のつまみ） |
+| `size.slider_tick` | 数 | 3 | 〃 | Slider（刻みの点の直径。TickCount > 0 のとき） |
 | `size.progress_bar` | 数 | 8 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
 | `size.ring_thickness` | 数 | 6 | 〃 | ProgressRing（輪の太さ。部品の Thickness が 0 のとき） |
 | `size.radio_dot` | 数 | 10 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |

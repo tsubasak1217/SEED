@@ -46,15 +46,27 @@ public class ModalHandle
     /// <summary>
     /// 閉じる（2026-10-02: 動きの有無を選べる。animate = false なら出る動きを見せずにすぐ閉じ、Closed もこの呼び出しの中で届く）。
     /// 面ができる前に呼んだら、できたときに見せずに閉じる。
+    /// 2026-10-03（レビュー #9）: 面の「外から閉じる」入口（<see cref="ModalPlane.CloseFromOutside"/>）を通す。ダイアログはボタンと同じ
+    /// 決め方（結果の留め金・入力欄の文字の確定・フォーカスとキーボードの持ち上げの片付け）を通る。
     /// </summary>
     /// <param name="result">結果。</param>
     /// <param name="animate">出る動きを見せるか。</param>
     public void Close(object? result, bool animate)
     {
         if (IsClosed) return;
-        if (Plane is { } plane) plane.RequestClose(result, animate);
-        else EarlyClose = (true, result, animate);
+        // 外から渡された結果を整える（既定はそのまま。ダイアログは DialogResult へ直し、番号の無い Selected は Dismissed へ倒す）
+        var normalized = NormalizeCloseResult(result);
+        // 面ができていれば面の「外から閉じる」入口へ。できる前なら覚えておき、面ができたときに同じ入口で閉じる（ModalPlane.OnWidgetStart）
+        if (Plane is { } plane) plane.CloseFromOutside(normalized, animate);
+        else EarlyClose = (true, normalized, animate);
     }
+
+    /// <summary>
+    /// 外から（<see cref="Close(object?, bool)"/>）渡された結果を整える（2026-10-03。既定はそのまま。<see cref="DialogHandle"/> が上書きする）。
+    /// </summary>
+    /// <param name="result">渡された結果。</param>
+    /// <returns>面へ渡す結果。</returns>
+    internal virtual object? NormalizeCloseResult(object? result) => result;
 
     /// <summary>閉じたことを知らせる（1 回だけ）。</summary>
     internal virtual void Complete(object? result)
@@ -68,8 +80,17 @@ public class ModalHandle
 }
 
 /// <summary>開いたダイアログの手札（結果は DialogResult）。</summary>
+/// <remarks>
+/// 【外から閉じる】（2026-10-03。レビュー #9）<see cref="Close(SEED.UI.DialogResult)"/>・<see cref="Dismiss"/>・基底の Close・
+/// ModalHost.CloseAll はどれもボタンと同じ決め方（Dialog の Choose）を通る: 結果は 1 回だけ、Positive なら入力欄の文字が
+/// <see cref="InputText"/> に入り（入力欄のスクリプトがまだ始まっていなければ初めの文字）、入力欄のフォーカスとキーボードの持ち上げを片付ける。
+/// 外から <see cref="SEED.UI.DialogResult.Selected"/> を渡しても選んだ項目の番号が無いので <see cref="SEED.UI.DialogResult.Dismissed"/> で閉じる（警告）。
+/// </remarks>
 public sealed class DialogHandle : ModalHandle
 {
+    /// <summary>ログの接頭辞（面の部品と同じ）。</summary>
+    private const string LogPrefix = "[UI] modal:";
+
     /// <summary>結果を待つ口。</summary>
     private readonly TaskCompletionSource<DialogResult> _result = new();
 
@@ -81,7 +102,8 @@ public sealed class DialogHandle : ModalHandle
 
     /// <summary>
     /// 入力欄の結果の文字（W2-6b。<see cref="DialogOptions.Input"/> があり Positive で閉じたときだけ。TrimResult なら前後の空白を落とす。
-    /// それ以外は null）。
+    /// それ以外は null）。外から <c>Close(DialogResult.Positive)</c> で閉じたときも入る（2026-10-03。入力欄のスクリプトがまだ始まって
+    /// いなければ初めの文字）。
     /// </summary>
     public string? InputText { get; private set; }
 
@@ -116,7 +138,8 @@ public sealed class DialogHandle : ModalHandle
 
     /// <summary>
     /// 外から結果つきで閉じる（2026-10-02。進捗の札が終わったら Positive で閉じるなど。閉じる動きの後に Completed）。
-    /// 面ができる前に呼んでも、できたらすぐ閉じる。
+    /// 面ができる前に呼んでも、できたらすぐ閉じる。ボタンを押したのと同じ決め方を通る（2026-10-03。Positive なら InputText が入る）。
+    /// <see cref="SEED.UI.DialogResult.Selected"/> は選んだ項目の番号が無いので Dismissed で閉じる（警告）。
     /// </summary>
     /// <param name="result">結果。</param>
     public void Close(DialogResult result) => base.Close(result);
@@ -144,6 +167,19 @@ public sealed class DialogHandle : ModalHandle
         var message = _pendingMessage;
         _pendingMessage = null;
         return message;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 2026-10-03（レビュー #9）: DialogResult へ直す（null・DialogResult 以外は Dismissed）。Selected は選んだ項目の番号を外から渡せないので
+    /// Dismissed へ倒す（SelectedIndex が −1 のまま Selected で閉じると、受け手の Items[h.SelectedIndex] が範囲の外になる）。決め方は
+    /// <see cref="DialogModel.ExternalCloseResult"/>。
+    /// </remarks>
+    internal override object? NormalizeCloseResult(object? result)
+    {
+        if (result is SEED.UI.DialogResult.Selected)
+            Debug.LogWarning($"{LogPrefix} DialogHandle.Close(DialogResult.Selected) は選んだ項目の番号が無いので Dismissed で閉じます");
+        return DialogModel.ExternalCloseResult(result);
     }
 
     /// <inheritdoc />

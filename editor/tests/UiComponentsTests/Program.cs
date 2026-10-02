@@ -327,6 +327,9 @@ public static class Program
         // ── 2026-10-02 の画面の遷移・面の口（lane3）: 作り置き・中身の出所・全部閉じる・動きなし・高さいっぱい・ポップアップ・覆いを下に残す ──
         NavigationExtensionTests.Register(h, theme);
 
+        // ── 2026-10-03 の手直し（lane3）: スライダの刻みの点・不定の進捗が切り抜きの外で回らない判定 ──
+        SliderSpinnerTests.Register(h, theme);
+
         return h.Run();
     }
 }
