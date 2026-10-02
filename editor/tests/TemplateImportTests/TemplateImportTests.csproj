@@ -108,6 +108,13 @@
     <Compile Include="..\..\src\Templates\Actors\TemplateActorInstaller.cs">
       <Link>Linked\Templates\Actors\TemplateActorInstaller.cs</Link>
     </Compile>
+    <!-- 追加の一連の手順（窓と MCP の seed_template_actor の共通。2026-10-02） -->
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorPickerContext.cs">
+      <Link>Linked\Templates\Actors\TemplateActorPickerContext.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorAddFlow.cs">
+      <Link>Linked\Templates\Actors\TemplateActorAddFlow.cs</Link>
+    </Compile>
 
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">

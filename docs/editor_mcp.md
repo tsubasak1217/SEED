@@ -144,7 +144,7 @@ MCP サーバーを掴んでいる間ずっと `bin\Debug\net10.0\SeedMcpServer.
 
 | ツール | 引数 | 返り値 |
 |---|---|---|
-| `seed_launch` | `headless?`（既定 true）, `project?`, `scene?`, `wait_seconds?`（既定 60） | `{ok, already_running, pid, port, exe, headless, state}` |
+| `seed_launch` | `headless?`（既定 true）, `project?`, `scene?`, `wait_seconds?`（既定 60）, `gpu_mem_log?`（true = GPU メモリの計測を有効にして起動 / false = 受け継いだ `SEED_GPU_MEM_LOG` を消す / 省略 = MCP サーバーの環境のまま） | `{ok, already_running, pid, port, exe, headless, gpu_mem_log, state}`（起動中のインスタンスへ `gpu_mem_log` を渡すと `warning` を付けて何もしない） |
 | `seed_attach` | `port`, `token` | `{ok, instance, state}`（利用者の明示同意が必要） |
 | `seed_instance` | なし | `{ok, bound, port, pid, headless, attached, has_token}` |
 | `seed_shutdown` | なし | `{ok, shutting_down}`（束縛中インスタンスのみ） |
@@ -175,17 +175,25 @@ MCP サーバーを掴んでいる間ずっと `bin\Debug\net10.0\SeedMcpServer.
 | `game_input_sequence` | `events`（9.3 の JSON 配列）, `wait?`（既定 true） | `{ok, sent, reply}`（wait 時は `INPUT_SEQUENCE_DONE` まで待つ） |
 | `game_input_release_all` | なし | `{ok, sent, reply}` |
 | `seed_script_debug` | `name`（ゲーム側が登録したコマンド名）, `arg?` | `{ok, sent, reply}`（ゲームの途中の状態を 1 手で作る。Play 中のみ。10 章） |
+| `seed_platform_sim` | `verb`（`permission` / `permission_answer` / `lifecycle`）, `args?`（文字列の配列） | `{ok, sent, reply}`（`reply` は模擬の命令の返答の JSON そのまま）／失敗は `{ok:false, sent, reason, error}`。SEED.Platform のデスクトップの模擬を Play 中に変える（**Play 中のみ・変更系**。§5.6・docs/scripting_api.md「デスクトップの模擬の操作」） |
+| `seed_gpu_mem_report` | `top?`（上位の表の件数。既定 20） | 要約表（テキスト）＋ `{ok, path, state, report}`（`report` はランタイムの GPU メモリの内訳の JSON。**観測系**。`seed_launch(gpu_mem_log:true)` で起動したインスタンスでのみ取れる。docs/rendering_profiles.md §4） |
+| `seed_preview` | `action`: `add` \| `clear` \| `clear_all`。add: `parent`（DFS ID か名前パス）, `prefab_path?`, `host?`（差し込み先の行の見出し）。clear: `dfs` | add: `{ok, root_dfs, world_line, prefab, parent_dfs, host?}`／clear: `{ok, dfs, cleared}`。Edit 上の保存されないプレビュー（**Edit 中のみ・変更系**。§7.2 の判断・docs/editor_screen_preview.md） |
+| `seed_template_actor` | `action`: `list` \| `add`。add: `path`（list の path）, `parent?`（省略でルート） | list: `{ok, library_root, count, entries:[{path,name,category,tags,description,is_2d}], warnings}`（**観測系**）／add: `{ok, status, template, target, parent_dfs, sent, runtime_reply, error, copied, skipped_existing, copy_failures, missing, warnings}`（**Edit 中のみ・変更系**。docs/template_library.md §9） |
 
 `seed_screenshot` 以外の追加ツールは、内部的には
 `POST /seed-ai/cmd` に `{"cmd":"<コマンド名>", ...}` を投げているだけなので、
 `seed_batch` の `operations` からも同じコマンド名で呼べる
 （`anim_preview` / `anim_preview_stop` / `anim_reload` / `select_actor` / `play_control` /
 `save_scene` / `send_ipc` / `prefab_reapply` / `profile` / `game_input_key` / `game_input_mouse` /
-`game_input_sequence` / `game_input_release_all` / `save_data` / `find_actor` / `script_debug`）。
+`game_input_sequence` / `game_input_release_all` / `save_data` / `find_actor` / `script_debug` /
+`platform_sim` / `gpu_mem_report` / `preview` / `template_actor_list` / `template_actor_add`）。
 `seed_save_*` は 1 つのコマンド `save_data` に `op`（get / set / delete / save）を足したもので、
 `seed_batch` からは `{"cmd":"save_data","op":"set","key":"money","value":1200}` の形で呼ぶ。
 `seed_input` は `game_input_key` / `game_input_mouse` を順に撃つ **MCP サーバー側のラッパ**なので、
 `seed_batch` からは元のコマンド名を並べること。
+`seed_template_actor` は `action` でエディタ側のコマンドを分ける（`list` → `template_actor_list`・`add` → `template_actor_add`。
+許可判定はコマンド名だけを見るので、観測系の一覧と変更系の追加を別のコマンドにしてある）。
+`seed_gpu_mem_report` の要約表は MCP サーバー側で付けるので、`seed_batch` の `gpu_mem_report` は生の JSON だけを返す。
 
 ### エディタ側コマンド名との対応
 
@@ -218,6 +226,14 @@ MCP サーバーを掴んでいる間ずっと `bin\Debug\net10.0\SeedMcpServer.
 | `game_input_sequence` | `game_input_sequence` | 同上 → `INPUT_SEQUENCE:{json}`（応答待ちは `IEditorAiHost.InjectGameInputAsync`） |
 | `game_input_release_all` | `game_input_release_all` | 同上 → `INPUT_RELEASE_ALL` |
 | `seed_script_debug` | `script_debug` | `EditorCommandExecutor.ScriptDebug.cs` → IPC `SCRIPT_DEBUG:{name},{arg}` → `SCRIPT_DEBUG_OK` / `SCRIPT_DEBUG_ERROR:{reason}`（実装は `runtime/.../app/script_debug_ops.rs`。応答待ちは `IEditorAiHost.InjectGameInputAsync` に相乗り） |
+| `seed_platform_sim` | `platform_sim` | `EditorCommandExecutor.PlatformSim.cs` → `AI/Tools/RuntimeIpc/PlatformSimIpc.cs`（1 行の組み立て・応答の解釈）→ `IEditorAiHost.SendIpcAwaitReplyAsync` → IPC `PLATFORM_SIM:{verb},{args…}` → `PLATFORM_SIM_OK:{json}` / `PLATFORM_SIM_ERROR:{reason}`（実装は `runtime/.../app/platform_sim_ops.rs`） |
+| `seed_gpu_mem_report` | `gpu_mem_report` | `EditorCommandExecutor.GpuMem.cs` → `RuntimeIpc/GpuMemReportIpc.cs` → `SendIpcAwaitReplyAsync` → IPC `GPU_MEM_REPORT:{%TEMP%/seed_mcp/seed_gpu_mem_<時刻>.json}` → `GPU_MEM_REPORT_DONE:{path}` / `GPU_MEM_REPORT_ERROR:{理由}`（実装は `runtime/.../app/gpu_mem_ops.rs`）。要約表は `SeedMcpServer/GpuMemReportFormatter.cs`。`gpu_mem_log` は `SeedMcpServer/Launcher.cs::BuildLaunchEnvironment` |
+| `seed_preview` | `preview`（`action` 違い） | `EditorCommandExecutor.ScreenPreview.cs`（引数・`host` の行の選択は `Preview/PreviewHostSlotSelector.cs`）→ `IEditorAiHost.AddScreenPreviewAsync` / `ClearScreenPreviewAsync`（`MainWindow.AiHost.Tools.cs`）→ UI と同じ `MainWindow.ScreenPreview.cs::PreviewNotEditableReason` / `SendPreviewRequest` / `SendPreviewClear` → IPC `PREVIEW_PREFAB` / `PREVIEW_CLEAR` / `PREVIEW_CLEAR_ALL` → `PREVIEW_ADDED` / `PREVIEW_CLEARED` / `PREVIEW_ERROR` |
+| `seed_template_actor` | `template_actor_list` / `template_actor_add` | `EditorCommandExecutor.TemplateActors.cs` → list: `TemplateLibraryLocator` + `TemplateActorCatalog.Load`／add: `IEditorAiHost.AddTemplateActorAsync` → 窓と同じ `Templates/Actors/TemplateActorAddFlow.cs`（`MainWindow.CreateTemplateActorContext`）→ IPC `ADD_TEMPLATE_ACTOR:{wl},{親\|-1},{一時ファイル}` → `SCENE_MODIFIED`（入った）/ `LOAD_ERROR:{理由}` |
+
+応答を待つ 4 ツールは、送る前に `RuntimeManager.RawMessageReceived`（受信スレッドで個別のイベントより先に上がる）を購読して
+決まった頭の 1 行を拾う（`MainWindow.AiHost.Tools.cs::AwaitRuntimeReplyAsync`）。応答には相関 ID が無いので、
+**同じ頭の応答を待つ命令を並行して送ると取り違えうる**（MCP の 1 コールずつの逐次呼び出しが前提）。
 
 ---
 
@@ -377,6 +393,54 @@ SEED_RUNTIME_EXE=/tmp/rt_target/debug/SEED.exe SEED_EDITOR_EXE=/tmp/ed_out/SEEDE
 `SEED_RUNTIME_EXE` に絶対パスを入れれば構成の選択より優先される
 （docs/runtime_build_configs.md）。
 
+### 5.6 端末なしの確かめ（模擬・画面プレビュー・GPU メモリ。2026-10-02）
+
+**A. 通知の権限を拒否された状態の画面を撮る**（SEED.Platform のデスクトップの模擬。Play 中のみ）
+
+```
+seed_launch(headless:true, project:"D:/SEED_projects/WakeOrPay")
+seed_play(action:"play", wait_seconds:2)
+seed_platform_sim(verb:"permission", args:["post_notifications","denied"])   # 状態を変える → platform.permission_changed
+seed_platform_sim(verb:"permission_answer", args:["post_notifications","none"])  # 求められても「答えない」
+seed_screenshot(target:"game")                                    # 拒否された状態の画面
+seed_platform_sim(verb:"lifecycle", args:["paused"])              # 設定の画面へ行った体（背面）
+seed_platform_sim(verb:"permission", args:["post_notifications","granted"])
+seed_platform_sim(verb:"lifecycle", args:["resumed"])             # 戻ってきた体（前面）→ 許可の後の画面
+seed_screenshot(target:"game")
+seed_play(action:"stop")                                          # 止めると模擬は起動時の設定へ戻る
+```
+
+起動時の状態（権限の初期値・OS の版）は環境変数 `SEED_PLATFORM_SIM_PERMISSIONS` / `SEED_PLATFORM_SIM_PERMISSION_ANSWER` /
+`SEED_PLATFORM_SIM_OS_VERSION` で与える（MCP サーバーの環境に入れればエディタ → ランタイムへ受け継がれる。`seed_launch` の引数には無い）。
+
+**B. 画面プレビューを差して撮る**（Edit のまま、実行時にスクリプトが積む画面の見た目を確かめる）
+
+```
+# アクタ名・プレハブは例（parent は DFS ID でも "Root/Child" の名前パスでもよい）
+seed_preview(action:"add", parent:"Shell/RootStack", host:"画面",
+             prefab_path:"assets://screens/alarm_edit.actor")                    # 枠 → 中身の 2 段で入る
+seed_screenshot(target:"viewport", max_width:800)
+seed_preview(action:"add", parent:"ModalHost", host:"ダイアログ")               # 行の既定のプレハブ（DialogPrefab）
+seed_screenshot(target:"viewport", max_width:800)
+seed_preview(action:"clear_all")                                                 # 後片付け（保存はされないが Undo 履歴には積まれる）
+```
+
+`host` を省くとヒエラルキーの右クリックと同じ（枠なし・親の直下）。行の見出しが分からないときは、適当な `host` を渡すと
+`available`（`"ScreenStack/画面"` のような選べる行の一覧）が返る。
+
+**C. 描画の構成ごとに GPU メモリを測る**（計測は起動時にだけ有効にできる）
+
+```
+seed_launch(headless:true, project:"<render.profile を ui にしたプロジェクト>", gpu_mem_log:true)
+seed_gpu_mem_report(top:20)        # 要約表の「文脈」に（描画の構成 ui: …）が出る
+seed_play(action:"play", wait_seconds:5)
+seed_gpu_mem_report(top:20)        # Play のランタイムの内訳（Edit とは別プロセス）
+seed_shutdown()
+```
+
+構成は project_settings.json の `render.profile`（エディタの「プロジェクト設定 → 描画の構成」）で決まる。
+数字の読み方・限界（論理値・生存は推定・DX12 ではヒープの実使用量が取れない）は docs/rendering_profiles.md §4。
+
 ---
 
 ## 6. 制約・注意点
@@ -484,6 +548,11 @@ OS が `WM_PAINT` を配送しないため、winit の `RedrawRequested` によ�
 | `seed_play("play")` の状態遷移待ち | 60 秒（スクリプト再コンパイルを挟むため） |
 | `seed_play` のその他の遷移待ち | 15 秒 |
 | `seed_play` の `wait_seconds` | 0〜20 秒にクランプ |
+| `seed_platform_sim` の応答（`PLATFORM_SIM_OK` / `_ERROR`）待ち | 5 秒 |
+| `seed_gpu_mem_report` の応答（`GPU_MEM_REPORT_DONE` / `_ERROR`）待ち | 10 秒 |
+| `seed_preview` の差し込みの応答（`PREVIEW_ADDED` / `PREVIEW_ERROR`）待ち | 20 秒（プレハブをその場で組み立てるため） |
+| `seed_preview` の消去の応答（`PREVIEW_CLEARED`）待ち／`host` 指定時の親の構成の取得 | 5 秒／5 秒 |
+| `seed_template_actor(add)` の送信後の結果（`SCENE_MODIFIED` / `LOAD_ERROR`）待ち | 30 秒（モデル・画像の読み込みを含む。時間切れでも命令は送ってあるので遅れて入ることがある） |
 
 すべて `await` ベースで実装しており、UI スレッドをブロックしない
 （待っている間もエディタは操作できる）。
@@ -535,9 +604,25 @@ ERROR: seed_launch で起動したインスタンスのみ操作できます。�
 **観測系だけ**に限定する。
 
 - 通す: `get_scene_info` / `list_asset_files` / `get_hierarchy` / `get_editor_state` /
-  `get_log` / `screenshot` / `screenshot_gpu`
+  `get_log` / `screenshot` / `screenshot_gpu` / `find_actor` / `gpu_mem_report` / `template_actor_list`
 - 拒否: `save_scene` / `load`・`set_value` / `add_*` / `remove_*` / `move_actor` /
-  `play_control` / `anim_*` / `write_asset_file` / `send_ipc` / `shutdown`
+  `play_control` / `anim_*` / `write_asset_file` / `send_ipc` / `shutdown` /
+  `platform_sim` / `preview` / `template_actor_add`（ほかに `save_data` / `game_input_*` / `script_debug` / `profile` なども）
+
+**2026-10-02 に足したコマンドの分類と根拠**（判定表は `AiOperationPolicy.ReadOnlyCommands` の 1 か所。`editor/tests/AiSafetyTests` が固定している）:
+
+| コマンド | 分類 | 根拠 |
+|---|---|---|
+| `gpu_mem_report` | 観測系（通す） | ランタイムの記録を集計して JSON を書くだけ。書き出し先は**外から受け取らず**エディタが OS の一時フォルダ（`seed_mcp/`）に決めるので、プロジェクトのファイルにもシーンにも触れない |
+| `template_actor_list` | 観測系（通す） | ライブラリ（`templates/`）のカタログを読むだけ |
+| `template_actor_add` | 変更系（拒否） | シーンへアクタを入れ（Undo 1 件・選択が動く）、依存ファイルをプロジェクトの `assets` へコピーする |
+| `platform_sim` | 変更系（拒否） | 実行中のゲームの権限・前面と背面の状態を書き換え、スクリプトへイベント（`platform.permission_changed` など）が届く |
+| `preview` | **変更系（拒否）** | プレビューは**保存されず、シーンも未保存にしない**が、「観測するだけ」ではない。① Undo 履歴へ 1 件ずつ積まれる（利用者の次の Ctrl+Z が AI のプレビューを消すことになる）② 出した根が選択される（インスペクタの表示が変わる）③ 表示中の木の DFS 番号が後ろのノードでずれる（利用者の操作の途中の宛先がずれうる）④ `clear_all` は利用者自身のプレビューも消す。§7.2 の基準「ファイルにもシーンにも触れない」の「シーン」には編集中のメモリ上の木と Undo 履歴も含むと読み、通さない。AI の主な使い方（ヘッドレスで差して撮る）はヘッドレス既定の変更許可で足りる |
+
+MCP サーバー側の未束縛での許可（`SeedInstance.ReadOnlyTools`）には、上の観測系のツール（`seed_gpu_mem_report`・
+`seed_template_actor` の list）も**入れていない**。計測は `seed_launch(gpu_mem_log:true)` で起動したインスタンスでしか
+有効にならないこと、`seed_template_actor` は 1 つのツールで追加（変更系）も兼ねることから、未束縛（＝既定ポートの利用者の
+エディタ）へ送る意味が無いため。
 
 **エディタ内蔵の AI アシスタントパネルは従来どおり動く。** 判定は
 `AiOperationPolicy.CheckAllowed(command, origin)` の 1 か所に集約されており、

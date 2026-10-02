@@ -3713,6 +3713,7 @@ PlatformDiagnostics.SimulateLifecycle(AppLifecyclePhase.Paused);   // 前面・�
 - `OpenSettings` は開かずにログだけです（変えるなら上の口で）。`App.OpenUrl` を開かないのは従来どおり `SEED_PLATFORM_SIM_NO_OPEN=1`。
 - エディタの **Play を止める・始めると、実行中の変更は捨てられ起動時の設定へ戻ります**（ほかの模擬の状態と同じ）。IPC の `PLATFORM_SIM` は Play 中だけ受け付けます（`not_playing`）。
 - IPC の理由: `not_playing`（Play 中でない）・`not_simulated`（模擬でない）・`unknown_verb`・`bad_arguments`（引数の数の違い）・`invalid_argument`（種類・状態の名前の誤り、v2 の予約の種類）。
+- AI（MCP）からは `seed_platform_sim(verb, args)` で同じ IPC を送り、応答を待って返答の JSON を受け取れる（docs/editor_mcp.md §4・§5.6 の A）。
 
 ### 端末の明暗（`App.UiMode`・`platform.ui_mode_changed`。W2-9）
 

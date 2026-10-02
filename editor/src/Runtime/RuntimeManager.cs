@@ -1858,6 +1858,10 @@ public sealed partial class RuntimeManager : IDisposable
             // 画面プレビューの知らせ（HIERARCHY_QUIET・PREVIEW_*）。処理は RuntimeManager.ScreenPreview.cs。
             // HIERARCHY_QUIET は直後の HIERARCHY より先に数えるため、この受信スレッドで同期的に上げている。
         }
+        else if (TryHandleAiToolReplyMessage(msg))
+        {
+            // AI ツールの応答（PLATFORM_SIM_* / GPU_MEM_REPORT_*）。記録だけ（RuntimeManager.AiToolReplies.cs）。
+        }
         else if (msg.Equals("HIERARCHY_RESET", StringComparison.Ordinal))
         {
             // アクターツリーが丸ごと入れ替わった（シーン遷移 / Play 停止の復元 / LOAD_SCENE）。

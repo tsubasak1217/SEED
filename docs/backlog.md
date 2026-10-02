@@ -207,6 +207,22 @@
 
 - [ ] **`seed_launch` が起動したエディタは MCP サーバー終了後も残る** — 2026-09-07。ジョブオブジェクトで括っていないため、`seed_shutdown` を忘れるとプロセスが残る。必要なら Job Object + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を検討。関連: `editor/SeedMcpServer/Launcher.cs`。
 
+## エディタ MCP の確かめ・計測ツール（2026-10-02 L2-4 実装時の残件）
+
+`seed_platform_sim` / `seed_gpu_mem_report` / `seed_preview` / `seed_template_actor` と `seed_launch(gpu_mem_log)` を足した（正典 docs/editor_mcp.md §4・§5.6・§7.2）。
+
+- [ ] **新ツールの実通信（MCP → エディタ → ランタイム）は未検証** — 2026-10-02。単体テスト（AiSafetyTests 44 件・ScreenPreviewTests 61 件・TemplateImportTests 50 件）と、MCP サーバーの実プロセスでの tools/list の形・未束縛での拒否までは確かめたが、`seed_launch` したヘッドレスエディタで 4 ツールを実際に呼ぶ往復はしていない（別レーンがランタイムを編集中で、このレーンでは cargo を走らせない方針だったため）。次にヘッドレスを動かすときに docs/editor_mcp.md §5.6 の A〜C を一度通すこと。特に (a) `PREVIEW_PREFAB` の応答の順（HIERARCHY → SELECTED → PREVIEW_ADDED）の後で `seed_hierarchy` が新しい木を返すか、(b) `template_actor_add` の `SCENE_MODIFIED` 待ち、(c) `SEED_GPU_MEM_LOG` が Play のランタイム（常駐 Play を含む）まで届くか（.NET の子プロセスへの受け継ぎは AiSafetyTests で実プロセスを起動して確かめ済み）。
+
+- [ ] **描画の構成（render profile）を単独で問い合わせる IPC が無い** — 2026-10-02。`App::render_profile_summary`（`runtime/src/engine/core/app_base/app/render_profile_ops.rs`）は GPU メモリの内訳の `context` にしか出ない。そのため `seed_state` に `render_profile` を足せなかった。今は `seed_launch(gpu_mem_log:true)` → `seed_gpu_mem_report` の要約の「文脈」か、起動ログ `[SEED RENDER PROFILE]`（`seed_log`）で見る。足すなら `GET_RENDER_PROFILE` → `RENDER_PROFILE:{json}`（name・止めた旗）と、エディタの `get_editor_state`（`EditorCommandExecutor.Visual.cs::ExecuteGetEditorState`）での最後の値のキャッシュ。エディタ側の `editor/src/ProjectSettings/RenderProfileCatalog.cs`（project_settings.json から決める）で代用もできるが、起動オプション `--render-profile=` を含まないのでランタイムの実効値と食い違いうる。
+
+- [ ] **MCP 化の候補: `PREFAB_LIVE_PATCH_PATH` / `PREFAB_WRITE_BACK`** — 2026-10-02。別レーンで作っている Play 中のプレハブの当て直し・書き戻しの IPC（応答 `PREFAB_LIVE_PATCH_DONE` / `_ERROR`・`PREFAB_WRITE_BACK_DONE` / `_ERROR`）は未合流のため、今回は触っていない。合流後にツール化を検討する（応答待ちは `MainWindow.AiHost.Tools.cs::AwaitRuntimeReplyAsync` に乗せられる。書き戻しはプレハブのファイルを書く変更系なので `AiOperationPolicy` では拒否側、`confirm` 必須も検討）。
+
+- [ ] **応答待ちに相関 ID が無い（とくにテンプレートアクタの追加）** — 2026-10-02。`PLATFORM_SIM` / `GPU_MEM_REPORT` / `PREVIEW_*` は応答に要求の ID を持たないので、同じ頭の応答を待つ命令が並行すると取り違えうる（MCP は 1 コールずつなので通常は起きない）。`ADD_TEMPLATE_ACTOR` は専用の応答が無く、`SCENE_MODIFIED`（ほかの編集でも届く）と `LOAD_ERROR:`（シーンの読み込みの失敗でも届く）を合図に代用している。利用者が同じエディタで同時に編集していると誤った成否を返しうる（ヘッドレスでは起きない）。直すならランタイムに `ADD_TEMPLATE_ACTOR_DONE:{wl},{root_dfs}` / `_ERROR:{理由}` のような専用の応答を足す（`runtime/.../app/template_actor_ops.rs`）。
+
+- [ ] **`seed_launch` で模擬の起動時の状態を渡せない** — 2026-10-02。権限の初期値・答え・OS の版（`SEED_PLATFORM_SIM_PERMISSIONS` / `SEED_PLATFORM_SIM_PERMISSION_ANSWER` / `SEED_PLATFORM_SIM_OS_VERSION`）や `SEED_SIM_WINDOW_SIZE` は環境変数でしか与えられず、MCP サーバーの環境に入れておく必要がある（エディタ → ランタイムへは受け継がれる）。任意の環境変数を渡せる引数は作らない（`SEED_RUNTIME_EXE` などで任意の exe を起動できてしまう）ので、足すなら名前の許可リスト付き（例 `sim_env:{…}`）で。関連: `editor/SeedMcpServer/Launcher.cs::BuildLaunchEnvironment`。
+
+- [ ] **Pause 中の `seed_platform_sim` / `seed_gpu_mem_report` は時間切れになるかもしれない（未確認）** — 2026-10-02。エディタの Pause（最小化の検知・`PAUSE_RENDER`）の間にランタイムが IPC を読み続けるかを確かめていない。読まないなら応答待ち（5 秒・10 秒）が時間切れになる（エラーの文には「Pause 中」の可能性を書いてある）。実通信の確認のときに一緒に見る。
+
 ## 2D パーティクル（2026-09-08 実装の残件）
 
 `ParticleEmitter` を 2D キャンバスアクターへ付けられるようにし、UI の統合描画列

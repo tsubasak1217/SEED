@@ -42,6 +42,7 @@ public static class TemplateActorTests
         RegisterDependencyTests(h);
         RegisterInstallerTests(h);
         RegisterShippedLibraryTests(h);
+        TemplateActorAddFlowTests.Register(h);
     }
 
     // ============================================================

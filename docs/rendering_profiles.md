@@ -107,9 +107,12 @@
 | 環境 | 指定 |
 |---|---|
 | PC | 環境変数 `SEED_GPU_MEM_LOG=1`、または起動引数 `--gpu-mem-log` |
+| PC（MCP） | `seed_launch(gpu_mem_log:true)`（エディタへ `SEED_GPU_MEM_LOG=1` を渡し、エディタが起動する Edit・Play のランタイムが受け継ぐ。2026-10-02） |
 | Android | `am start … --es seed.gpu_mem_log 1`（デバッグ版の APK） |
 
 無効（既定）なら資源の作成の記録もしない（`*_tracked` は旗を 1 つ読んで wgpu を呼ぶだけ）。
+MCP からは `seed_gpu_mem_report(top?)` で内訳（下の IPC `GPU_MEM_REPORT`）を取り、要約表（合計・分類ごと・上位）＋完全な JSON で受け取れる
+（docs/editor_mcp.md §5.6 の C）。
 
 ### 4.2 何が出るか
 
