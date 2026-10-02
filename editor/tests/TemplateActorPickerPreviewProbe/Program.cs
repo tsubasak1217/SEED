@@ -4,7 +4,9 @@
 //  【何をするか】
 //  実物の TemplateActorPickerWindow（XAML）を **表示せずに** 組み立て、同梱のカタログ
 //  （templates/*/template_actors.json）を当てた各状態を PNG へ書き出す。
-//    01_all            … 「すべて」・先頭を選択（追加先 = ルート）
+//    01_all            … 「すべて」・先頭を選択（追加先 = ルート）。2026-10-02 から同梱のカタログの全件に見本の画像
+//                        （templates/*/thumbnails/。editor/tools/SeedTemplateThumbnails が作る）があるので、
+//                        画像入りの一覧になり、全件に画像があることも表明する（足したエントリの撮り忘れに気付ける）
 //    02_search         … 検索欄に「ぼたん」（かなの区別なしで「ボタン」が引ける）
 //    03_category       … 左の木で「UI › 入力」を選択
 //    04_reject         … 追加先が Canvas の無い 3D の子で、2D の部品を選択（「追加」が押せない）
@@ -113,7 +115,9 @@ public static class Program
         var plain3D = new TemplateActorTarget { ParentDfs = 4, ParentName = "Player", ParentIs2D = false };
 
         // ── 01〜05: 同梱のライブラリで状態を作る ─────────────────
-        Render(outDir, "01_all", catalog, root, w => { });
+        Render(outDir, "01_all", catalog, root, w => { },
+               w => Expect(Find<TextBlock>(w, "LblStatus").Text.Contains($"見本の画像あり {catalog.Entries.Count} 件"),
+                           "01: 同梱のカタログの全件に見本の画像がある（無ければ SeedTemplateThumbnails で撮る）"));
         Render(outDir, "02_search", catalog, root, w => Find<TextBox>(w, "TxtSearch").Text = "ぼたん",
                w => Expect(ListCount(w) >= 2, "02: 「ぼたん」でボタンと丸ボタンが引ける"));
         Render(outDir, "03_category", catalog, root, w => SelectCategory(w, "UI/入力"),

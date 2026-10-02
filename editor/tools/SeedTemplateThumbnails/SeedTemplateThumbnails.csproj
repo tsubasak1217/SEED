@@ -1,0 +1,98 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SeedTemplateThumbnails — テンプレートアクタの見本の画像（サムネイル）をランタイムで撮って作るコンソールツール。
+
+    カタログ（templates/<フォルダ>/template_actors.json）を読み、テンプレートごとに「舞台」の一時のシーン
+    （dp のキャンバス・テーマの背景・テンプレートを中央に 1 つ・見本の中身）を作り、SEED.exe を
+    フォーカスを奪わずに 1 回だけ起動して（Play・画面外・SEED_HEADLESS）、IPC（TCP）でシーンを順に読み込み・撮影し、
+    切り出して縮めた PNG を templates/<フォルダ>/thumbnails/<名前>.png に書く。詳細は docs/template_library.md §9.10。
+
+    editor/tools/SeedPak・SeedAndroid と同じ流儀:
+      - 外部パッケージを足さない素のコンソールアプリ
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （カタログの読み込み・まっさらな木・依存のコピー・IPC の行の送受信は、エディタの「テンプレートアクタを追加」と同じコード）
+    違い: 画像の読み書き（PNG の読み込み・書き出し）だけに WPF の画像の機能（PresentationCore の WIC）を使うので、
+    対象は net10.0-windows・UseWPF。窓は作らない（App も Dispatcher も使わない）。ランタイムの起動も Windows の API で行うので
+    Windows 専用のツールである。
+
+    実行方法（リポジトリのルートで。XML のコメントにハイフン 2 つを書けないため引数の書式は ThumbnailArguments.cs 参照）:
+      dotnet run (project=editor/tools/SeedTemplateThumbnails) の後ろに、only <名前> / size <一辺> などのオプション
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tools.SeedTemplateThumbnails</RootNamespace>
+    <AssemblyName>SeedTemplateThumbnails</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- UseWPF のときの暗黙の using には System.IO が入らない（WPF の Path と紛れるため）。このツールは WPF の図形を使わないので足す -->
+    <Using Include="System.IO" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 参照の閉包（舞台のシーンが参照するファイルをライブラリから一時のプロジェクトへ写す。テンプレートアクタの追加と同じ） -->
+    <Compile Include="..\..\src\Packaging\Collect\PackagingRules.cs">
+      <Link>Linked\Packaging\Collect\PackagingRules.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPathUtil.cs">
+      <Link>Linked\Packaging\Collect\AssetPathUtil.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
+      <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetReferenceScanner.cs">
+      <Link>Linked\Packaging\Collect\AssetReferenceScanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollectionResult.cs">
+      <Link>Linked\Packaging\Collect\AssetCollectionResult.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetCollector.cs">
+      <Link>Linked\Packaging\Collect\AssetCollector.cs</Link>
+    </Compile>
+    <!-- テンプレートライブラリ（置き場所の探し方・メタデータの名前・コピーの失敗の型） -->
+    <Compile Include="..\..\src\Templates\TemplateLibraryLocator.cs">
+      <Link>Linked\Templates\TemplateLibraryLocator.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateLibraryMetadata.cs">
+      <Link>Linked\Templates\TemplateLibraryMetadata.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\TemplateImportPlan.cs">
+      <Link>Linked\Templates\TemplateImportPlan.cs</Link>
+    </Compile>
+    <!-- テンプレートアクタ（カタログ・まっさらな木・依存の計画とコピー。エディタの窓と同じファイル） -->
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorCatalogFormat.cs">
+      <Link>Linked\Templates\Actors\TemplateActorCatalogFormat.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorEntry.cs">
+      <Link>Linked\Templates\Actors\TemplateActorEntry.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorCatalog.cs">
+      <Link>Linked\Templates\Actors\TemplateActorCatalog.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorFlattener.cs">
+      <Link>Linked\Templates\Actors\TemplateActorFlattener.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorDependencyPlanner.cs">
+      <Link>Linked\Templates\Actors\TemplateActorDependencyPlanner.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorStaging.cs">
+      <Link>Linked\Templates\Actors\TemplateActorStaging.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Templates\Actors\TemplateActorInstaller.cs">
+      <Link>Linked\Templates\Actors\TemplateActorInstaller.cs</Link>
+    </Compile>
+    <!-- ランタイムとの IPC の行の送受信と命令の文字列（エディタ・SeedAndroid と同じ） -->
+    <Compile Include="..\..\src\Ipc\IpcLineChannel.cs">
+      <Link>Linked\Ipc\IpcLineChannel.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Ipc\RuntimeIpcCommands.cs">
+      <Link>Linked\Ipc\RuntimeIpcCommands.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

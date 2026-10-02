@@ -8,7 +8,14 @@
       "description": "押すと Clicked が届く角丸のボタン（SEED.UI.Button）。文字は子の Label、色と角丸は Sprite、見た目の種類は Variant（Filled・Outlined・Text など）で変える。",
       "category": "UI/基本",
       "tags": ["button", "ボタン", "押す", "タップ", "tap", "click", "filled", "outlined"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 200,
+        "instances": [
+          {"": {"Button": {"fields": {"Variant": "Filled", "Text": "保存する"}}}},
+          {"": {"Button": {"fields": {"Variant": "Outlined", "Text": "キャンセル"}}}}
+        ]
+      }
     },
     {
       "path": "prefabs/round_button.actor",
@@ -16,7 +23,11 @@
       "description": "円いボタン（SEED.UI.Button）。アイコンや 1 文字を載せる小さな操作に使う。大きさは Sprite の幅と高さで変える。",
       "category": "UI/基本",
       "tags": ["round button", "丸ボタン", "円", "アイコン", "fab", "icon button", "button"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 120,
+        "patch": {"": {"Button": {"fields": {"Text": "＋"}}}}
+      }
     },
     {
       "path": "prefabs/card.actor",
@@ -24,7 +35,10 @@
       "description": "角丸の面に画像・題・本文を並べたカード。中身の文字と画像は子のアクタで差し替える。見本の画像 ui/textures/avatar.png がコピーされる。",
       "category": "UI/基本",
       "tags": ["card", "カード", "パネル", "panel", "surface", "面"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 260
+      }
     },
     {
       "path": "prefabs/toggle.actor",
@@ -32,7 +46,12 @@
       "description": "オン・オフを切り替えるスイッチ（SEED.UI.Toggle）。切り替わると Changed が届く。",
       "category": "UI/入力",
       "tags": ["toggle", "switch", "トグル", "スイッチ", "オンオフ", "on off"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 120,
+        "spacing": 16,
+        "instances": [{"": {"Toggle": {"fields": {"IsOn": "true"}}}}, {"": {"Toggle": {"fields": {"IsOn": "false"}}}}]
+      }
     },
     {
       "path": "prefabs/checkbox.actor",
@@ -40,7 +59,15 @@
       "description": "チェックを付け外しする箱（SEED.UI.Checkbox）。切り替わると Changed が届く。",
       "category": "UI/入力",
       "tags": ["checkbox", "check", "チェック", "チェックボックス", "選択"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 100,
+        "spacing": 16,
+        "instances": [
+          {"": {"Checkbox": {"fields": {"IsChecked": "true"}}}},
+          {"": {"Checkbox": {"fields": {"IsChecked": "false"}}}}
+        ]
+      }
     },
     {
       "path": "prefabs/radio_group.actor",
@@ -48,7 +75,11 @@
       "description": "並びの中から 1 つだけ選ぶ（SEED.UI.RadioGroup と子の SEED.UI.SelectItem）。項目は子を複製して増やす。選び直すと SelectionChanged が届く。",
       "category": "UI/入力",
       "tags": ["radio", "radio button", "ラジオ", "ラジオボタン", "単一選択", "select"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 170,
+        "size": [110, 92]
+      }
     },
     {
       "path": "prefabs/chip_group.actor",
@@ -56,7 +87,17 @@
       "description": "小さな札を並べて選ぶ（SEED.UI.ChipGroup）。Multiple で複数選択にできる。項目は子の Chip を複製して増やす。",
       "category": "UI/入力",
       "tags": ["chip", "chips", "チップ", "タグ", "tag", "filter", "複数選択"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 280,
+        "size": [248, 72],
+        "patch": {
+          "": {"ChipGroup": {"fields": {"InitialSelection": "[0, 2, 4]"}}},
+          "Chip4": {"$node": {"canvas_transform": {"position": [0.0, 40.0]}}},
+          "Chip5": {"$node": {"canvas_transform": {"position": [64.0, 40.0]}}},
+          "Chip6": {"$node": {"canvas_transform": {"position": [128.0, 40.0]}}}
+        }
+      }
     },
     {
       "path": "prefabs/segmented.actor",
@@ -64,7 +105,10 @@
       "description": "横に並んだ区切りから 1 つを選ぶ（SEED.UI.SegmentedControl）。表示の切り替えに使う。",
       "category": "UI/入力",
       "tags": ["segmented", "segment", "セグメント", "切り替え", "タブ風", "select"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 320
+      }
     },
     {
       "path": "prefabs/slider.actor",
@@ -72,7 +116,11 @@
       "description": "つまみを動かして値を選ぶ（SEED.UI.Slider）。値が変わると ValueChanged が届く。",
       "category": "UI/入力",
       "tags": ["slider", "スライダー", "つまみ", "値", "音量", "volume", "range"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 280,
+        "patch": {"": {"Slider": {"fields": {"Value": "0.65"}}}}
+      }
     },
     {
       "path": "prefabs/number_field.actor",
@@ -80,7 +128,11 @@
       "description": "－ と ＋ のボタンで数を増減する欄（SEED.UI.NumberField）。Min・Max・Step・Suffix を Inspector で決める。",
       "category": "UI/入力",
       "tags": ["number", "stepper", "数値", "数", "増減", "カウンター", "counter", "plus minus"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 220,
+        "patch": {"": {"NumberField": {"fields": {"Value": "3", "Suffix": " 回"}}}}
+      }
     },
     {
       "path": "prefabs/text_field.actor",
@@ -88,7 +140,14 @@
       "description": "文字を打ち込む欄（SEED.UI.TextField）。Placeholder・MaxLength・Kind を Inspector で決める。確定で Submitted が届く。",
       "category": "UI/入力",
       "tags": ["text field", "text input", "input", "入力", "入力欄", "テキスト", "文字", "キーボード"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 320,
+        "instances": [
+          {"": {"TextField": {"fields": {"Text": "", "Placeholder": "名前を入力"}}}},
+          {"": {"TextField": {"fields": {"Text": "山田 花子"}}}}
+        ]
+      }
     },
     {
       "path": "prefabs/number_input.actor",
@@ -96,7 +155,11 @@
       "description": "数字だけを打ち込む中央寄せの入力欄（SEED.UI.TextField の Kind = Number）。",
       "category": "UI/入力",
       "tags": ["number input", "numeric", "数値", "数字", "入力", "テンキー", "text field"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 180,
+        "patch": {"": {"TextField": {"fields": {"Text": "1234"}}}}
+      }
     },
     {
       "path": "prefabs/wheel_picker.actor",
@@ -104,7 +167,11 @@
       "description": "回して値を選ぶドラム（SEED.UI.WheelPicker）。Min・Max・Format を Inspector で決める。実行中に行を作る部品 ui/prefabs/wheel_row.actor がコピーされる。",
       "category": "UI/入力",
       "tags": ["wheel", "picker", "drum", "ホイール", "ドラム", "ピッカー", "回す", "選ぶ"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 240,
+        "patch": {"": {"WheelPicker": {"fields": {"Value": "30"}}}}
+      }
     },
     {
       "path": "prefabs/time_wheel.actor",
@@ -112,7 +179,10 @@
       "description": "時・分（と午前・午後）のホイールを並べた時刻の選択（SEED.UI.TimeWheel）。値が変わると ValueChanged が届く。行の部品 ui/prefabs/wheel_row.actor がコピーされる。",
       "category": "UI/入力",
       "tags": ["time", "time picker", "clock", "時刻", "時間", "目覚まし", "アラーム", "alarm", "wheel", "ホイール"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 280
+      }
     },
     {
       "path": "prefabs/progress_bar.actor",
@@ -120,7 +190,12 @@
       "description": "横に伸びる進み具合の棒（SEED.UI.ProgressBar）。Value（0〜1）で長さが決まる。",
       "category": "UI/表示",
       "tags": ["progress", "progress bar", "bar", "進捗", "プログレスバー", "ゲージ", "gauge", "読み込み"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 270,
+        "spacing": 20,
+        "instances": [{"": {"ProgressBar": {"fields": {"Value": "0.35"}}}}, {"": {"ProgressBar": {"fields": {"Value": "0.8"}}}}]
+      }
     },
     {
       "path": "prefabs/progress_ring.actor",
@@ -128,7 +203,10 @@
       "description": "進み具合（0〜1）を弧の長さで見せる輪（SEED.UI.ProgressRing）。太さは Thickness（0 ならテーマの size.ring_thickness）。終わりの分からない待ちには「不定の進捗（スピナー）」を使う。",
       "category": "UI/表示",
       "tags": ["progress ring", "progress", "進捗", "輪", "円", "割合", "値"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 110
+      }
     },
     {
       "path": "prefabs/progress_spinner.actor",
@@ -136,7 +214,10 @@
       "description": "終わりの分からない待ちに出す、伸び縮みしながら回る弧（SEED.UI.ProgressSpinner。Flutter の CircularProgressIndicator と同じ動き）。大きさ・太さは Size・Thickness（0 ならテーマの size.spinner・size.spinner_thickness）。見えている間だけ描き続ける。",
       "category": "UI/表示",
       "tags": ["spinner", "progress", "loading", "indeterminate", "activity indicator", "スピナー", "くるくる", "読み込み", "待ち", "通信中"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 80
+      }
     },
     {
       "path": "prefabs/avatar.actor",
@@ -144,7 +225,10 @@
       "description": "丸く切り抜いた画像（人物のアイコンなど）。画像は Sprite の texture_path で差し替える。見本の画像 ui/textures/avatar.png がコピーされる。",
       "category": "UI/表示",
       "tags": ["avatar", "アバター", "アイコン", "プロフィール", "profile", "画像", "image", "丸"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 130
+      }
     },
     {
       "path": "prefabs/list_row.actor",
@@ -152,7 +236,17 @@
       "description": "題と補足を並べた一覧の 1 行。左へ払うと削除のボタンが出て、払い切ると消える見本の動き付き。見本のスクリプト ui/scripts/UiGalleryListRow.cs がコピーされる。",
       "category": "UI/一覧とスクロール",
       "tags": ["list", "list row", "row", "一覧", "行", "リスト", "スワイプ", "swipe", "削除"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 360,
+        "size": [328, 56],
+        "spacing": 0,
+        "instances": [
+          {"Front/Title": {"Text": {"content": "7:00 起床"}}, "Front/Sub": {"Text": {"content": "平日"}}},
+          {"Front/Title": {"Text": {"content": "12:30 昼休み"}}, "Front/Sub": {"Text": {"content": "毎日"}}},
+          {"Front/Title": {"Text": {"content": "22:00 就寝"}}, "Front/Sub": {"Text": {"content": "月・水・金"}}}
+        ]
+      }
     },
     {
       "path": "prefabs/screen_stack.actor",
@@ -161,6 +255,11 @@
       "category": "UI/ナビゲーション",
       "tags": ["screen stack", "navigation", "navigator", "画面", "スタック", "遷移", "push", "pop", "ナビゲーション"],
       "thumbnail": "",
+      "thumbnail_sample": {
+        "placement": "fill",
+        "patch": {"": {"ScreenStack": {"fields": {"RootPrefab": "assets://ui/prefabs/nav_home.actor"}}}},
+        "settle": 1.0
+      },
       "requires": ["prefabs/screen_frame.actor"]
     },
     {
@@ -170,6 +269,17 @@
       "category": "UI/ナビゲーション",
       "tags": ["tab", "tabs", "tab bar", "bottom navigation", "タブ", "タブバー", "切り替え", "ナビゲーション"],
       "thumbnail": "",
+      "thumbnail_sample": {
+        "placement": "fill",
+        "patch": {
+          "": {"LayoutItem": {"fill_width": true, "fill_height": true}},
+          "Pages/Tab0": {"ScreenStack": {"fields": {"RootPrefab": "assets://ui/prefabs/nav_list.actor"}}},
+          "TabBar/Item0": {"TabItem": {"fields": {"Text": "ホーム"}}},
+          "TabBar/Item1": {"TabItem": {"fields": {"Text": "記録"}}},
+          "TabBar/Item2": {"TabItem": {"fields": {"Text": "設定"}}}
+        },
+        "settle": 1.0
+      },
       "requires": ["prefabs/screen_frame.actor"]
     },
     {
@@ -179,6 +289,16 @@
       "category": "UI/ナビゲーション",
       "tags": ["modal", "modal host", "dialog", "sheet", "bottom sheet", "overlay", "menu", "ダイアログ", "シート", "モーダル", "ポップアップ", "popup", "メニュー"],
       "thumbnail": "",
+      "thumbnail_sample": {
+        "placement": "fill",
+        "script": {
+          "Action": "dialog",
+          "Title": "変更を保存しますか？",
+          "Message": "保存しないで閉じると、変更は失われます。",
+          "PositiveText": "保存",
+          "NegativeText": "破棄"
+        }
+      },
       "requires": ["prefabs/dialog.actor", "prefabs/bottom_sheet.actor", "prefabs/top_sheet.actor", "prefabs/text_field.actor", "prefabs/dialog_item.actor"]
     },
     {
@@ -188,6 +308,10 @@
       "category": "UI/ナビゲーション",
       "tags": ["toast", "snackbar", "notification", "トースト", "通知", "知らせ", "メッセージ"],
       "thumbnail": "",
+      "thumbnail_sample": {
+        "placement": "fill",
+        "script": {"Action": "toast", "Message": "保存しました"}
+      },
       "requires": ["prefabs/toast.actor"]
     },
     {
@@ -196,7 +320,20 @@
       "description": "ダイアログの面そのもの（SEED.UI.Dialog。確認・選択肢の一覧・進捗の札）。普段は受け皿が実行中に作るので、シーンに置いたままだと Play で消える。見た目を調整したらアクタファイル化し、ModalHost の DialogPrefab に指定する。",
       "category": "UI/重ねる面の見た目",
       "tags": ["dialog", "alert", "simple dialog", "menu", "progress", "ダイアログ", "確認", "メニュー", "進捗", "ポップアップ", "popup", "見た目"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "stand_in": "prefabs/modal_host.actor",
+        "placement": "fill",
+        "frame": 320,
+        "script": {
+          "Action": "dialog",
+          "Title": "アラームを削除しますか？",
+          "Message": "削除したアラームは元に戻せません。",
+          "PositiveText": "削除",
+          "NegativeText": "やめる"
+        },
+        "settle": 1.5
+      }
     },
     {
       "path": "prefabs/dialog_item.actor",
@@ -204,7 +341,14 @@
       "description": "選択肢の一覧のダイアログ（Dialog.ShowMenu）の 1 行（SEED.UI.DialogItem。先頭のアイコン Icon と文字 Label）。ダイアログが項目の数だけ作る。見た目を変えるならアクタファイル化し、DialogOptions.ItemPrefab に指定する。",
       "category": "UI/重ねる面の見た目",
       "tags": ["dialog item", "menu item", "simple dialog option", "選択肢", "メニュー", "項目", "見た目"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "stand_in": "prefabs/modal_host.actor",
+        "placement": "fill",
+        "frame": 330,
+        "script": {"Action": "menu", "Title": "7:30 のアラーム", "Items": "編集する|複製する|!削除する"},
+        "settle": 1.5
+      }
     },
     {
       "path": "prefabs/bottom_sheet.actor",
@@ -212,7 +356,12 @@
       "description": "下から引き出す板の面（SEED.UI.BottomSheet）。受け皿が実行中に作る部品なので、シーンに置いたままだと Play で消える。見た目を作ったらアクタファイル化して ModalHost の SheetPrefab に指定する。",
       "category": "UI/重ねる面の見た目",
       "tags": ["bottom sheet", "sheet", "シート", "下から", "引き出し", "見た目"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "stand_in": "prefabs/modal_host.actor",
+        "placement": "fill",
+        "script": {"Action": "sheet", "ContentPrefab": "assets://ui/prefabs/nav_sheet_content.actor"}
+      }
     },
     {
       "path": "prefabs/top_sheet.actor",
@@ -220,7 +369,12 @@
       "description": "上から降りてくる覆いの面（SEED.UI.TopSheet）。受け皿が実行中に作る部品なので、シーンに置いたままだと Play で消える。見た目を作ったらアクタファイル化して ModalHost の OverlayPrefab に指定する。",
       "category": "UI/重ねる面の見た目",
       "tags": ["top sheet", "overlay", "覆い", "上から", "オプション", "見た目"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "stand_in": "prefabs/modal_host.actor",
+        "placement": "fill",
+        "script": {"Action": "overlay", "ContentPrefab": "assets://ui/prefabs/nav_overlay_content.actor"}
+      }
     },
     {
       "path": "prefabs/toast.actor",
@@ -228,7 +382,14 @@
       "description": "トースト 1 枚の面（SEED.UI.Toast）。ToastHost が実行中に作る部品。見た目を作ったらアクタファイル化して ToastHost の ToastPrefab に指定する。",
       "category": "UI/重ねる面の見た目",
       "tags": ["toast", "snackbar", "トースト", "通知", "見た目"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "stand_in": "prefabs/toast_host.actor",
+        "placement": "fill",
+        "frame": 340,
+        "patch": {"": {"ToastHost": {"fields": {"BottomOffset": "140"}}}},
+        "script": {"Action": "toast", "Message": "通信に失敗しました"}
+      }
     },
     {
       "path": "prefabs/line_chart.actor",
@@ -236,7 +397,18 @@
       "description": "折れ線のグラフ（SEED.UI.LineChart）。値はスクリプトから渡す。目盛りの文字の部品 ui/prefabs/chart_label.actor がコピーされる。",
       "category": "UI/グラフ",
       "tags": ["line chart", "chart", "graph", "折れ線", "グラフ", "チャート", "推移"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 360,
+        "size": [328, 200],
+        "patch": {"": {"Sprite": {"width": 328.0}}},
+        "script": {
+          "Action": "line_chart",
+          "StartDate": "2026-09-15",
+          "Values": "425,410,432,418,,405,440,428,415,420,398,436,412,422"
+        },
+        "settle": 1.0
+      }
     },
     {
       "path": "prefabs/bar_chart.actor",
@@ -244,7 +416,14 @@
       "description": "棒のグラフ（SEED.UI.BarChart）。値はスクリプトから渡し、棒を選ぶと BarSelected が届く。目盛りの文字の部品 ui/prefabs/chart_label.actor がコピーされる。",
       "category": "UI/グラフ",
       "tags": ["bar chart", "chart", "graph", "棒", "棒グラフ", "グラフ", "チャート", "集計"],
-      "thumbnail": ""
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "frame": 360,
+        "size": [328, 200],
+        "patch": {"": {"Sprite": {"width": 328.0}}},
+        "script": {"Action": "bar_chart", "StartDate": "2026-09-22", "Values": "120;40,60,260;80,30,310;150,90,20;180"},
+        "settle": 1.0
+      }
     }
   ]
 }

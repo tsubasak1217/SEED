@@ -1163,9 +1163,38 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   組み立てる。利用者に確認してから決める。関連: `templates/ui/template_actors.json` の `requires`、
   `editor/src/Templates/Actors/TemplateActorDependencyPlanner.cs`、`scripting/src/Api/UI/Widgets/WheelPicker.cs`（`DefaultRowPrefab`）ほか。
 
-- [ ] **見本のサムネイル画像が git で追跡されない** — 2026-10-01。サムネイルの規約は `templates/<フォルダ>/thumbnails/<名前>.png`
-  （推奨 192×192）だが、`.gitignore` の `templates/**/*.png` に当たるので、置いてもローカルにしか残らない。共有するなら
-  `!templates/*/thumbnails/*.png` の例外を足す（`.gitattributes` で `*.png` は LFS）。画像はまだ 1 枚も無い（後で入れる）。
+- [x] **見本のサムネイル画像が git で追跡されない** — 2026-10-01 / 2026-10-02 済。`.gitignore` に `!templates/**/thumbnails/*.png` の
+  例外が入っていて追跡される（`.gitattributes` の `*.png` で LFS）。画像はランタイムで撮って作る道具
+  `editor/tools/SeedTemplateThumbnails`（docs/template_library.md §9.10）で全 32 件を作って置いた。撮り方はカタログの
+  `thumbnail_sample`（データ）、舞台のスクリプトは `templates/ui/scripts/ThumbnailStage.cs`。
+
+- [ ] **2D の見本（キャンバスと当たり判定）の画像が人の写真** — 2026-10-02（見本の画像の生成のときに気付いた）。
+  `templates/actors/NewActor2D.actor2d` の箱のスプライトは `assets://textures/symmetryORE2.png`（人の顔の写真。ライブラリの画像は
+  ローカルだけなので git には入っていない）。テンプレートアクタとして追加すると利用者のプロジェクトへこの写真がコピーされる。
+  見本の画像（git で追跡される）には写真を入れないよう、カタログの `thumbnail_sample.patch` でテクスチャを外して単色の箱で撮った。
+  見本そのものの画像を差し替えるか（汎用の絵へ）、写真のままでよいかを利用者に確かめる。
+
+- [ ] **起動後に窓の大きさを変えると、画素の単位のルートのキャンバス（auto_scale）の絵が歪む** — 2026-10-02（見本の画像の生成のときに実測。
+  原因は未確認）。`SEED.exe --mode=play` を 540×540 の窓で起動し、窓を 960×540 へ広げてから 1920×1080・`auto_scale: true` の
+  ルートのキャンバス（`NewActor2D.actor2d`）を `LOAD_SCENE` すると、256×256 の箱が 456×256 画素に横へ伸びた（最初から 960×540 で起動すると
+  256×256 のまま）。最初の窓の大きさがどこかに残っている疑い（既存の「ルートキャンバスの `auto_scale` が実質無効」の節と関係するかもしれない）。
+  見本の画像の道具は窓の大きさを変えずに起動を分けて避けた。関連: `runtime/src/engine/core/app_base/app/canvas_collect.rs`
+  （`build_root_canvas_auto_size_map` / `auto_scale_factor`）。
+
+- [ ] **画面の外の Play の窓（SEED_HEADLESS=1）がフォーカスの出入りの後にフレームを進めなくなる** — 2026-10-02（見本の画像の生成で 1 回実測。
+  原因は未確認）。フォーカスを奪わずに起動した画面の外の窓に、途中で `[SEED PLATFORM] 模擬: platform.paused（1回目・窓のフォーカス）` が届き
+  （利用者が前面の窓を閉じて Windows がこの窓をアクティブにした・その後に外れた、と推測）、以後スクリプトの Update が呼ばれず
+  （物理の「フレームが結果を取り出さない」の警告も出た）、`LOAD_SCENE` は通るのに舞台のスクリプトの合図が来なくなった。
+  フォーカスの無い間のフレームの間引き（`frame_pacing.rs` の `effective_target_fps`・30 fps）と、ヘッドレスのフレームの駆動
+  （`screenshot_ops.rs` の `pump_frame_when_redraw_stalled`）の組み合わせを疑う。ただし別の撮影では paused・resumed が届いても
+  フレームは止まらなかったので、フォーカスの出入りだけでは起きない（何と重なると止まるかは未確認）。道具の側は窓に WS_EX_NOACTIVATE を付け
+  （それでも出入りが届くことはある）、止まったら起動し直して撮り直す見張りで避けた（docs/template_library.md §9.10）。
+  エディタのヘッドレス・MCP の撮影でも起きうる。
+
+- [ ] **見本の画像はランタイムのビルドに頼る（撮り直しの手間）** — 2026-10-02。生成の道具は `runtime/target/debug/SEED.exe` と
+  `scripting/bin/Debug/net10.0/SEEDScripting.dll` を使うので、部品・テーマ・描画を変えたら両方をビルドしてから撮り直す
+  （`dotnet run --project editor/tools/SeedTemplateThumbnails`）。撮り忘れは窓のプローブ（`TemplateActorPickerPreviewProbe` の 01）が
+  「全件に画像がある」で気付くが、古い絵のままかどうかは分からない。必要になったら、部品・テーマの変更を検知して撮り直しを促す仕組みを考える。
 
 - [ ] **一覧の行（list_row）が見本のスクリプトをプロジェクトへコピーする** — 2026-10-01。`templates/ui/prefabs/list_row.actor` の
   ルートのスクリプトは見本の `assets://ui/scripts/UiGalleryListRow.cs`（フルスワイプで削除）なので、追加するとその `.cs` が
