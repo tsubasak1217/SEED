@@ -618,14 +618,21 @@ public partial class MainWindow
                 return startup;
             }
 
+            // 最近開いたシーンの一覧はエディタ全体で 1 つ（プロジェクトをまたいで溜まる）なので、
+            // いま開いているプロジェクトのルートの下にある .scene だけを復元の候補にする。
+            // 別のプロジェクトのシーンを復元すると、ランタイムはそのシーンの参照先を
+            // 今のアセットルートから探して「シーンの読み込みに失敗しました」になる
+            // （2026-10-02: WakeOrPay を開いたのに WarashibeFishing の MainGame.scene を読んで失敗）。
+            var projectRoot = SEEDEditor.Project.ProjectContext.RootDir;
             var last = SEEDEditor.ProjectSettings.RecentScenesManager.LoadRecentScenes()
                 .FirstOrDefault(p =>
                     !string.IsNullOrEmpty(p)
                     && p.EndsWith(".scene", StringComparison.OrdinalIgnoreCase)
-                    && System.IO.File.Exists(p));
+                    && System.IO.File.Exists(p)
+                    && IsUnderProjectRoot(p, projectRoot));
             if (last is null)
             {
-                EditorLog.Write("起動時シーン復元: 対象なし（既定シーンのまま）");
+                EditorLog.Write("起動時シーン復元: 対象なし（このプロジェクトのシーンが最近の一覧に無い。既定シーンのまま）");
                 return null;
             }
             EditorLog.Write($"起動時シーン復元 — {last}");
@@ -635,6 +642,33 @@ public partial class MainWindow
         {
             EditorLog.Write($"起動時シーン復元に失敗: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// シーンの絶対パスが、いま開いているプロジェクトのルートの下にあるかを返す。
+    /// プロジェクトが未確定（ルートが空）のときは、従来どおり制限しない（true）。
+    /// 比較は区切り文字と大文字小文字を揃えて行い、ルートの「兄弟フォルダ」
+    /// （例: ルートが D:\A で候補が D:\AB\x.scene）を誤って含めないよう、末尾に区切りを足して前方一致を見る。
+    /// </summary>
+    /// <param name="scenePath">候補の .scene の絶対パス。</param>
+    /// <param name="projectRoot">プロジェクトルートの絶対パス（未確定なら空文字）。</param>
+    /// <returns>プロジェクトの下にあれば true。</returns>
+    private static bool IsUnderProjectRoot(string scenePath, string projectRoot)
+    {
+        if (string.IsNullOrEmpty(projectRoot)) return true;
+        try
+        {
+            var root  = System.IO.Path.GetFullPath(projectRoot)
+                .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar)
+                + System.IO.Path.DirectorySeparatorChar;
+            var scene = System.IO.Path.GetFullPath(scenePath);
+            return scene.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            // パスとして解釈できない候補は復元の対象にしない（例外で起動を止めない）
+            return false;
         }
     }
 }
