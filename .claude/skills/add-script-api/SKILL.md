@@ -236,9 +236,10 @@ public readonly struct Rigidbody : IComponentHandle<Rigidbody>
 
 **触るファイル**: `docs/scripting_api.md`。これを忘れると AI インライン補完がその API を一切知らない。
 
-### 4-1. 抽出器の制約を必ず守る（`ScriptApiReference.cs` の `Compact()` が抽出する行だけが AI へ届く）
+### 4-1. 抽出器の制約を必ず守る（`ApiReferenceCompactor.Compact()` が抽出する行だけが AI へ届く）
 
-editor 側 `editor/src/Panels/ScriptEditor/InlineCompletion/ScriptApiReference.cs` の `Compact()` は、md から次の行**だけ**を残す：
+editor 側 `editor/src/Panels/ScriptEditor/InlineCompletion/Reference/ApiReferenceCompactor.cs` の `Compact()` は、md から次の行**だけ**を残す
+（2026-10-03 に `ScriptApiReference.cs` から移した。規則は同じ。仕組みの正典は `docs/editor_inline_completion.md`）：
 - 見出し行（`#`〜`####`）
 - ` ```csharp ` フェンス内の全行
 - 表の行（`|` 始まり）
@@ -248,6 +249,10 @@ editor 側 `editor/src/Panels/ScriptEditor/InlineCompletion/ScriptApiReference.c
 1. **API シグネチャは必ず ` ```csharp ` ブロック内に書く**。散文の本文に `sprite.Layer` 等と書いても AI には届かない。
 2. **網羅的な一覧情報は表（`|` 区切り）にする**（第 7 節末尾の「利用可能なコンポーネント一覧」表）。
 3. **利用者向け情報を「メンテナ向け」見出しより後に置かない**。`Compact()` は見出しに「メンテナ向け」を含む行**以降を全て捨てる**（第 8 節は丸ごと落ちる）。新しい利用者向け API は必ず第 8 節より前（第 7 節）に書く。
+4. **節の見出しに API の名前を入れ、コード例に型名・メソッド名を書く**。圧縮後の全文は予算（既定 12000 字）に入らないので、
+   AI へ渡す節は編集中のファイルの識別子との一致で選ばれる（見出しの語は本文の 2 倍の重み）。名前の出てこない節は選ばれにくい。
+   第 1・2 節、第 7 節の先頭、「利用可能なコンポーネント一覧」は常に入る（`editor/config/inline_completion_reference.json` の
+   `always_include`。見出しの文の先頭一致なので、これらの見出しを変えたら JSON も直す）。
 
 ### 4-2. 第 7 節に H3 小節を追加
 

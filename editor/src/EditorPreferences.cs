@@ -210,6 +210,21 @@ public sealed class EditorPreferences
     public string? RuntimeBuildConfigId { get; set; }
 
     /// <summary>
+    /// AI インライン補完へ注入するスクリプト API リファレンスの最大文字数（予算）。
+    ///
+    /// <para>
+    /// null（既定）なら editor/config/inline_completion_reference.json の "budget_chars"（12000）を使う。
+    /// 予算の中に、常に入れる節（スクリプトの基本形・ライフサイクル・GameObject・コンポーネント一覧）と、
+    /// 編集中のファイルの文脈に合う節を点の高い順に入れる（docs/editor_inline_completion.md）。
+    /// 上限の広い提供元（ローカル LLM など）なら大きくすると多くの節が入る。0 にするとリファレンスを注入しない。
+    /// 範囲外の値は <see cref="Panels.ScriptEditor.InlineCompletion.Reference.ApiReferenceSettings.ResolveBudget"/>
+    /// が丸める（0〜2,000,000）。設定の画面は無い（このファイルを直接書く。docs/backlog.md）。
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("inline_completion_reference_chars")]
+    public int? InlineCompletionReferenceChars { get; set; }
+
+    /// <summary>
     /// Android の実行に関する設定（"android" 節。段階C-3）。
     /// 今は <c>emulator_avd</c>（端末が無いときに起動する AVD）だけ。設定の画面は無い（docs/backlog.md）。
     /// </summary>

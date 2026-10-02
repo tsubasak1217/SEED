@@ -1,0 +1,51 @@
+{
+  // AI インライン補完へ注入する API リファレンス（docs/scripting_api.md）の選び方。
+  // 正典は docs/editor_inline_completion.md。読み手は editor/src/Panels/ScriptEditor/InlineCompletion/Reference/ApiReferenceSettings.cs
+  // （このファイルが無い・壊れているときは同じ中身の組み込み既定で動く）。
+  "format_version": 1,
+
+  // 予算（注入する最大文字数）の既定。利用者の環境設定 editor/settings/editor_preferences.json の
+  // "inline_completion_reference_chars" が優先する。上限の広い提供元（ローカル LLM など）なら大きくしてよい。
+  "budget_chars": 12000,
+
+  // 節をこの文字数で切れ端に分ける（§7.18 のような 1 万字を超える節も、関係する切れ端だけを選べるように）。
+  "max_part_chars": 2500,
+
+  // カーソルの前後この行数に出る語を「近く」として重く数える。
+  "cursor_window_lines": 20,
+
+  // 書きかけの語・完全一致の無い語は、この文字数以上なら接頭辞の一致（Bind → Binding）も見る。
+  "min_prefix_length": 3,
+
+  // 文脈で選ぶ節の点の下限（下回る節は予算が余っていても入れない＝関係の薄い節でトークンを使わない）。
+  "min_score": 6.0,
+
+  // 文脈で選ぶ節の点の下限を「最も点の高い節の点 × この割合」にもする（0〜1）。強く当たる節があるときに、
+  // 見出しに UI と書いてあるだけのような広い当たり方の節で残りの予算を埋めないため。
+  "relative_min_score": 0.4,
+
+  // 常に入れる節（見出しの文＝先頭の # を除いたものが、この文字列で始まる節）。予算に入る限り文書の順に入れる。
+  "always_include": [
+    "SEED スクリプト API リファレンス",
+    "1. スクリプトの基本形",
+    "2. ライフサイクル関数",
+    "7. GameObject とコンポーネント",
+    "利用可能なコンポーネント一覧"
+  ],
+
+  // 文脈の語から捨てる語（どのスクリプトにも出て手がかりにならない）。大文字小文字は区別しない。
+  "ignored_words": ["SEED", "SEEDEditor", "Scripting", "SEEDScript", "System", "Collections", "Generic", "Linq"],
+
+  // 重み。文脈の語の重み = 当てはまる出方（file・near_cursor・typing・using・engine_qualified）の和。
+  // 節の点 = Σ 語の重み × 語の珍しさ × 一致の倍率（heading_match・body_match。接頭辞の一致はさらに prefix_match）。
+  "weights": {
+    "file": 1.0,
+    "near_cursor": 2.0,
+    "typing": 3.0,
+    "using": 2.0,
+    "engine_qualified": 1.0,
+    "heading_match": 2.0,
+    "body_match": 1.0,
+    "prefix_match": 0.5
+  }
+}

@@ -3237,7 +3237,11 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   `Input.GetKey(Backquote)` が押しっぱなしに見える。W2-10a では実キーボードのキーを「押している」の理由から外して避けた（redraw_policy.md §3）。
   直すなら `KeyboardInput` の `KeyCode::Backquote`（と IME の切り替えのキー）を押しっぱなしの集合へ入れない、かフォーカスを失ったときに集合を空にする。
   関連: `runtime/src/engine/core/input/keyboard.rs`・`app/event_handler.rs`。
-- [ ] **AI 補完へ届くスクリプト API の文書が §2 の途中で切れている（既存）** — 2026-09-28（W2-10a の調査で見つけた。数えたのは調べたエージェント）。
+- [x] **AI 補完へ届くスクリプト API の文書が §2 の途中で切れている（既存）** — 2026-09-28（W2-10a の調査で見つけた。数えたのは調べたエージェント）。
+  → **2026-10-03 に済**（L2-8。正典 docs/editor_inline_completion.md §3）: 先頭から切るのをやめ、圧縮後のリファレンスを節（長い節は 2500 字の切れ端）に分け、
+  常に入れる節（前書き・§1・§2・§7 の先頭・コンポーネント一覧。6,762 字）＋編集中のファイルの識別子に当たる節を点の高い順に予算（既定 12000。
+  環境設定 `inline_completion_reference_chars` で変えられる）まで入れる（`editor/src/Panels/ScriptEditor/InlineCompletion/Reference/`）。
+  残件は「AI インライン補完の API リファレンスの選択」の節。以下は記載時のメモ。
   `editor/src/Panels/ScriptEditor/InlineCompletion/ScriptApiReference.cs:32` の `MaxChars = 12000` で打ち切るため、`Compact()` の後の約 125,000 字のうち AI に届くのは md の 518 行付近
   （第 2 節）まで。§7.12 以降（Screen・Platform・W2-10a の Redraw）は補完に届いていない。上限を上げるか、節ごとに要るものだけを選んで渡す。
 - [ ] **add-script-api の Skill に「新しい種類の FFI（`ScriptHostApi` の欄）を足す手順」が無い（既存）** — 2026-09-28（W2-10a）。W1-1 の `SEED.Platform`・
@@ -4132,8 +4136,10 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   SEEDScripting にあれば直せる。
 - [ ] **【低】複数形・言語の引き当ての簡略** — 2026-10-02。複数形は整数だけ（小数の形・fr／es／it／pt の「百万の many」・序数・性別は無い）。
   `zh-CN` → `zh-Hans` のような書記体系の対応は無い（一覧に `zh-CN` か `zh` を書く）。更新の印は秒の単位なので同じ秒の 2 回目の保存は拾わない。
-- [ ] **【参考】§7.21（Localization）も AI 補完に届かない** — 2026-10-02。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」
+- [x] **【参考】§7.21（Localization）も AI 補完に届かない** — 2026-10-02。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」
   の範囲（`ScriptApiReference.MaxChars = 12000` に対し、Compact の後は約 203,000 字。2026-10-02 に数えた）。
+  → **2026-10-03 に済**（L2-8。docs/editor_inline_completion.md §3）: `L10n` や `using SEED.Localization;` を書いているファイルでは §7.21 の切れ端
+  （予算 12000 で 4 つのうち 3 つ）が入る。Localization を使わないファイルでは入らない（`editor/tests/InlineCompletionTests` で確かめている）。
 - [ ] **【中】文字列表（ローカライズ）パネルの GUI での確かめ（未検証）** — 2026-10-03（L2-7）。確かめたのはビルド・モデルの単体テスト
   （`editor/tests/LocalizationPanelTests` 47 件）・オフスクリーン描画（`LocalizationPanelPreviewProbe` の PNG 5 枚と表明）だけ。エディタを起動して
   ①「表示 → パネル → 文字列表」とレイアウトの保存・復元（旧 layout.xml に無いときの補完）②升目の編集（ダブルクリック / F2 / 文字の入力・Enter・Escape・
@@ -4319,3 +4325,25 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   古いまま。`Changed` を受けて引き直す）。(3) `LocaleCulture.FormatDate` と差し込みの `{name:書式}`（`LocaleFormatter.Render`）は、文化の暦で表せない日付
   （ar-SA の UmAlQura は 1900〜2077 年）で `ArgumentOutOfRangeException` を捕まえて不変文化（グレゴリオ暦）で書く（レビューは推測だったが、実行で例外を確かめた。
   LocalizationTests 61 → 62 件）。
+
+## AI インライン補完の API リファレンスの選択 — 2026-10-03 L2-8 実装時の残件（正典: docs/editor_inline_completion.md）
+
+- [ ] **【中】補完の質が上がったかは未検証（外部の AI を呼んでいない）** — 2026-10-03。確かめたのは選ばれる節（`editor/tests/InlineCompletionTests`
+  56 件。実際の docs で ScreenStack → §7.18[1-2/7]、L10n → §7.21、Input・Transform → §6.5・§6.6・§7/ControlPointPath）と、偽物の提供元での
+  プロンプトの組み立てまで。Groq で同じファイルの補完を以前（先頭 12000 字）と比べる・エディタ GUI で `[インライン補完] 注入:` のログを見る、は未。
+  補完の要求ごとにシステムプロンプトが変わるので、プロンプトのキャッシュがある提供元へ移すときは「常に入れる節」を先頭に固定する並べ方の方が得かもしれない。
+- [ ] **【中】節の選び方は字面（識別子の一致）だけ** — 2026-10-03。日本語のコメント（「画面を積む」）や、Roslyn の意味情報（変数の型が `ScreenStack` だと
+  分かる・`var` の右辺の型）は使っていない。`title` のような英単語の変数名が API 名（`Title`）に大文字小文字を区別せずに当たる。点の下限
+  （`min_score` 6.0・`relative_min_score` 0.4）と珍しさで抑えているが、例の多い節（§7.11 の例・§7/ControlPointPath のレシピ）は多くの語に当たって上位に来やすい。
+  関連: `editor/src/Panels/ScriptEditor/InlineCompletion/Reference/ApiReferenceSelector.cs`・`CompletionContextExtractor.cs`。
+- [ ] **【低】予算を変える画面が無い** — 2026-10-03。`editor/settings/editor_preferences.json` の `"inline_completion_reference_chars"` を直接書く
+  （スクリプトエディタの設定の「AI 補完」に欄を足すなら、`ScriptEditorSettings` ではなく `EditorPreferences` へ書く）。上限の広い提供元
+  （ローカル LLM など）は今は無い（提供元は Groq だけ）。
+- [ ] **【低】初回の補完の要求で索引を作る間（約 20〜140 ms）UI スレッドが止まる** — 2026-10-03。docs の読み込み・圧縮・切れ端・語の索引を
+  `ScriptApiReference.GetReference()` が初回に同期で作る（以前も読み込みと圧縮は同期だった）。気になるなら AI 補完を有効にしたとき・
+  スクリプトエディタを開いたときに裏で作っておく。docs や `inline_completion_reference.json` を変えたらエディタの再起動が要る。
+- [ ] **【低】文脈の語の取り方の簡略** — 2026-10-03。文字列のリテラルの中身は捨てるが、補間文字列 `$"{Foo.Bar}"` の式の中も捨てる。
+  生の文字列リテラル（`"""…"""`）は見分けない。コメントの英単語は数える（ノイズにもなる）。キャッシュの鍵にカーソルの位置が入るので、
+  内容が同じでもカーソルを動かすと選び直す（数 ms）。
+- [ ] **【低】常に入れる節は見出しの文の先頭一致** — 2026-10-03。`docs/scripting_api.md` の §1・§2・§7 の先頭・「利用可能なコンポーネント一覧」の
+  見出しを変えると外れる（ログに警告・`InlineCompletionTests` の実 docs のテストが落ちる）。節の番号で指せるようにするかは保留。
