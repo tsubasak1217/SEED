@@ -1,0 +1,137 @@
+{
+  "version": 2,
+  "actions": [
+    {
+      "name": "ui.up",
+      "value_type": 0,
+      "condition": "Press",
+      "bindings": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "UpArrow"
+        },
+        {
+          "platform": "PC",
+          "input_type": "GamepadButton",
+          "value": "DPadUp"
+        }
+      ]
+    },
+    {
+      "name": "ui.down",
+      "value_type": 0,
+      "condition": "Press",
+      "bindings": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "DownArrow"
+        },
+        {
+          "platform": "PC",
+          "input_type": "GamepadButton",
+          "value": "DPadDown"
+        }
+      ]
+    },
+    {
+      "name": "ui.left",
+      "value_type": 0,
+      "condition": "Press",
+      "bindings": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "LeftArrow"
+        },
+        {
+          "platform": "PC",
+          "input_type": "GamepadButton",
+          "value": "DPadLeft"
+        }
+      ]
+    },
+    {
+      "name": "ui.right",
+      "value_type": 0,
+      "condition": "Press",
+      "bindings": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "RightArrow"
+        },
+        {
+          "platform": "PC",
+          "input_type": "GamepadButton",
+          "value": "DPadRight"
+        }
+      ]
+    },
+    {
+      "name": "ui.submit",
+      "value_type": 0,
+      "condition": "Press",
+      "bindings": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "Enter"
+        },
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "Space"
+        },
+        {
+          "platform": "PC",
+          "input_type": "GamepadButton",
+          "value": "South"
+        }
+      ]
+    },
+    {
+      "name": "ui.cancel",
+      "value_type": 0,
+      "condition": "Press",
+      "bindings": [
+        {
+          "platform": "PC",
+          "input_type": "Key",
+          "value": "Escape"
+        },
+        {
+          "platform": "PC",
+          "input_type": "GamepadButton",
+          "value": "East"
+        }
+      ]
+    },
+    {
+      "name": "ui.move",
+      "value_type": 2,
+      "normalize": false,
+      "x": {
+        "positive": [
+          {
+            "platform": "PC",
+            "input_type": "GamepadAxis",
+            "value": "LeftStickX"
+          }
+        ],
+        "negative": []
+      },
+      "y": {
+        "positive": [
+          {
+            "platform": "PC",
+            "input_type": "GamepadAxis",
+            "value": "LeftStickY"
+          }
+        ],
+        "negative": []
+      }
+    }
+  ]
+}

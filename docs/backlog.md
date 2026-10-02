@@ -3694,6 +3694,18 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   CanvasTransform に大きさの欄を足すのは形式の変更（`.actor` / `.scene` の欄の追加・レイアウトの測り方の段の追加・インスペクタ）になるので見送った。
   (6) **読み（`ChildCount` 等）はフレームの始めの木**（同じフレームに作った子は数えない）。同じフレームの生成・並べ替えを読みに反映するには、`node_pending` のような保留の表を木の形で持つ必要がある。
   (7) Play 中の `HIERARCHY` は 400 ms ごとにまとめて送るので、エディタのヒエラルキーは並べ替えの途中の順を飛ばして最後の順だけを表示する（既存の間引き。`hierarchy_sync.rs`）。
+  → **(1) は 2026-10-03 に済（lane3。L3-5「スクリプトのインスタンスを引く API」）**: `GameObject.GetScript<T>()` / `GetScripts<T>()` / `GetScripts()` / `HasScript<T>()` /
+  `TryGetScript<T>(out)` / `GetScriptInChildren<T>(includeSelf)` / `GetScriptInParent<T>(includeSelf)`（`SEEDScript` の中は protected の同じ名前の短縮）・
+  `SEEDScript.Instances<T>()` / `FindInstance<T>()`。ランタイムは変えず CLR 側の登録簿（`scripting/src/Api/Scripting/`。`ScriptBridge` の CreateComponent・
+  ResolveReferenceFields / OnStart・OnDestroy の後 / DestroyComponent・読み直しで足し引き）で持つ。`AddScript<T>()` のインスタンスはフレーム末尾にでき、
+  以後 `go.GetScript<T>()` で引ける（OnStart 前でも。docs/scripting_api.md §7「スクリプトを引く」）。残件は下の「スクリプトを引く」の節。
+  **(3) の `RemoveScript<T>()` の設計案（L1 側。まだ作っていない）**: ① C# の `GameObject.RemoveScript<T>(int index = 0)`（同種の中の番号＝`GetScripts<T>()` と同じ数え方。
+  派生型も当たる）と `RemoveScript(SEEDScript instance)` は、外すインスタンスを登録簿で決め、その **GCHandle** をランタイムへ渡す（登録簿は CreateComponent で
+  ハンドルを知っているので記録に持たせる。型の名前でなくハンドルで渡すので、派生型・同じ型の複数・名前空間違いの同名にも正確）。② FFI は `ScriptHostApi` の末尾に
+  `node_remove_script(root_idx, root_gen, handle: isize) -> i32` を足す（`node_component` の i32 の引数ではハンドルを運べない。C# の `ScriptHost.cs` と同じ順で足す）。
+  ③ Rust は `ScriptSceneCommand::RemoveScript { root, handle }` を積み、フレーム末尾にハンドルの一致するスクリプトのスロットを `remove_slot_components` と
+  `actor.remove_slot_at` で外す（エディタの削除と同じ。Drop → OnDestroy → DestroyComponent で登録簿からも外れる）。④ 同じフレームの扱いは `RemoveComponent` と
+  そろえ、受けた時点で登録簿に「外す予約」の印を付けて `GetScript` 系・`Instances` から即座に消す（OnDestroy はフレーム末尾）。OnDestroy の中からは無視（再入ガード）。
 - [x] **PC の 1 倍で小さな文字の横線が欠けて別の字に見える** — 2026-09-30（W3-1 で発見。上の「PC の 1 倍で小さな文字の細い横線が消える・かすれる」の続き）。
   → **2026-10-01 に済**: 原因は text.wgsl が平滑化の幅を距離場の値の微分 fwidth(d) から決めていたこと（線の尾根を 2×2 の画素の組が挟むと fwidth ≒ 0 → しきい値の
   切り捨て）。測定: 17 px の「ー」を 0.1 dp ずつ下げた行で、横画のいちばん濃い alpha が 0.94〜0.98 → +0.5 dp で 0.25 → +0.6 dp で 0.00（消える）。
@@ -4189,3 +4201,121 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   エンジンからフレームの番号を渡す（`NativeFrameContext` に足す。runtime の仕事）のが確実。
 - [ ] **【参考】§7.22（Binding）も AI 補完に届かない** — 2026-10-03。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」の範囲
   （`ScriptApiReference.MaxChars = 12000`）。
+
+## スクリプトを引く（GetScript・Instances）— 2026-10-03 実装時の残件（正典: docs/scripting_api.md §7「スクリプトを引く」）
+
+- [ ] **【中】Play での確かめ（未検証）** — 2026-10-03。確かめたのはビルドと純粋な部分の単体テスト（`editor/tests/ScriptRegistryTests` 30 件。登録簿・
+  問い合わせの口・木のたどり方）と、リポジトリに入れていない一時のハーネスでの通し（`ScriptBridge` の実際の入口〈CreateComponent・
+  ResolveReferenceFields・OnStart・OnDestroy・DestroyComponent・LoadPrecompiledScripts〉を関数ポインタで呼び、偽のホスト API〈スロット・子・親〉を
+  `RegisterHostApi` で差した）まで。Rust 側の実際の順序・`resolve_script_instance` / `node_query` / `parent_of` の応答はコードを読んで合わせただけで、
+  エンジンの上では動かしていない。①同じアクタの後ろのスロットのスクリプトを OnStart で `GetScript` で引ける ②`AddScript<T>()` の次のフレームに `GetScript<T>()` で引ける
+  ③`Destroy()` したフレームの Update では引け、次のフレームには引けない ④ホットリロードの後に `Instances<T>()` が作り直した数だけ返す（旧インスタンスが残らない）
+  ⑤アクタ編集タブで開いたアクタのスクリプトが `Instances` に載らない、をエディタの Play と Android の実機で確かめる。
+- [ ] **【低】OnStart 前の同じ型の 2 つ目を引けない・スロットの順は「生成の順」の近似** — 2026-10-03。ランタイムに「アクタのスクリプトのスロットを並びの順に
+  ハンドルで列挙する」口が無いので、OnStart 前のスクリプトは `TryResolveScriptInstance`（型の名前で先頭の 1 つ）で引いており、1 つのアクタに同じ型の名前が
+  2 つあると、2 つ目は自分の OnStart まで見えない。スロットの順も CLR のインスタンスができた順で数えており、エディタでスロットのスクリプトを差し替えた直後の Play だけ
+  ずれる（ランタイムはスロットを末尾にしか足さないので、ほかの経路では一致する）。`node_query` に「スクリプトのスロットのハンドルの一覧」の op を足せば両方なくなる（L1 側）。
+- [ ] **【低】`Instances` / `FindInstance` は同じフレームの OnStart の順に依存する** — 2026-10-03。登録簿が持ち主を知るのは各スクリプトの OnStart の直前なので、
+  同じフレームに OnStart を迎えるスクリプト同士では、先に OnStart したものから後のものが見えない（手書きの `Fish.All` と同じ）。ランタイムが BeginFrame の頭で
+  「このフレームに OnStart を迎えるスクリプトのハンドルと持ち主」をまとめて渡せば、全員を先に載せられる（L1 側。`script_system.rs` の収集の直後）。
+- [ ] **【低】OnStart の後に非アクティブにしたスクリプトも `Instances` に載る** — 2026-10-03。Unity の `FindObjectsOfType` は既定で非アクティブを除くが、
+  CLR 側は実効アクティブ（`sync_script_owners` の `active`）を知らない。要るなら `ScriptHost` に「スクリプトのスロットが実効アクティブか」の問い合わせを足す。
+- [ ] **【低】インターフェースで引く口が無い** — 2026-10-03。`GetScript<T>() where T : SEEDScript`（指示どおり）なので `GetScript<IDamageable>()` は書けない。
+  登録簿（`ScriptInstanceRegistry`）は基底の型・インターフェースでも引けるので、制約を `where T : class` にした多重定義を足すだけで出せる。
+- [ ] **【低】`SEEDScript` の GetScript 系は protected** — 2026-10-03。`gameObject` / `transform` と同じく自分のアクタを引くための短縮なので、
+  他のスクリプトのインスタンスから `fish.GetScript<T>()` とは呼べない（相手の `GameObject` の public の同じ名前のメソッドを使う）。public へ広げるのは後からでも
+  互換を壊さない（OnStart 前の相手は `gameObject` が未束縛で空振りする点に注意）。
+- [ ] **【低】`GetScriptInParent` は 1 段ごとに木を探す** — 2026-10-03。`ScriptHost.TryGetParent`（`ParentOf`）が呼ぶたびにアクタの木を深さ優先で探す
+  （O(アクタ数)）ので、深い所から呼ぶと 深さ × アクタ数。OnStart で引いて持つ使い方なら問題にならない。`actor_index_lookup` のような親の索引を引く FFI があれば O(深さ)。
+- [ ] **【参考】手書きの登録簿は置き換えていない** — 2026-10-03。`SEED.UI.UiRegistry`（`UiWidget.Of<T>`）・`SEED.Localization.LocalizedRegistry`
+  （`LocalizedBinding.Of<T>`）・わらしべフィッシングの `Fish.All` / `FindFishScript` は `GetScript<T>()` / `Instances<T>()` で置き換えられるが、既存の挙動を変えない
+  ため触っていない。`GetScript` は OnStart 前のものも返すので、置き換えるときは「OnStart 済み（部品の準備ができている）」を前提にしている所に注意する。
+- [ ] **【参考】§7「スクリプトを引く」も AI 補完に届かない** — 2026-10-03。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」の範囲
+  （`ScriptApiReference.MaxChars = 12000`）。
+
+## 方向キー・パッドの移動（UiNavigator・UiNavigation）— 2026-10-03 実装時の残件（L3-6。正典: docs/ui_navigation.md §7.2）
+
+- [ ] **【中】Play・実機での確かめ（未検証）** — 2026-10-03。確かめたのは C# のビルドと純粋な計算の単体テスト（`editor/tests/UiComponentsTests` の
+  `KeyNavigationTests.cs` 19 件: 最寄りの選び方・Wrap・連続移動・同時押しとスティック・入力の扱い・範囲の絞り込みと覚え・枠の置き場）まで。
+  エンジンの上では動かしていない。①`UiKeyNavigationDemo.cs` の格子で矢印・Enter・Space が効き、端で止まる ②枠が部品にぴったり重なる
+  （親の座標の写し・`CanvasLayoutItem.Translate` が ignore_layout のノードに効くか・枠の Sprite が指の当たりを取らないか）③マウスで押すと枠が隠れ、
+  次の矢印は枠を出すだけ ④ダイアログを開くと中の最初のボタンへ移り、閉じると開いたボタンへ戻る ⑤画面を積む・下ろす・タブの切り替えで覚えへ戻る
+  ⑥一覧（ListView）を下まで送れる（窓の外の行へ移ってスクロール）⑦入力欄は Enter で入力を始め、Esc で外れ、確定の Enter で決定が二重に走らない
+  ⑧ホイール・時刻ホイールが二重に動かない、をエディタの Play で確かめる。パッド（D-pad・South／East・左スティックの Y の符号〈gilrs の上 = 正は記憶による〉）は
+  実機のパッドで確かめる。
+- [ ] **【中】テンプレートのサムネイル** — 2026-10-03。`template_actors.json` の `prefabs/ui_navigator.actor`（方向キー・パッドの操作）と
+  `prefabs/focus_ring.actor`（フォーカスの枠）の `thumbnail` は空（撮っていない）。枠の見本の撮り方（ボタンに枠を重ねた絵）を `thumbnail_sample` で決めて撮り直す。
+- [ ] **【中】Esc が画面の組み立ての部品の無いシーンでも戻るの段へ届く** — 2026-10-03。UiNavigator はキャンセル（Escape）を `BackDispatcher.PollBackKey` へ回すので、
+  ScreenStack・ModalHost の無いゲームのシーンでも戻るの段が動き、どの層も受けなければ `App.MoveTaskToBack()`（Android では背面へ。PC はログだけ）。
+  ゲームが自分で Esc を読むなら `BackDispatcher.AddLayer` で受けるか `UiNavigationOptions.CancelDispatchesBack = false`。既定を false にするか、
+  「戻るの段に層が 1 つも無ければ背面へ回さない」にするかは使い方を見て決める。
+- [ ] **【低】InputMap のアクションの有無を問えない** — 2026-10-03。`InputMap` は知らない名前を false で返すだけ（`action_map.rs` の `eval_action`）なので、
+  `InputSource = Auto` は「InputMap コンポーネントがあるか」で決めている（アクションごとに素の入力へ落とせない）。`ScriptHost` に「アクションがあるか」の問い合わせを足せば
+  アクションごとに選べる（L1 側）。ゲームパッドの素の入力（`SEED.Input` にパッドの口が無い）も同じく L1 側。
+- [ ] **【低】枠が 1 フレーム遅れて付いてくる・跳ぶ** — 2026-10-03。矩形は前のフレームの描画のレイアウトなので、スクロール・出入りの動きの間は 1 フレーム遅れる。
+  移るときは動かずに跳ぶ（`motion.short` で滑らせるなら FocusRing に UiTween を足す）。
+- [ ] **【低】候補を集めるのは押すたびに登録簿の全部** — 2026-10-03。部品が数百あると 1 回の押下で数千の FFI（範囲と見え方の祖先のたどり）になる見込み（未計測）。
+  重ければ範囲ごとの候補の写しを UiRegistry.Version と範囲の替わりで作り直す。
+- [ ] **【低】入れ子の部品と縦のラジオ** — 2026-10-03。行（ListView の行）の中のトグルへは行から右で入れない（起点が行の右の辺）。縦に並べたラジオも左右で選び、
+  上下は外へ移る（指示どおり）。Unity の Explicit のような「この向きはこの部品へ」の上書き（IUiNavigable に向きごとの相手）や、グループの並びの向きで軸を決める案は未実装。
+- [ ] **【低】`UiNavigationDemo.cs` の名前** — 2026-10-03。指示の見本の名前 `templates/ui/scripts/UiNavigationDemo.cs` は画面の組み立ての見本（W2-7）が既に使っているので、
+  `UiKeyNavigationDemo.cs` にした。見本のシーン（`ui_key_navigation.scene`）は作っていない（画面いっぱいの Canvas に付ければ子を作る）。
+
+## 2 回目のレビュー（docs/reviews/2026-10-03_code_review.md）の SEED.UI・SEED.Binding の項目 — 2026-10-03（lane3。L3-7）
+
+- [x] **#20【中】ModalHost: 面のプレハブが読めないと作りかけの数が減らず、その種類の戻るを永久に飲み込む** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 作りかけを帳面（`Navigation/Model/ModalOpeningBook.cs`）で数え、種類ごとの数は帳面の中身から数える（別の数を持たない）。
+  `ModalOpeningBook.MaxClaimWaitFrames`（60）フレームのうちに面のスクリプトが受け取らなければ、エラーを出して根を消し、手札を閉じる（`DialogHandle` は Dismissed・ほかは null）。
+  作りかけがある間は `Redraw.Request`。取りやめた鍵は上限のフレーム数で忘れる。`ModalHost` の破棄でも残った作りかけの手札を閉じる。docs/ui_navigation.md §3.1「作りかけの上限」。
+  単体テスト `NavigationReviewTests.cs`（帳面の上限・受け取り・取りやめた鍵・全部閉じるの再入）。**Play での目視は未確認**（無いプレハブの `Popup.Show` で 60 フレーム後に
+  エラーが出て戻るが画面のスタックへ届くこと）。
+- [x] **#21【中】`Push(GameObject, …, ReturnToParent)` を中身を作ったのと同じフレームに呼ぶと、下ろしたとき中身がシーンの根へ見えたまま出る** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 元の親は `TakeContent`（枠ができたフレーム）で読む。元の親が無い（シーンの根にあった）・消えたなら、シーンの根へ移して**隠す**（警告）。
+  レビューの案は「根へ移さず、隠して警告」だが、根へ移さないと枠と一緒に消え（`ReturnToParent` の「消さない」約束が破れ、アプリの参照も死ぬ）ので、根へ移して隠すにした。
+  決め方は `Navigation/Model/SuppliedContentRules.cs`（`ReleaseAction`）。親を読む時機はエンジンの上でしか確かめられない（**Play 未確認**）。
+- [x] **#22【中】同じ中身を 2 回積んでも防がず、上の段を下ろすと下の段が空の枠になる** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: ほかの段が持っている中身は `Push`・`Replace` が null を返して警告（`SuppliedContentRules.CheckSupplied`）。外れた段が `ReturnToParent` で持っているときだけ積める
+  （下ろす動きの途中の積み直し）。外れた段が `Destroy` で持っているなら断る。手放すとき、中身がもうこの枠の下に無ければ触らない（引き戻さない・消さない）。
+  枠へ移す前に外れた段の中身は忘れる（`ForgetUntakenSupplied`）。**挙動の変化**: 以前は受け付けていた 2 回目の `Push(同じ中身)` が null になる。
+- [x] **#23【中】`CloseAll` の結果を種類だけで決める** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 手札が `DialogHandle` なら Dismissed、それ以外は null（`ModalCloseOrder.ResultForHandle`）。全部閉じる・作りかけの取りやめ・受け取りの上限・
+  `ModalHost` の破棄・作れなかった面で共通（`ModalHost.CancelResult`）。旧い `ResultFor(ModalKind)` は公開のまま残す（CloseAll は使わない）。
+  **挙動の変化**: 帯が Dialog のポップアップ・`ShowPlane(ModalKind.Dialog, …)` の手札は、全部閉じるで null が入る（以前は箱入りの `DialogResult.Dismissed`）。
+- [x] **#24【中】`PrewarmMode.Reuse` を `KeepState=false` の画面で使うと OnScreenExit なしで OnScreenEnter が 2 回届く** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 作り置きへ戻して使い回すときは `notifyExit` によらず `OnScreenExit` を届ける（`ScreenContentPlan.NotifiesExit`・`PrewarmSlot.KeepsContentOnReturn`・
+  `ScreenStack.KeepsPrewarmContent`）。**挙動の変化**: Reuse の画面は覆われて手放されるとき `OnScreenHidden` の後に `OnScreenExit` を受ける。
+- [x] **#25【中】双方向の留め金が、購読側の補正を部品へ返さない** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 留め金を外した後で観測値の今の値と部品の値を観測値の比べ方（`Observable<T>.Comparer`、internal）で比べ、違えば観測値から来た変化と同じ道で部品へ書く
+  （`TwoWayBinding.OnTargetChanged`）。購読の中で結び付けを外したら書かない。BindingTests 50 → 52 件。docs/ui_binding.md §4.3「購読の直しは部品へ返す」。
+  本体の `Activate(inFrame)` の変更（レビュー #7）とは別の関数なので、合流で重ならない見込み。
+- [ ] **【低】作り置きでない `KeepState = false` の画面も OnScreenExit なしで消える（#24 と同じ種類の漏れ。直していない）** — 2026-10-03（#24 を直すときに気付いた）。
+  覆われて手放す画面は `OnScreenHidden` の後、`OnScreenExit` を受けずに実体ごと消え、戻ると作り直した画面が `OnScreenEnter` を受ける。docs/ui_navigation.md §2 は
+  「入りで取り出で返す数え上げ」を勧めているので、手放す画面ではその数が 1 回ずつ漏れる。手放すときにも Exit を届けるか（Exit の意味が「下ろされる」から広がる）、
+  docs に「KeepState = false の画面は OnDestroy でも返す」と書くかを決める（今は docs に制限として書いた）。
+- [ ] **【低】同じスタックの残っている段の中身をアプリが付け替えて出しても、その段が外れるまでは使用中** — 2026-10-03（#22 の直しの範囲）。
+  使用中の判定は「中身を持つ段がスタックに残っているか」で、中身が今どこにあるかは見ない（FFI を呼ばない）。付け替えて別のスタックへ積むのは受け付ける。
+- [ ] **#31（低・まとめ）SEED.UI の細部** — 2026-10-03。
+  → **2 件目の後半（CloseAll の知らせの中の呼び直しで作りかけの数を二重に減らす）は 2026-10-03 に済（lane3）**: #20 の帳面で、取りやめる面を先に全部外してから手札を閉じる
+  （数は帳面の中身から数えるので二重に減らない。単体テストあり）。2 件目の前半（知らせの中で開いた面は閉じずに残る）は仕様として docs/ui_navigation.md §3.1 に書いた。
+  **残り（直していない）**: (1) 面のスクリプトが始まる前のダイアログを `Close()`（動きあり）で閉じると、札が 0.9 倍・幕なしで 0.2 秒見える（`ModalPlane.OnWidgetStart` で
+  `EarlyClose` を `OnPlaneStart` の前に見て、準備中のまま閉じる。Dialog の `Choose` は `OnPlaneStart` の後でないと入力欄の文字を読めないので、`BeginEnter` を止める形にする）。
+  (2) `ModalPlane.RequestClose` でダイアログを閉じる口だけ `Choose` を通らず `InputText` が null（public の `RequestClose` を外から閉じる入口へ回し、派生の内側の閉じは
+  別の protected の口にする。`Dialog.CloseFromOutside` が `RequestClose` を呼ぶので、そのままでは再帰する）。(3) 何も積まれていないスタックで `SetRoot` より先に
+  温め描きをすると、作り置きの画面が 1〜2 フレーム見えて押せる（`PrewarmSlot.Tick` に「温め描きしてよいか」〈段 0 があり不透明〉を渡し、根が無ければ待つ・透ける根なら飛ばす）。
+  どれもエンジンの上の振る舞い（(3) は純粋な段階に足せる）。
+- [ ] **#32（低・まとめ）データバインディングの細部** — 2026-10-03。
+  → **1 件目は 2026-10-03 に済（lane3）**: 作った時点の当てで変換（・当てる先の書き込み）が例外を投げたら、購読を外してから投げ直す（`ValueBinding` のコンストラクタ。
+  BindingTests 52 → 53 件）。双方向（`TwoWayBinding`）・一覧（`ListBinding`）の最初の当ては利用者の変換を通さないので同じ形にしていない（自作の当てる先の `Write` が投げれば同じく残る）。
+  → **2 件目は 2026-10-03 に済（lane3）**: `VisibleTarget` は読み戻しではなく最後に書いた値と比べ、最初の 1 回は必ず書く（Instantiate 直後の隠したプレハブの根へ `Bind.Visible(true)` が
+  書かれずに残った）。**Play 未確認**（構築の前に積んだ Visible の命令が構築の後に当たることは、ModalHost・ScreenStack が既に頼っている振る舞い）。
+  → **4 件目は 2026-10-03 に docs を直した（lane3）**: owner なしの L10n 版 `Bind.Text` は `L10n.Changed` の購読で次の言語の切り替えまで残る（docs/ui_binding.md §6）。
+  **残り（直していない）**: (3) 当てる先が無効・部品の付かないノードでも警告が出ず、owner なしだと毎フレーム待ち続ける（`BindingBase` で待ったフレームを数え、
+  `LocalizedLabel.MissingTargetGraceFrames` と同じ 30 フレームで 1 回警告する案。当てる先の説明の口が要る）。(5) フレームに 1 回の判定の f32 の時間（既存の項目
+  「フレームに 1 回の判定が `UnscaledElapsedTime` の float の比較」と同じ。144 Hz で約 36 時間で `BindingFrame.Tick` が止まる）: runtime から `NativeFrameContext` に
+  フレームの番号を渡すのが確実。C# だけで直すなら「Update の後の最初の LateUpdate で 1 回」の段の旗にする案（ScriptBridge。デバッグコマンド・プラットフォームの知らせも同じ）。
+- [x] **#33（低・まとめ）ローカライズの細部** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: (1) 表のファイル名は書きそろえた後のコード（`"pt_BR"` は `pt-BR.json`）とコメント（`LocaleLanguage.Code`・`LocalePaths.TablePath`）と
+  docs/localization.md §2.1・§2.3 に書いた（振る舞いは変えていない）。(2) `L10n.Configure` の説明を実際に合わせた（OnStart の順は決まっていないので、先に `Get` した文字は
+  古いまま。`Changed` を受けて引き直す）。(3) `LocaleCulture.FormatDate` と差し込みの `{name:書式}`（`LocaleFormatter.Render`）は、文化の暦で表せない日付
+  （ar-SA の UmAlQura は 1900〜2077 年）で `ArgumentOutOfRangeException` を捕まえて不変文化（グレゴリオ暦）で書く（レビューは推測だったが、実行で例外を確かめた。
+  LocalizationTests 61 → 62 件）。

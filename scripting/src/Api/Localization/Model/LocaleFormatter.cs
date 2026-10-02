@@ -157,7 +157,10 @@ public static class LocaleFormatter
         return false;
     }
 
-    /// <summary>値を文字にする（IFormattable は書式と文化で。読めない書式は書式なしに戻す）。</summary>
+    /// <summary>
+    /// 値を文字にする（IFormattable は書式と文化で。読めない書式は書式なしに戻す。文化の暦で表せない日付〈グレゴリオ暦でない文化の
+    /// 範囲の外〉は不変文化で書く。2026-10-03。2 回目のレビュー #33。以前は ArgumentOutOfRangeException が呼び手へ飛んだ）。
+    /// </summary>
     private static string Render(object? value, string? format, IFormatProvider? provider)
     {
         switch (value)
@@ -167,16 +170,47 @@ public static class LocaleFormatter
             case string text:
                 return text;
             case IFormattable formattable:
+                string? effective = string.IsNullOrEmpty(format) ? null : format;
                 try
                 {
-                    return formattable.ToString(string.IsNullOrEmpty(format) ? null : format, provider);
+                    return formattable.ToString(effective, provider);
                 }
                 catch (FormatException)
                 {
-                    return formattable.ToString(null, provider);
+                    return RenderPlain(formattable, provider);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    return RenderInvariant(formattable, effective);
                 }
             default:
                 return value.ToString() ?? string.Empty;
+        }
+    }
+
+    /// <summary>書式なしで書く（文化の暦で表せない日付なら不変文化で）。</summary>
+    private static string RenderPlain(IFormattable formattable, IFormatProvider? provider)
+    {
+        try
+        {
+            return formattable.ToString(null, provider);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return formattable.ToString(null, CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>不変文化（グレゴリオ暦）で書く（読めない書式は書式なし）。</summary>
+    private static string RenderInvariant(IFormattable formattable, string? format)
+    {
+        try
+        {
+            return formattable.ToString(format, CultureInfo.InvariantCulture);
+        }
+        catch (FormatException)
+        {
+            return formattable.ToString(null, CultureInfo.InvariantCulture);
         }
     }
 }

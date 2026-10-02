@@ -12,6 +12,8 @@ namespace SEED.Binding;
 //    - 往復を止める留め金:
 //        _writingTarget … 部品へ書いている間に部品が知らせてきても（SelectionGroup.Select は必ず知らせる）観測値へ返さない
 //        _writingSource … 部品の値を観測値へ入れている間の観測値の知らせを、部品へ書き戻さない
+//      ただし入れている間に購読が値を直した（範囲に収める・拒否して戻す）ときは、留め金を外した後で観測値の今の値を部品へ書き戻す
+//      （比べ方は観測値のもの。2026-10-03。2 回目のレビュー #25）。
 //    - 部品が無くなったら（IsAlive が false）自分を外す。
 // ============================================================
 
@@ -110,7 +112,10 @@ internal sealed class TwoWayBinding<T> : BindingBase
         WriteTarget(value);
     }
 
-    /// <summary>部品の値が変わった（利用者の操作）: 観測値へ入れる（自分が書いた知らせなら無視）。</summary>
+    /// <summary>
+    /// 部品の値が変わった（利用者の操作）: 観測値へ入れる（自分が書いた知らせなら無視）。入れている間（留め金）に購読が値を直した
+    /// （範囲に収める・拒否して戻す）なら、留め金を外した後で直した値を部品へ書き戻す。
+    /// </summary>
     /// <param name="value">部品の新しい値。</param>
     private void OnTargetChanged(T value)
     {
@@ -125,6 +130,14 @@ internal sealed class TwoWayBinding<T> : BindingBase
         {
             _writingSource = false;
         }
+
+        // 購読の直しを部品へ返す（2026-10-03。2 回目のレビュー #25）: 留め金の間に購読が値を直すと、その知らせ（再入の次の周）は
+        // OnSourceChanged が留め金で捨てるので、部品は利用者が操作した値の見た目のまま残っていた（トグルは ON・観測値は false）。
+        // 観測値の今の値が部品の値と違えば（比べ方は観測値のもの。等しいとみなす値なら利用者の打った文字を書き換えない）、
+        // 観測値から来た変化と同じ道（消えた・用意がまだなら待つ）で部品へ書く。購読の中で結び付けを外したら何もしない。
+        if (IsDisposed) return;
+        var current = _source.Value;
+        if (!_source.Comparer.Equals(current, value)) OnSourceChanged(current);
     }
 
     /// <summary>部品へ書く（書いている間は部品の知らせを無視する）。</summary>

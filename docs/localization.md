@@ -79,7 +79,7 @@ this.On(L10n.Changed, (string code) => RebuildTexts());        // 切り替え�
 | 鍵 | 意味 | 省略したとき |
 |---|---|---|
 | `default` | 既定の言語。どの言語の表にも無いキーの最後の行き先・端末の言語が当たらないときの言語 | 先頭の言語（一覧に無い言語なら警告して先頭） |
-| `languages[].code` | 言語のコード。表のファイル名（`<code>.json`）・保存・切り替えに使う。`"pt-BR"` のように地域つきも可（`_` は `-` に書きそろえる） | 必須（無ければ警告して飛ばす） |
+| `languages[].code` | 言語のコード。表のファイル名（`<code>.json`）・保存・切り替えに使う。`"pt-BR"` のように地域つきも可（`_` は `-` に書きそろえ、表のファイル名も書きそろえた後のコード＝`"pt_BR"` は `pt-BR.json`） | 必須（無ければ警告して飛ばす） |
 | `languages[].name` | 言語の名前（その言語で書く。言語を選ぶ画面にそのまま出す） | コード |
 | `languages[].fallback` | その言語の表に無いキーを次に探す言語 | `null` = 既定の言語へ直接落ちる（一覧に無い言語なら警告して同じ扱い） |
 | `languages[].culture` | 数・日付の書式に使う文化の名前 | コード（Invariant の環境では使われない。§9） |
@@ -112,8 +112,12 @@ this.On(L10n.Changed, (string code) => RebuildTexts());        // 切り替え�
 
 ### 2.3 置き場
 
-既定は `assets://locale`（`L10n.DefaultRoot`）。`L10n.Configure("assets://mygame/locale")` で変えられる（起動のスクリプトの `OnStart` で、
-ほかのスクリプトが文を引く前に呼ぶ。読み込み済みなら読み直して `Changed` を知らせる）。表は `<置き場>/<code>.json`。
+既定は `assets://locale`（`L10n.DefaultRoot`）。`L10n.Configure("assets://mygame/locale")` で変えられる（起動のスクリプトの `OnStart` で呼ぶ。
+読み込み済みなら読み直して `Changed` を知らせる）。**スクリプトの `OnStart` の順は決まっていない**ので、ほかのスクリプトが先に文を引くことがある
+（2026-10-03。2 回目のレビュー #33 で記述を直した）: `Changed` を受けるもの（`LocalizedText`・`LocalizedLabel`・`Bind.Text` の L10n 版・`L10n.Changed` の購読）は
+読み直しで直るが、それより前に `L10n.Get` で引いて自分で持った文字は古いまま（既定の置き場に表が無ければ `[key]`）なので、`Changed` を受けて引き直す。
+表は `<置き場>/<code>.json` で、`<code>` は**書きそろえた後の**コード（`_` → `-`）。index.json に `"code": "pt_BR"` と書くと `pt-BR.json` を探す
+（`pt_BR.json` に置いた表は読めず、fallback の言語へ落ちる。2026-10-03。レビュー #33）。
 読み込みは `SEED.Assets.TryReadText`（PAK 同梱・実ファイルのどちらでも同じパス。scripting_api.md §7.75）。
 
 ## 3. 言語の決まり方

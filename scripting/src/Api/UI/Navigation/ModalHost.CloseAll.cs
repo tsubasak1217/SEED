@@ -7,16 +7,29 @@ namespace SEED.UI;
 //
 //  鳴動画面のように「何が開いていても、その上に全画面を出す」ときに使う（Wake or Pay は戻るを上限つきで繰り返して代えていた）。
 //  - 順: ダイアログ → シート → 覆い（ポップアップを含む）、同じ種類の中は後から開いた面から（ModalCloseOrder。戻るを 1 回ずつ押したのと同じ）
-//  - 結果: ダイアログは DialogResult.Dismissed、シート・覆いは null（ModalCloseOrder.ResultFor）。閉じない設定の面
-//    （DismissOnScrimTap・CancelableByBack = false・進捗の札）も閉じる。画面の下へ回した面（Park）も閉じる
+//  - 結果: 手札の型で決める（2026-10-03。2 回目のレビュー #23。ModalCloseOrder.ResultForHandle）: ShowDialog の手札（DialogHandle）は
+//    DialogResult.Dismissed、それ以外（シート・覆い・ポップアップ〈帯が Dialog でも〉・ShowPlane の自前の面〈種類が Dialog でも〉）は null。
+//    閉じない設定の面（DismissOnScrimTap・CancelableByBack = false・進捗の札）も閉じる。画面の下へ回した面（Park）も閉じる
 //  - 動き: animate = true なら各面の出る動きのあとに手札が閉じる（閉じる動きの途中の面はそのまま）。
 //    false なら出る動きを見せずにこの呼び出しの中で閉じ、手札の Closed・Completed もこの中で、閉じる順に届く
 //    （閉じる動きの途中の面もすぐ閉じ終える）
-//  - 作りかけ（面のスクリプトがまだ動いていない）の面は、見せずに取りやめて手札をこの呼び出しの中で閉じる（動きの有無によらない）
+//  - 作りかけ（面のスクリプトがまだ動いていない）の面は、見せずに取りやめて手札をこの呼び出しの中で閉じる（動きの有無によらない）。
+//    取りやめる面は帳面（ModalOpeningBook）から先に全部外すので、手札の知らせの中で CloseAll を呼び直しても同じ面を二度扱わず、
+//    作りかけの数も二重に減らない（レビュー #31）
+//  - 知らせの中で開いた面: この呼び出しが閉じる面は呼んだ時点で決まる。手札の Closed・Completed の中で新しく開いた面は閉じずに残る
+//    （閉じた後に開き直す使い方のため。それも閉じるなら、知らせの中で CloseAll を呼び直す）
 // ============================================================
 
 public sealed partial class ModalHost
 {
+    /// <summary>
+    /// 外から閉じた・開くのを取りやめた面の手札へ渡す結果（手札が DialogHandle なら Dismissed、それ以外は null。
+    /// 2026-10-03。2 回目のレビュー #23。全部閉じる・作りかけの取りやめ・受け取りの上限・ModalHost の破棄・作れなかった面で共通）。
+    /// </summary>
+    /// <param name="handle">閉じる面の手札。</param>
+    /// <returns>結果。</returns>
+    private static object? CancelResult(ModalHandle handle) => ModalCloseOrder.ResultForHandle(handle is DialogHandle);
+
     /// <summary>
     /// 開いている覆い・シート・ダイアログ・ポップアップを全部閉じる（閉じる順と結果はファイルの頭の説明）。
     /// </summary>
@@ -42,8 +55,9 @@ public sealed partial class ModalHost
             if (plane.Phase == ModalPhase.Closed) continue;
             // 閉じる動きの途中の面: 動きありならそのまま（数えない）、動きなしなら今すぐ閉じ終える
             if (plane.Phase == ModalPhase.Exiting && animate) continue;
-            // 外から閉じる入口を通す（ダイアログは手札の Close と同じくボタンと同じ決め方で片付ける。2026-10-03）
-            plane.CloseFromOutside(ModalCloseOrder.ResultFor(plane.Kind), animate);
+            // 外から閉じる入口を通す（ダイアログは手札の Close と同じくボタンと同じ決め方で片付ける。2026-10-03）。
+            // 結果は面の種類（帯）ではなく手札の型で決める（帯が Dialog のポップアップに箱入りの DialogResult を入れない。レビュー #23）
+            plane.CloseFromOutside(plane.Handle is { } handle ? CancelResult(handle) : null, animate);
             closed++;
         }
         if (closed > 0) Debug.Log($"{LogPrefix} close all {(only?.ToString() ?? "all")} count={closed}{(animate ? string.Empty : " (no motion)")}");
@@ -52,29 +66,21 @@ public sealed partial class ModalHost
     }
 
     /// <summary>
-    /// 作りかけの面（作ったが面のスクリプトがまだ受け取っていない）を取りやめる: 根を消し、手札を全部閉じるの結果で閉じる。
-    /// 面のスクリプトが後で始まっても黙って消える（TakeCancelled）。
+    /// 作りかけの面（作ったが面のスクリプトがまだ受け取っていない）を取りやめる: 根を消し、手札を全部閉じるの結果で閉じる（閉じる順）。
+    /// 面のスクリプトが後で始まっても黙って消える（TakeCancelled）。帳面から先に全部外してから手札を閉じるので、手札の知らせの中の
+    /// 呼び直しは取りやめ済みの面を扱わない（レビュー #31。以前は同じ面の作りかけの数を二度減らし、新しい作りかけの分まで減らした）。
     /// </summary>
     /// <returns>取りやめた数。</returns>
     private int CancelPending(ModalKind? only)
     {
-        if (_pending.Count == 0) return 0;
-        var victims = new List<KeyValuePair<(uint, uint), Claimed>>();
-        foreach (var kind in ModalCloseOrder.KindsTopFirst)
+        var cancelled = _openings.CancelAll(only);
+        foreach (var opening in cancelled)
         {
-            if (only is { } k && k != kind) continue;
-            foreach (var pair in _pending)
-                if (pair.Value.Kind == kind) victims.Add(pair);
-        }
-        foreach (var (key, claimed) in victims)
-        {
-            _pending.Remove(key);
-            _cancelled.Add(key);
-            if (_opening[claimed.Kind] > 0) _opening[claimed.Kind]--;
+            var claimed = opening.Claim;
             claimed.Root.Destroy();
             ForgetParkOf(claimed.Handle);
-            claimed.Handle.Complete(ModalCloseOrder.ResultFor(claimed.Kind));
+            claimed.Handle.Complete(CancelResult(claimed.Handle));
         }
-        return victims.Count;
+        return cancelled.Count;
     }
 }

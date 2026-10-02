@@ -265,7 +265,7 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         {
             UiFocus.BringToFront(top.Scope);
             NavigatorRegistry.BringNestedToFront(top.Frame);
-            if (top.Entered) top.Screen?.OnScreenShown();
+            if (top.Entered) top.Screen?.NotifyShown();
         }
         else
         {
@@ -506,7 +506,7 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         screen.Enter(instance.Entry.Args);
         // 既に落ち着いていて上の画面で、スタックが見えている（選んでいないタブではない）なら、見えたことも知らせる
         if (_current is null && _runs.Count == 0 && _model.Top?.Id == instance.Entry.Id && NavigatorRegistry.IsActiveNode(Owner))
-            screen.OnScreenShown();
+            screen.NotifyShown();
     }
 
     /// <summary>枠の背景（不透明な画面は背景の色・透ける画面は透明）と幕の色を当てる。</summary>
@@ -670,7 +670,7 @@ public sealed partial class ScreenStack : UiWidget, INavigator
                 NavigatorRegistry.BringNestedToFront(top.Frame);
             }
             else UiFocus.SendToBack(top.Scope);
-            if (active && top.Entered) top.Screen?.OnScreenShown();
+            if (active && top.Entered) top.Screen?.NotifyShown();
         }
         Debug.Log($"{LogPrefix} {gameObject.Name} settled depth={_model.Count} top={_model.Top?.ToString() ?? "-"}");
         Redraw.Request();
@@ -708,17 +708,22 @@ public sealed partial class ScreenStack : UiWidget, INavigator
     /// <summary>
     /// 段の実体を消す（外れた段は手札を閉じる。手放すだけなら手札は残す）。
     /// 中身の後始末（2026-10-02）: 渡された中身（ReturnToParent）は枠を消す前に元の親へ戻し、使い回す作り置き（PrewarmMode.Reuse）は
-    /// 枠ごと隠して作り置きへ戻す（枠を消さない）。
+    /// 枠ごと隠して作り置きへ戻す（枠を消さない）。OnScreenExit は外れたとき（notifyExit）に届け、手放すだけ（KeepState = false）でも
+    /// 使い回す作り置きへ戻すなら届ける（2026-10-03。レビュー #24）。
     /// </summary>
     private void DestroyEntry(ScreenEntry entry, bool notifyExit)
     {
         if (_instances.Remove(entry.Id, out var instance))
         {
-            if (notifyExit) instance.Screen?.OnScreenExit();
+            // 画面のスクリプトへ OnScreenExit: 外れたとき（notifyExit）と、覆われて手放すだけでも中身を使い回す作り置き（Reuse）へ戻すとき
+            // （次に貸すと同じ画面のスクリプトにまた OnScreenEnter が届くので、入りと出を対にする。2026-10-03。レビュー #24）
+            if (ScreenContentPlan.NotifiesExit(notifyExit, KeepsPrewarmContent(instance))) instance.Screen?.OnScreenExit();
             NavigatorRegistry.UnregisterFrame(instance.Frame);
             UiFocus.RemoveScope(instance.Scope);
             if (!ReleaseContent(instance)) instance.Frame.Destroy();
         }
+        // 枠へ移す前に外れた渡された中身を忘れる（移していないので触らない。使用中の判定に残さない。2026-10-03。レビュー #22）
+        ForgetUntakenSupplied(entry);
         entry.HasInstance = false;
         if (entry.Removed && _handles.Remove(entry.Id, out var handle)) handle.Complete(entry.Result);
     }

@@ -62,7 +62,11 @@ public static unsafe class ScriptBridge
             // ScriptEvent フィールドは「未設定でも null にならない」契約なので、
             // 値の注入前にここで実体を用意しておく（後述 EnsureScriptEventInstances 参照）。
             EnsureScriptEventInstances(instance, type, 0);
-            return GCHandle.ToIntPtr(GCHandle.Alloc(instance));
+            var handle = GCHandle.ToIntPtr(GCHandle.Alloc(instance));
+            // スクリプトの登録簿（GetScript / Instances）へ、できたことだけを知らせる（生成の番号＝スロットの順の基。
+            // 持ち主のアクタはまだ分からない＝ ResolveReferenceFields / OnStart で決まる）。
+            SEED.Scripting.ScriptRegistry.NoteCreated(instance);
+            return handle;
         }
         catch (Exception ex)
         {
@@ -84,6 +88,8 @@ public static unsafe class ScriptBridge
         // OnDestroy が呼ばれない破棄経路（OnStart 前の破棄など）でも、
         // 静的な購読テーブルへ死んだインスタンスのデリゲートが残らないようにする。
         if (Get(handlePtr) is SEEDScript script) script.UnsubscribeAllEvents();
+        // スクリプトの登録簿から外す（OnStart 前の破棄＝ OnDestroy が来ない経路もここで必ず外れる。二重に外しても無害）。
+        SEED.Scripting.ScriptRegistry.Remove(Get(handlePtr));
         GCHandle.FromIntPtr(handlePtr).Free();
     }
 
@@ -101,6 +107,9 @@ public static unsafe class ScriptBridge
     {
         try
         {
+            // スクリプトの登録簿で持ち主のアクタを決める（OnStart の中から自分・同じアクタのスクリプトを引けるよう、呼ぶ前に。
+            // 通常は直前の ResolveReferenceFields で決まっており、同じ持ち主なら何もしない）。
+            SEED.Scripting.ScriptRegistry.Bind(Get(h), entityIndex, entityGeneration);
             if (Get(h) is not SEEDScript ss) return;
             ss.BindEntity(entityIndex, entityGeneration);
             ss.OnStart();
@@ -133,6 +142,8 @@ public static unsafe class ScriptBridge
                 // this.On で張った名前付きイベント購読をここで自動解除する
                 // （ユーザーの OnDestroy が例外で落ちても必ず解除されるよう finally に置く）。
                 ss.UnsubscribeAllEvents();
+                // スクリプトの登録簿から外す（OnDestroy の後。OnDestroy の中ではまだ自分を引ける）。
+                SEED.Scripting.ScriptRegistry.Remove(ss);
             }
         }
         catch (Exception ex)
@@ -480,10 +491,15 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 方向キー・パッドの移動（2026-10-03）: 今のフォーカス・足した部品とアダプタの作り方（旧アセンブリの型を握りうる）を捨てる。
+            SEED.UI.UiNavigation.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
             // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。
             SEED.Binding.BindingFrame.ResetForReload();
+            // スクリプトの登録簿（GetScript / Instances）: 旧アセンブリのインスタンスと型を握ったままだとアンロードできないので全消去する
+            // （旧インスタンスは読み直しの前に DestroyComponent で外れているはずだが、取りこぼしの保険も兼ねる）。
+            SEED.Scripting.ScriptRegistry.ResetForReload();
             var root = Encoding.UTF8.GetString(rootPtr, rootLen);
             return ScriptAssemblyManager.CompileAndLoad(root);
         }
@@ -520,10 +536,15 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 方向キー・パッドの移動（2026-10-03）: 今のフォーカス・足した部品とアダプタの作り方（旧アセンブリの型を握りうる）を捨てる。
+            SEED.UI.UiNavigation.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
             // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。
             SEED.Binding.BindingFrame.ResetForReload();
+            // スクリプトの登録簿（GetScript / Instances）: 旧アセンブリのインスタンスと型を握ったままだとアンロードできないので全消去する
+            // （旧インスタンスは読み直しの前に DestroyComponent で外れているはずだが、取りこぼしの保険も兼ねる）。
+            SEED.Scripting.ScriptRegistry.ResetForReload();
             var path = Encoding.UTF8.GetString(pathPtr, pathLen);
             return ScriptAssemblyManager.LoadPrecompiled(path);
         }
@@ -560,10 +581,15 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 方向キー・パッドの移動（2026-10-03）: 今のフォーカス・足した部品とアダプタの作り方（旧アセンブリの型を握りうる）を捨てる。
+            SEED.UI.UiNavigation.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
             // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。
             SEED.Binding.BindingFrame.ResetForReload();
+            // スクリプトの登録簿（GetScript / Instances）: 旧アセンブリのインスタンスと型を握ったままだとアンロードできないので全消去する
+            // （旧インスタンスは読み直しの前に DestroyComponent で外れているはずだが、取りこぼしの保険も兼ねる）。
+            SEED.Scripting.ScriptRegistry.ResetForReload();
             // Rust 側のバッファは呼び出しの間だけ有効なので、ここで配列へ写してから渡す。
             var bytes = new ReadOnlySpan<byte>(dataPtr, dataLen).ToArray();
             var name  = Encoding.UTF8.GetString(namePtr, nameLen);
@@ -681,6 +707,10 @@ public static unsafe class ScriptBridge
         {
             var target = Get(h);
             if (target is null) return;
+
+            // スクリプトの登録簿で持ち主のアクタを決める（持ち主が最初に分かる時点＝このスクリプトの OnStart の直前。
+            // 以後 GetScript / Instances で引ける。未束縛〈uint.MaxValue〉なら何もしない）。
+            SEED.Scripting.ScriptRegistry.Bind(target, entityIndex, entityGeneration);
 
             // 参照文字列のパス解決基準（"./Child" の相対指定・素の名前のサブツリー優先）
             // に使う所有エンティティ。Rust 側が未束縛を uint.MaxValue で伝えてくる。

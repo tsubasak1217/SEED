@@ -28,6 +28,13 @@ public abstract class UiScreen : UiWidget
     [SerializeField(Label = "戻るを無視")]
     public bool IgnoreBack;
 
+    /// <summary>
+    /// 上の画面になったら、方向キー・パッドのフォーカスを画面の最初の部品（読む順）へ移すか（2026-10-03。既定 false。
+    /// パッドで遊ぶ画面向け。UiNavigation.FocusFirstIn と同じ。シーンに UiNavigator が無くてもフォーカスは移るが、枠は UiNavigator が出す）。
+    /// </summary>
+    [SerializeField(Label = "開いたら最初の部品へ")]
+    public bool AutoFocusFirst;
+
     /// <summary>この画面を積んだスタック（シート・覆いの中身なら null）。</summary>
     public ScreenStack? Navigator { get; internal set; }
 
@@ -49,6 +56,15 @@ public abstract class UiScreen : UiWidget
 
     /// <summary>上の画面になった（動きが終わった後）。</summary>
     protected internal virtual void OnScreenShown() { }
+
+    /// <summary>
+    /// 上の画面になったことを知らせる（画面のスタックから。OnScreenShown を呼び、AutoFocusFirst なら最初の部品へフォーカスを移す。2026-10-03）。
+    /// </summary>
+    internal void NotifyShown()
+    {
+        OnScreenShown();
+        if (AutoFocusFirst) UiNavigation.RequestFocusFirst(gameObject);
+    }
 
     /// <summary>覆われた・タブを離れた（動きが終わった後）。</summary>
     protected internal virtual void OnScreenHidden() { }

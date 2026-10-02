@@ -13,6 +13,11 @@ namespace SEED.UI;
 //      └─ Dialogs（Canvas・親に合わせる） …… ダイアログ（帯 layer.dialog）
 //  帯のノードのレイヤーの底上げはテーマの帯の値、帯の中の j 番目の面は j × layer.modal_step（あとから開いた面が手前）。
 //  面のプレハブを帯の下に作り、面のスクリプト（ModalPlane）が OnWidgetStart で開く約束を受け取る（Claim）。
+//  【作りかけの上限】（2026-10-03。2 回目のレビュー #20）作りかけ（作ったが面のスクリプトがまだ受け取っていない面）は帳面
+//  （Model/ModalOpeningBook.cs）で数える。ModalOpeningBook.MaxClaimWaitFrames（60）フレームのうちに受け取られなければ
+//  （面のプレハブが無い・誤ったパス・根に ModalPlane の派生が無い）、エラーを出して根を消し、手札を閉じる（DialogHandle は Dismissed・
+//  ほかは null）。以前は作りかけの数が減らず、その種類の戻るを永久に飲み込み、WhenClosed も終わらなかった。
+//  ModalHost が消えるとき（シーンの切り替え・Play の終わり）に残った作りかけの手札も同じ結果で閉じる。
 //  【任意の面のプレハブ】（2026-10-02。lane3）ShowOverlay・ShowSheet・ShowDialog・ShowPopup に面のプレハブを渡す多重定義と、
 //  種類と面のプレハブと指定を渡す ShowPlane（自前の ModalPlane の派生を開く）。欄（OverlayPrefab など）を一時的に替えなくてよい。
 //  【戻る】ダイアログ → シート → 覆いの順の層（BackOrder）で、その種類の最後に開いた面が受ける。
@@ -60,13 +65,14 @@ public sealed partial class ModalHost : UiWidget
     /// <summary>今の ModalHost（最後に始まったもの。無ければ null）。</summary>
     public static ModalHost? Current { get; private set; }
 
-    /// <summary>開く約束（面を作ってから面のスクリプトが受け取るまで。開いた種類と面の根も持つ）。</summary>
-    internal readonly record struct Claimed(ModalHandle Handle, object? Options, ModalKind Kind, GameObject Root);
+    /// <summary>開く約束（面を作ってから面のスクリプトが受け取るまで。開いた種類・面の根・面のプレハブ〈取りやめのログ〉も持つ）。</summary>
+    internal readonly record struct Claimed(ModalHandle Handle, object? Options, ModalKind Kind, GameObject Root, string Prefab);
 
-    /// <summary>作った面のノード → 開く約束。</summary>
-    private readonly Dictionary<(uint, uint), Claimed> _pending = new();
-    /// <summary>面のスクリプトが動く前に取りやめた面のノード（CloseAll。面のスクリプトが始まっても黙って消える）。</summary>
-    private readonly HashSet<(uint, uint)> _cancelled = new();
+    /// <summary>
+    /// 作りかけの面の帳面（作った面のノード → 開く約束。種類ごとの作りかけの数・受け取りの上限・取りやめた面もここ。2026-10-03。レビュー #20）。
+    /// 以前は約束の辞書・取りやめた面の集合・種類ごとの数を別々に持ち、受け取られない面の数が減らなかった。
+    /// </summary>
+    private readonly ModalOpeningBook<(uint, uint), Claimed> _openings = new();
     /// <summary>種類ごとの開いている面（開いた順）。</summary>
     private readonly Dictionary<ModalKind, List<ModalPlane>> _planes = new()
     {
@@ -74,19 +80,12 @@ public sealed partial class ModalHost : UiWidget
         [ModalKind.Sheet] = new(),
         [ModalKind.Dialog] = new(),
     };
-    /// <summary>種類ごとの作ったが受け取られていない面の数（並びの番号に使う）。</summary>
-    private readonly Dictionary<ModalKind, int> _opening = new()
-    {
-        [ModalKind.Overlay] = 0,
-        [ModalKind.Sheet] = 0,
-        [ModalKind.Dialog] = 0,
-    };
 
     /// <summary>どれかの面が開いているか（作りかけ・画面の下へ回した面を含む）。</summary>
-    public bool AnyOpen => _pending.Count > 0 || HasAny(_planes.Values);
+    public bool AnyOpen => _openings.Count > 0 || HasAny(_planes.Values);
 
     /// <summary>種類の開いている面の数（作りかけ・画面の下へ回した面を含む）。</summary>
-    public int Count(ModalKind kind) => _planes[kind].Count + _opening[kind];
+    public int Count(ModalKind kind) => _planes[kind].Count + _openings.CountOf(kind);
 
     // ── 開く ────────────────────────────────────────────────
 
@@ -152,29 +151,46 @@ public sealed partial class ModalHost : UiWidget
         if (!root.IsValid)
         {
             Debug.LogError($"{LogPrefix} 面のプレハブを作れません: {prefab}");
-            handle.Complete(null);
+            handle.Complete(CancelResult(handle));
             return;
         }
         // 最初のフレーム（面のスクリプトが動く前）に既定の見た目で描かれないよう隠す（面が準備できたら見せる）
         root.Visible = false;
-        _pending[NavNode.Key(root)] = new Claimed(handle, options, kind, root);
-        _opening[kind]++;
+        // 作りかけとして帳面に記す（面のスクリプトが受け取るまで種類の数に入り、戻るを受けて捨てる。受け取られなければ上限で取りやめる）
+        _openings.Add(NavNode.Key(root), kind, new Claimed(handle, options, kind, root, prefab));
         Redraw.Request();
     }
 
-    /// <summary>面のスクリプトが開く約束を受け取る（無ければ null）。</summary>
-    internal Claimed? Claim(GameObject root)
-    {
-        if (!_pending.Remove(NavNode.Key(root), out var claimed)) return null;
-        return claimed;
-    }
+    /// <summary>面のスクリプトが開く約束を受け取る（無ければ null）。受け取った面は作りかけの数から外れる。</summary>
+    internal Claimed? Claim(GameObject root) => _openings.TryClaim(NavNode.Key(root), out var claimed) ? claimed : null;
 
-    /// <summary>面のスクリプトが動く前に取りやめた面か（1 回だけ答える。CloseAll）。</summary>
-    internal bool TakeCancelled(GameObject root) => _cancelled.Remove(NavNode.Key(root));
+    /// <summary>面のスクリプトが動く前に取りやめた面か（1 回だけ答える。CloseAll・受け取りの上限）。</summary>
+    internal bool TakeCancelled(GameObject root) => _openings.TakeCancelled(NavNode.Key(root));
+
+    /// <summary>
+    /// 受け取りの上限（ModalOpeningBook.MaxClaimWaitFrames）のうちに面のスクリプトが受け取らなかった作りかけを取りやめる
+    /// （2026-10-03。2 回目のレビュー #20。毎フレーム、戻るを見るより先）: エラーを出し、根を消し（根に ModalPlane の派生が無いプレハブを
+    /// 帯の下に隠したまま残さない。読み込みに失敗した根は既に無いので何も起きない）、画面の下へ回す頼みを捨て、手札を閉じる。
+    /// 作りかけがある間は次のフレームを描かせる（on_demand でも上限まで数え切る）。
+    /// </summary>
+    private void ExpireStaleOpenings()
+    {
+        if (!_openings.HasWork) return;
+        foreach (var opening in _openings.Tick())
+        {
+            var claimed = opening.Claim;
+            Debug.LogError($"{LogPrefix} {opening.Kind} の面のスクリプトが {ModalOpeningBook<(uint, uint), Claimed>.MaxClaimWaitFrames} フレームのうちに" +
+                $"始まりません（面のプレハブ {claimed.Prefab} が無い・読めない、または根に ModalPlane の派生が無い）。開くのを取りやめて手札を閉じます");
+            claimed.Root.Destroy();
+            ForgetParkOf(claimed.Handle);
+            claimed.Handle.Complete(CancelResult(claimed.Handle));
+        }
+        if (_openings.Count > 0) Redraw.Request();
+    }
 
     /// <summary>
     /// 面が準備を始めた（登録して並びの底上げを当てる。ModalPlane.OnPlaneStart の前に Claim → ここ）。
-    /// 作りかけの数は開いた種類から引き、面は自分の Kind の並びに入る（違えば警告）。
+    /// 作りかけの数は Claim で帳面から外れている。面は自分の Kind の並びに入る（開いた種類と違えば警告）。
     /// </summary>
     /// <param name="plane">面。</param>
     /// <param name="claimedKind">開いたときの種類。</param>
@@ -182,7 +198,6 @@ public sealed partial class ModalHost : UiWidget
     {
         var list = _planes[plane.Kind];
         if (list.Contains(plane)) return;
-        if (_opening[claimedKind] > 0) _opening[claimedKind]--;
         if (claimedKind != plane.Kind)
             Debug.LogWarning($"{LogPrefix} 面の種類（{plane.Kind}）が開いた種類（{claimedKind}）と違います: {plane.Owner.Name}");
         list.Add(plane);
@@ -212,8 +227,9 @@ public sealed partial class ModalHost : UiWidget
             if (plane.Phase is ModalPhase.Exiting) return true;
             return plane.HandleBack();
         }
-        // 作りかけ（まだスクリプトが動いていない）の面があれば、戻るは受けて捨てる（開いた直後の二度押しで後ろが閉じない）
-        return _opening[kind] > 0;
+        // 作りかけ（まだスクリプトが動いていない）の面があれば、戻るは受けて捨てる（開いた直後の二度押しで後ろが閉じない）。
+        // 受け取られない作りかけは上限で取りやめるので、いつまでも飲み込まない（レビュー #20）
+        return _openings.CountOf(kind) > 0;
     }
 
     /// <summary>
@@ -283,10 +299,19 @@ public sealed partial class ModalHost : UiWidget
     {
         if (ReferenceEquals(Current, this)) Current = null;
         ForgetAllParks();
+        // 残った作りかけの手札を閉じる（シーンの切り替え・Play の終わり。開いた面は面の OnDestroy が結果なしで閉じる。
+        // 作りかけは面のスクリプトが始まらないので、ここで閉じないと WhenClosed が終わらない。根はシーンと一緒に消える）
+        foreach (var opening in _openings.CancelAll(null))
+            opening.Claim.Handle.Complete(CancelResult(opening.Claim.Handle));
     }
 
     /// <inheritdoc />
-    protected override void OnWidgetUpdate(float dt) => BackDispatcher.PollBackKey();
+    protected override void OnWidgetUpdate(float dt)
+    {
+        // 受け取られない作りかけを先に取りやめる（このフレームの戻るから、次の層へ届く）
+        ExpireStaleOpenings();
+        BackDispatcher.PollBackKey();
+    }
 
     /// <inheritdoc />
     protected override void ApplyLook() => ApplyBands();

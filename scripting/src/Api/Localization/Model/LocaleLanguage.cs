@@ -14,7 +14,10 @@ namespace SEED.Localization;
 /// <summary>index.json の言語 1 つ。</summary>
 public sealed class LocaleLanguage
 {
-    /// <summary>言語のコード（index.json に書いたまま。表のファイル名にもなる）。</summary>
+    /// <summary>
+    /// 言語のコード（index.json に書いた値を書きそろえたもの＝前後の空白を落とし、`_` を `-` にする〈LocaleIndex.Normalize〉。
+    /// 表のファイル名にもなる: "pt_BR" と書いても表は pt-BR.json。2026-10-03。2 回目のレビュー #33 で「書いたまま」の誤りを直した）。
+    /// </summary>
     public string Code { get; }
 
     /// <summary>言語の名前（その言語での呼び名。言語を選ぶ画面に出す）。</summary>

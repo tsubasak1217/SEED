@@ -114,6 +114,16 @@ public static class UiFocus
         Notify();
     }
 
+    /// <summary>
+    /// 範囲が重ねる範囲（ダイアログ・シート・覆い）か（2026-10-03。方向キーの移動〈UiNavigation〉が、ダイアログの下の部品へ移らないための問い）。
+    /// </summary>
+    internal static bool IsOverlayScope(FocusScope? scope) => scope is not null && Model.IsOverlay(scope);
+
+    /// <summary>
+    /// 範囲がまだあるか（外れていない。2026-10-03。方向キーの移動〈UiNavigation〉が、閉じていく途中のダイアログの部品に枠を残さないための問い）。
+    /// </summary>
+    internal static bool IsLiveScope(FocusScope scope) => Model.HasScope(scope);
+
     /// <summary>範囲を外す（画面を下ろした・ダイアログを閉じた）。</summary>
     public static void RemoveScope(FocusScope? scope)
     {

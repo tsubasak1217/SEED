@@ -602,9 +602,13 @@ public sealed class WheelPicker : UiWidget, IFocusable
         return true;
     }
 
-    /// <summary>キーボード: 相手のホイールだけが上下の矢印で 1 つずつ動く（動きあり）。</summary>
+    /// <summary>
+    /// キーボード: 相手のホイールだけが上下の矢印で 1 つずつ動く（動きあり）。
+    /// シーンで UiNavigator が方向キーを読んでいる間は読まない（UiNavigation が WheelPickerNav で同じ StepBy を呼ぶ＝二重に動かない。2026-10-03）。
+    /// </summary>
     private void HandleKeyboard()
     {
+        if (UiNavigation.DrivesKeys) return;
         if (!Keyboard || !IsEnabled || !ReferenceEquals(WheelFocus.Current, this)) return;
         int delta = 0;
         if (Input.GetKeyDown(KeyCode.UpArrow)) delta--;

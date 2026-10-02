@@ -8,7 +8,7 @@
 
 | 置き場 | 役割 |
 |---|---|
-| `scripting/src/Api/UI/Navigation/Model/` | 純粋な計算（エンジンに触れない。`editor/tests/UiComponentsTests` で検算）: 出入りの置き方（`NavTransition.cs`）・スタック（`ScreenStackModel.cs`）・タブ（`TabModel.cs`）・戻るの段（`BackChain.cs`）・ダイアログ（`DialogModel.cs`）・シート（`SheetMath.cs`）・トースト（`ToastQueue.cs`）・フォーカス（`FocusModel.cs`）・重なりのレイヤー（`UiLayers.cs`）・トークンの名前（`NavTokens.cs`）・覆いの指定（`OverlayOptions.cs`）。2026-10-02（lane3）: 作り置き（`PrewarmOptions.cs`・`PrewarmSlot.cs`）・中身の出所（`ScreenContentSource.cs`）・全部閉じる順（`ModalCloseOrder.cs`）・ポップアップ（`PopupOptions.cs`・`PopupCardMath.cs`）・画面の下へ回す面の底上げ（`ParkedPlaneLayers.cs`） |
+| `scripting/src/Api/UI/Navigation/Model/` | 純粋な計算（エンジンに触れない。`editor/tests/UiComponentsTests` で検算）: 出入りの置き方（`NavTransition.cs`）・スタック（`ScreenStackModel.cs`）・タブ（`TabModel.cs`）・戻るの段（`BackChain.cs`）・ダイアログ（`DialogModel.cs`）・シート（`SheetMath.cs`）・トースト（`ToastQueue.cs`）・フォーカス（`FocusModel.cs`）・重なりのレイヤー（`UiLayers.cs`）・トークンの名前（`NavTokens.cs`）・覆いの指定（`OverlayOptions.cs`）。2026-10-02（lane3）: 作り置き（`PrewarmOptions.cs`・`PrewarmSlot.cs`）・中身の出所（`ScreenContentSource.cs`）・全部閉じる順（`ModalCloseOrder.cs`）・ポップアップ（`PopupOptions.cs`・`PopupCardMath.cs`）・画面の下へ回す面の底上げ（`ParkedPlaneLayers.cs`）。2026-10-03（lane3。2 回目のレビュー）: 作りかけの面の帳面（`ModalOpeningBook.cs`）・渡された中身の受け付けと手放し方（`SuppliedContentRules.cs`） |
 | `scripting/src/Api/UI/Navigation/` | 部品のスクリプト: `ScreenStack`（`.Content`・`.Prewarm`・`.BackPreview` の部分クラス）・`UiScreen`（画面の土台と手札 `ScreenHandle`）・`TabHost`・`TabBar`・`TabItem`・`ModalHost`（`.CloseAll`・`.Parking`）・`ModalPlane`（面の土台）・`ModalHandle`（`DialogHandle`）・`Dialog`・`BottomSheet`・`TopSheet`・`Popup`（`IPopupContentSize`）・`ToastHost`・`Toast`・`BackDispatcher`・`UiFocus`・`NavigatorRegistry`・`GestureRelay`・`SafeInsets`・`NavNode` |
 | `scripting/src/Api/UI/Looks/UiCurve.cs`・`TabLook.cs` | 動きの曲線（3 次ベジェ）・タブの項目の見た目 |
 | `scripting/src/Api/UI/Theme/default_theme.json` | 画面の組み立てのトークン（§9） |
@@ -17,6 +17,7 @@
 | `runtime/src/engine/core/scripting/screen_bridge.rs`・`scripting/src/Api/Screen.cs` | `Screen.DpScale`（1 dp の画素数） |
 | `templates/ui/prefabs/` | 部品: `screen_stack`・`screen_frame`・`tab_host`・`modal_host`・`dialog`・`bottom_sheet`・`top_sheet`・`toast_host`・`toast`。見本の画面: `nav_*` |
 | `templates/ui/scenes/ui_navigation.scene`・`scripts/UiNavigationDemo.cs`・`NavSampleScreen.cs` | 見本（§10） |
+| `scripting/src/Api/UI/Navigation/KeyNav/`（`Model/`・`Adapters/`） | 方向キー・パッドの移動（2026-10-03。L3-6。§7.2）: `UiNavigator`・`UiNavigation`・`IUiNavigable`・フォーカスの枠・部品ごとのアダプタ。見本 `templates/ui/scripts/UiKeyNavigationDemo.cs` |
 
 ---
 
@@ -49,7 +50,7 @@ UiNavigation（Canvas・単位 dp）
 | `SetRoot(prefab, transition = None, …)` | 根からやり直す（旧いいちばん上が動いて退き、残りは動かさずに外す） |
 | `RootPrefab`（フィールド） | 最初の根（空なら積まない）。`RootSafeArea` = false で根を安全領域の外（シェルが自分で扱う） |
 | `RootAdoptChild`（フィールド） | **置いてある根**: `Screens` の下にあらかじめ置いたこの名前の子を、`RootPrefab` から作る代わりに根として引き取る（1 回だけ・根の段だけ。無ければ従来どおり作り警告）。シーンにプレハブのインスタンスを置いておけば Edit でも実行時と同じ見た目になる（2026-10-02。Wake or Pay の App.scene: RootStack の `Shell`、シェルの各タブの `AlarmList`・`ActivityTab`・`GardenTab`・`ShopTab`） |
-| `Push(GameObject 中身, …, release)`・`Replace(GameObject 中身, …)` | **渡された中身**（2026-10-02。§2.8）: 組み立て済みの中身を画面として積む・置き換える（中身が無効なら null）。外れたときは `ScreenContentRelease.Destroy`（既定・画面と一緒に消す）か `ReturnToParent`（積んだときの親へ戻す） |
+| `Push(GameObject 中身, …, release)`・`Replace(GameObject 中身, …)` | **渡された中身**（2026-10-02。§2.8）: 組み立て済みの中身を画面として積む・置き換える（中身が無効なら null。2026-10-03 から、同じ中身をほかの段が持っていても null・警告）。外れたときは `ScreenContentRelease.Destroy`（既定・画面と一緒に消す）か `ReturnToParent`（枠へ移したときの親へ戻す） |
 | `Prewarm(prefab, PrewarmOptions?)`・`IsPrewarmed`・`GetPrewarmStage`・`DiscardPrewarm` | **作り置き**（2026-10-02。§2.8）: 空いた時間に隠した枠の中で画面を組み立てておき、次にそのプレハブを積むときに使う |
 | `IndexOf(ScreenHandle)` | 手札の画面の段の添字（根 = 0。積まれていない・外れた画面は −1。2026-10-02） |
 | `HandleBack()`・`WouldHandleBack()`・`BackPreviewTarget` | 戻るの段の Navigation の層と同じ決め方の口（2026-10-02 に公開。§5.2） |
@@ -127,7 +128,10 @@ UiNavigation（Canvas・単位 dp）
 
 そのため「画面を点けたまま」「描き続け」のような**共有の頼みを、入りで取って出で返す**と、置き換えでは新しい画面が取った後に古い画面が返して下ろしてしまう。
 数え上げ（取った回数だけ返されたら下ろす）にする（Wake or Pay の `KeepScreenOnLease`・`ContinuousRedrawLease`）。作り置きを使い回す画面（`PrewarmMode.Reuse`）
-には、使うたびに `OnScreenEnter`、外れるたびに `OnScreenExit` が届く。
+には、使うたびに `OnScreenEnter`、外れるたびに `OnScreenExit` が届く（2026-10-03 から、覆われて手放すだけ〈`KeepState = false`〉で作り置きへ戻るときも
+`OnScreenHidden` の後に `OnScreenExit` が届く。以前は Exit なしで次に貸したときの Enter が届き、数え上げが漏れた。2 回目のレビュー #24）。
+**残した制限**: 作り置きでない `KeepState = false` の画面は、手放すとき `OnScreenExit` を受けずに実体ごと消え、戻ってきたら作り直した画面が `OnScreenEnter` を受ける
+（従来どおり。Enter/Exit の数え上げをする画面は `KeepState = true` にするか、`OnDestroy` でも返す。backlog）。
 
 ### 2.7 Edit 上で画面を見る（段階 A: 置いてある根・段階 B: プレビュー。2026-10-02）
 
@@ -174,8 +178,11 @@ ScreenHandle? h = root.Push(myBody, NavTransition.Push, args, options, ScreenCon
 | 温まった | 中身ができあがって `PrewarmSlot.SettleFrames`（2）フレーム経ち（部品のスクリプトの `OnStart` と最初の Update が済む）、画面のスクリプトの `UiScreen.IsPrewarmReady`（既定 true）が true。重い準備を Update で続ける画面は済むまで false を返す。待つ上限 `PrewarmSlot.MaxWaitFrames`（300）を過ぎたら警告して温まったとみなす |
 | 温め描き | `WarmDrawFrames` ≥ 1 なら、温まった枠を段 0 の画面より 1 段奥のレイヤー（−`LayerStep`）で見せ、そのフレーム数だけ描いてから隠す（隠したノードは描かれないので、字形は最初に画面へ出したフレームで焼かれる。PC で約 33 ms）。根の画面の不透明な背景の下なので利用者には見えない（**根の画面が透けるスタックでは見えるので使わない**） |
 | 貸す | 作り置きがあるプレハブを積むと、`CreateInstance` が枠ごと借りる（作っている途中・温め描きの途中でも借りる。もう 1 つ作るより軽い。温め描きは打ち切る）。中身ができあがっていれば次のフレームで `OnScreenEnter`。同じプレハブの 2 つ目（作り置きを貸している間に同じ画面をもう 1 つ積む）はプレハブから作る |
-| 外れたとき（`PrewarmMode`） | `Once`: 画面と一緒に消え、作り置きは無くなる。`Refill`: 画面と一緒に消え、次に空いたフレームで作り直す。`Reuse`: `OnScreenExit` の後、枠ごと隠して見た目の上書き（底上げ・ずらし・倍率）を戻し、押下を取り消して作り置きへ戻す（作り直さない。画面のスクリプトには次に使うときにまた `OnScreenEnter` が届く。前の状態は Enter で作り直す） |
-| 渡された中身 | 枠ができたフレームに枠の `Body`（安全領域の中）か枠の直下へ付け替える（自分を隠していても見せる）。作り直せないので `KeepState` は常に true として扱う（`ScreenContentPlan.EffectiveKeepState`）。外れたとき `Destroy`（既定）は画面と一緒に消え、`ReturnToParent` は `OnScreenExit` の後・枠を消す前に、押下を取り消して積んだときの親へ戻す（付け替えは枠を消すより先に発行するので、中身は消えない）。戻した中身は隠れないので、親を隠した置き場にしておく |
+| 外れたとき（`PrewarmMode`） | `Once`: 画面と一緒に消え、作り置きは無くなる。`Refill`: 画面と一緒に消え、次に空いたフレームで作り直す。`Reuse`: `OnScreenExit` の後、枠ごと隠して見た目の上書き（底上げ・ずらし・倍率）を戻し、押下を取り消して作り置きへ戻す（作り直さない。画面のスクリプトには次に使うときにまた `OnScreenEnter` が届く。前の状態は Enter で作り直す）。覆われて手放すだけ（`KeepState = false`）で戻すときも `OnScreenExit` を届ける（2026-10-03。レビュー #24。`ScreenContentPlan.NotifiesExit`・`PrewarmSlot.KeepsContentOnReturn`） |
+| 渡された中身 | 枠ができたフレームに枠の `Body`（安全領域の中）か枠の直下へ付け替える（自分を隠していても見せる）。作り直せないので `KeepState` は常に true として扱う（`ScreenContentPlan.EffectiveKeepState`）。外れたとき `Destroy`（既定）は画面と一緒に消え、`ReturnToParent` は `OnScreenExit` の後・枠を消す前に、押下を取り消して元の親へ戻す（付け替えは枠を消すより先に発行するので、中身は消えない）。戻した中身は隠れないので、親を隠した置き場にしておく |
+| 渡された中身の元の親（2026-10-03。レビュー #21） | 元の親は積んだ時点ではなく、**枠へ移すフレーム（`TakeContent`）に読む**（`_body ??= GameObject.Instantiate(path, _store); root.Push(_body, …, ReturnToParent)` のように同じフレームに作った中身は、積んだ時点ではできあがっておらず親が無効に見え、下ろすとシーンの根の直下へ見えたまま出た）。元の親が無い（シーンの根にあった）・消えたなら、**シーンの根へ移して隠す**（消さない。警告 `渡された中身の元の親がありません`） |
+| 同じ中身を 2 回（2026-10-03。レビュー #22。`Model/SuppliedContentRules.cs`） | ほかの段が持っている中身は**積まない**（`Push`・`Replace` は null・警告 `ほかの段で使用中`。二度押しで 2 段目へ移ると 1 段目が空の枠になり、既定の Destroy では 2 段目を下ろすと中身も消えた）。外れた段（下ろした・置き換えた）が `ReturnToParent` で持っているなら積める（出入りは順に動くので、外れる処理で戻してから新しい段が枠へ移す＝下ろす動きの途中にもう一度積む形）。外れた段が `Destroy` で持っているなら積まない（警告。外れる処理で消える）。同じスタックの残っている段の中身をアプリが自分で付け替えて出しても、その段が外れるまでは使用中のまま |
+| 手放すときの確かめ（2026-10-03。レビュー #22） | 外れるとき、中身が**もうこの枠の下に無ければ触らない**（アプリが付け替えた中身を元の親へ引き戻さない・`Destroy` でも消さない。画面のスクリプトの `Navigator`・`Handle` は外す） |
 | 戻るとフォーカス | 隠した枠は戻るの登録簿に「どの段でもない枠」として載せる（中の入れ子のスタック・タブは戻るを受けない）。使い回す中身・戻した中身の画面のスクリプトは、スタックと手札の参照（`Navigator`・`Handle`）を外す |
 | ログ | `[UI] nav: … prewarm <プレハブ> mode=… warmDraw=…`・`作り置きを作り始めた`・`作り置きが温まった（N フレーム）`・`作り置きを貸した（N 回目・段階）`・`作り置きへ戻した（使い回す）`・`中身を引き取った（Supplied など）` |
 
@@ -193,6 +200,13 @@ ScreenHandle? h = root.Push(myBody, NavTransition.Push, args, options, ScreenCon
 帯の底上げは `layer.overlay`・`layer.sheet`・`layer.dialog`、帯の中の j 番目は j × `layer.modal_step`（後から開いた面が手前）。
 面は準備ができるまで隠し、開いている間はフォーカスの範囲を前へ出す。手札（`ModalHandle`・`DialogHandle`）で閉じるのを待つ・スクリプトから閉じる。
 
+**作りかけの上限**（2026-10-03。2 回目のレビュー #20。純粋な帳面は `Model/ModalOpeningBook.cs`）: 作ったが面のスクリプトがまだ受け取っていない面（作りかけ）は、
+その種類の数（`Count`）に入り、戻るを受けて捨てる（開いた直後の二度押しで後ろが閉じない）。`ModalOpeningBook.MaxClaimWaitFrames`（60）フレームのうちに
+受け取られなければ（面のプレハブが無い〈templates/ui を取り込み直していないプロジェクトの `popup.actor` など〉・誤ったパス・根に `ModalPlane` の派生が無い）、
+エラー（`… の面のスクリプトが 60 フレームのうちに始まりません`）を出し、根を消して手札を閉じる（`DialogHandle` は `Dismissed`・ほかは null）。
+以前は作りかけの数が減らず、その種類の戻るを永久に飲み込み、`WhenClosed` も終わらなかった。作りかけがある間は次のフレームを描かせる（on_demand でも数え切る）。
+`ModalHost` が消えるとき（シーンの切り替え・Play の終わり）に残った作りかけの手札も同じ結果で閉じる。
+
 **任意の面のプレハブで開く**（2026-10-02。backlog W3-6 (3)。欄の `OverlayPrefab` などを一時的に替えなくてよい）:
 
 | 口 | 規則 |
@@ -207,10 +221,11 @@ ScreenHandle? h = root.Push(myBody, NavTransition.Push, args, options, ScreenCon
 | 項目 | 規則 |
 |---|---|
 | 順 | 戻るの段と同じく上の層から: ダイアログ → シート → 覆い（ポップアップを含む）。同じ種類の中は後から開いた面から（戻るを 1 回ずつ押したのと同じ） |
-| 結果 | ダイアログは `DialogResult.Dismissed`（`Dismiss()` と同じ。入力欄の `InputText` は null のまま。2026-10-03 から手札の Close と同じくボタンと同じ決め方〈`Dialog.Choose`〉を通る＝入力欄のフォーカスとキーボードの持ち上げを片付ける。§3.2）、シート・覆い・ポップアップは null（幕・戻るで閉じたのと同じ） |
+| 結果 | **手札の型で決める**（2026-10-03。2 回目のレビュー #23。`ModalCloseOrder.ResultForHandle`）: `ShowDialog` の手札（`DialogHandle`）は `DialogResult.Dismissed`（`Dismiss()` と同じ。入力欄の `InputText` は null のまま。2026-10-03 から手札の Close と同じくボタンと同じ決め方〈`Dialog.Choose`〉を通る＝入力欄のフォーカスとキーボードの持ち上げを片付ける。§3.2）、それ以外の手札（シート・覆い・ポップアップ・`ShowPlane` の自前の面）は null（幕・戻るで閉じたのと同じ）。帯が Dialog のポップアップ（`PopupOptions.Kind = Dialog`）や `ShowPlane(ModalKind.Dialog, …)` の面も手札は普通の `ModalHandle` なので null（以前は種類で決めて箱入りの `DialogResult.Dismissed` が入った。旧い `ModalCloseOrder.ResultFor(ModalKind)` は互換のために残すが CloseAll は使わない） |
 | 閉じない設定の面 | `DismissOnScrimTap`・`CancelableByBack` = false の面・進捗の札も閉じる（指・戻るでは閉じない面を、アプリの都合で閉じる口） |
 | 動き | animate = true: 各面が出る動きの後に手札が閉じる（もう閉じる動きの途中の面はそのまま・数えない）。false: 出る動きを見せずにこの呼び出しの中で閉じ、手札の `Closed`・`Completed` も**閉じる順に**この中で届く（閉じる動きの途中の面もすぐ閉じ終える） |
-| 作りかけ | 面のスクリプトがまだ動いていない面は、見せずに取りやめて手札をこの呼び出しの中で閉じる（動きの有無によらない。後で面のスクリプトが始まっても黙って消える） |
+| 作りかけ | 面のスクリプトがまだ動いていない面は、見せずに取りやめて手札をこの呼び出しの中で閉じる（動きの有無によらない。後で面のスクリプトが始まっても黙って消える）。取りやめる面は先に全部帳面から外すので、手札の知らせの中で `CloseAll` を呼び直しても同じ面を二度扱わない（2026-10-03。レビュー #31。以前は作りかけの数を二重に減らした） |
+| 知らせの中で開いた面 | 閉じる面は呼んだ時点で決まる。手札の `Closed`・`Completed` の中で新しく開いた面は閉じずに残る（閉じた後に開き直す使い方のため。それも閉じるなら知らせの中で `CloseAll` を呼び直す） |
 | 画面の下へ回した面（§3.7） | 閉じる（見えない所で出る動きをして閉じる） |
 | 戻り値 | この呼び出しで閉じ始めた・閉じた面の数（作りかけの取りやめを含む） |
 
@@ -513,6 +528,8 @@ SEED の 2D の描画は「ゾーン → レイヤー → 種別（スプライ�
 
 ## 7. フォーカス（`UiFocus`・`FocusScope`）
 
+### 7.1 文字入力・ホイールのフォーカスと範囲（`UiFocus`。W2-7）
+
 - **相手**（`IFocusable`）: キーボードの入力を受ける部品（W2-5 のホイール・W2-6 の入力欄）。`UiFocus.Request(相手)` で申し出る。`WheelFocus`（W2-5）は
   `UiFocus` の窓口にした（API は同じ）。
 - **範囲**（`FocusScope`）: 画面の枠・ダイアログ・シート・覆いごと。相手は祖先をたどって最初に見つかった範囲に属する。**いちばん前の範囲の相手だけが今のフォーカス**
@@ -521,6 +538,109 @@ SEED の 2D の描画は「ゾーン → レイヤー → 種別（スプライ�
   重ねる面の範囲は、開いている間に下で画面の積み下ろしが終わっても前のまま（`overlay`）。外のスタックが落ち着いたら、上の画面の中の入れ子のスタック
   （シェルの中のタブ）の上の画面の範囲も前へ出す。
 - 戻るの段は最初に今のフォーカスへ尋ねる（`IBackConsumer`）。
+
+### 7.2 方向キー／パッドの移動（`UiNavigator`・`UiNavigation`。2026-10-03。lane3。L3-6）
+
+キーボードの方向キー・ゲームパッドの D-pad／左スティックで UI 部品のフォーカスを移し、決定で押し、キャンセルで戻る仕組み（PC のゲーム・パッドで遊ぶアプリ向け）。
+手本は Unity の EventSystem の Navigation（Automatic）と Flutter の FocusTraversal。§7.1 の `UiFocus`（文字入力・ホイールのキーボードの相手と戻るの層）は
+変えずに、その上に「方向キーで選んでいる部品」（枠を出す相手）を足した。
+
+| 置き場（`scripting/src/Api/UI/Navigation/KeyNav/`） | 役割 |
+|---|---|
+| `Model/`（純粋な計算。`editor/tests/UiComponentsTests` の `KeyNavigationTests.cs` で検算） | 向き（`FocusDirection.cs`）・最寄りの選び方と最初の部品・スクロールで見せる量（`NavigationMath.cs`）・連続移動の時計（`NavRepeatClock.cs`）・同時押しとスティック（`NavInputMath.cs`）・入力の扱い（`NavInputPolicy.cs`）・範囲の絞り込み（`NavScopeFilter.cs`）・範囲ごとの覚え（`NavScopeMemory.cs`）・枠の置き場（`FocusRingMath.cs`） |
+| `IUiNavigable.cs`・`UiNavigationOptions.cs` | 部品の口・設定 |
+| `UiNavigation.cs`（`.Frame`・`.Candidates`） | 今のフォーカスの管理とスクリプトからの口・毎フレームの処理・候補の集め方 |
+| `UiNavigator.cs`・`NavInputReader.cs`・`FocusRing.cs` | シーンの入口（SEEDScript）・入力の読み取り・枠のノード |
+| `NavVisibility.cs`・`NavScroll.cs`・`NavAdapters.cs`・`ListViewNavSource.cs` | 移れる位置か・スクロールで見せる・部品 → アダプタの表・一覧の行の出所 |
+| `Adapters/` | 部品ごとのアダプタ（`ButtonNav` ほか。下の表） |
+| `templates/ui/prefabs/ui_navigator.actor`・`focus_ring.actor`・`templates/input/uiNavigation.inputmap`・`templates/ui/scripts/UiKeyNavigationDemo.cs` | 入口のプレハブ・枠のプレハブ・既定の入力マップ・見本 |
+
+**置き方**: アプリの根（画面いっぱいの Canvas）に `ui_navigator.actor`（Canvas〈親に合わせる〉＋ `SEED.UI.UiNavigator`）を 1 つ置く。フォーカスの枠はこのアクターの子として
+1 つだけ作り、選んでいる部品の矩形に重ねる（部品の木には入れない）。2 つ置いたら 2 つ目は動かない（警告）。
+
+**入力**（`UiNavigationOptions.InputSource`）:
+
+| 出所 | 読むもの |
+|---|---|
+| `Auto`（既定） | UiNavigator のアクターに `InputMap` があればアクション、無ければ素の入力 |
+| `InputMap` | アクションだけ: `ui.up`・`ui.down`・`ui.left`・`ui.right`（Bool。押している間）・`ui.submit`・`ui.cancel`（成立した瞬間）・`ui.move`（Axis2D。スティック。Y の正 = 上）。名前は設定で変えられる |
+| `Raw` | 素の入力（`SEED.Input`）: 矢印キー・Enter／Space（決定）・Escape（キャンセル） |
+| `Both` | 両方 |
+
+- `InputMap` はアクションの有無を問う口を持たない（知らない名前は常に false。`runtime/src/engine/core/input/action_map.rs` の `eval_action`）ので、`Auto` は
+  「InputMap コンポーネントがあるか」で決める。InputMap を付けたら 7 つのアクションをすべて定義すること（無い名前の入力は効かない）。
+- **ゲームパッドは `SEED.Input` に口が無い**（キー・マウス・指だけ）ので、D-pad・スティック・South／East は InputMap のアクションでだけ読める。
+  既定の割り当ては `templates/input/uiNavigation.inputmap`（矢印・Enter・Space・Escape と DPad*・South・East・LeftStickX／Y）。Bool のアクションに軸（LeftStickY）を
+  割り当てると向きの符号が無い（どちらへ倒しても成立する）ので、スティックは `ui.move`（Axis2D）に割り当てる。
+- **連続移動**（`NavRepeatClock`）: 押した瞬間に 1 回、0.5 秒後にもう 1 回、以後 0.1 秒ごと（Unity の repeatDelay・inputActionsPerSecond。記憶による）。
+  重いフレームでもまとめて動かない。**スティック**（`NavInputMath`）: 主な軸（同じ大きさなら縦）、倒したとみなす 0.5・放したとみなす 0.3（ヒステリシス）。
+  キー・D-pad を優先。反対向きの同時押しは打ち消し、新しく押した向きを優先する。
+- **キャンセル**は `BackDispatcher` へ（§5）: Escape は `BackDispatcher.PollBackKey()`（フレームに 1 回だけ配る既存の口。画面の組み立ての部品と二重にならない）、
+  ほか（パッドの East など）は `BackDispatcher.Dispatch()`。文字入力の間も読む（Focus の層が入力欄を外す）。
+
+**移り先の選び方**（`NavigationMath.PickNext`。Unity の Automatic と同じ）: 起点 = 今の部品の矩形の、押した向きの辺の中点。候補の中心へのベクトル v と向きの単位ベクトル d の
+内積（d·v）が正の候補だけを見て、点数 = d·v ÷ |v|²（大きいほど良い）。同じ距離ならまっすぐな候補、同じ向きなら近い候補が勝つ。同点は読む順（上 → 左）。
+向きに候補が無ければ動かない（`Wrap` なら全体の反対側の外に仮の矩形を置いて同じ向きに選び直す＝行・列の反対の端へ。いちばん端だけの行では動かない）。
+矩形は前のフレームの描画のレイアウト（`CanvasTransform.LayoutRect`。画面の画素）。
+
+**候補**: 登録簿（`UiRegistry`）の部品のアダプタ（`NavAdapters`）・一覧（`ListView`）の見せている行・`UiNavigation.Register` で足した部品のうち、
+- **範囲**（`NavScopeFilter`）: いちばん前のフォーカスの範囲（`UiFocus.TopScope`）の部品と、その範囲を中に含む範囲の部品（シェルの中のタブの画面がいちばん前でも、
+  シェルのタブのバー・ヘッダーへ移れる）。どの範囲にも属さない部品（画面のスタックの外）は、いちばん前が重ねる範囲（ダイアログ・シート・覆い）でないときだけ。
+  ダイアログが開いていれば下の画面へ移らない。
+- **移れる**（`IsNavigable`）: 登録簿に生きていて、操作を受け（`IsEnabled`）、自分と祖先が表示で、スクロールの窓**以外**の切り抜きの外でない（`NavVisibility`。
+  スクロールの窓の外にあるだけの部品は移れる＝移ったらスクロールして見せる。一覧を方向キーで下まで送れる）。まだ測れていない（作った直後の）部品は次のフレームから。
+
+**部品ごとの振る舞い**（部品の公開 API は変えず、`Adapters/` のアダプタが被せる。部品には `internal` の口だけを足した: `Button.PerformClick`・`DialogItem.PerformTap`・
+`SelectionGroup.NavStep`）:
+
+| 部品 | 値の軸 | 方向キー | 決定 |
+|---|---|---|---|
+| `Button` | なし | 移る | 押す（触感と `Clicked`。指のタップと同じ） |
+| `Toggle`・`Checkbox` | なし | 移る | 切り替え（`Changed`） |
+| `Slider` | 左右 | 左右 = `Step` ずつ（0 = 連続なら範囲の 5%。端でも左右は移らない）・上下 = 移る | なし |
+| `NumberField` | 左右 | 左右 = `StepBy(±1)`（子の −・＋ のボタンは移り先にしない） | なし |
+| `SegmentedControl`・`RadioGroup` | 左右 | 左右 = 前・後ろの選べる項目を選ぶ（`SelectionChanged`。端で止まる）・上下 = 移る | なし |
+| `ChipGroup` | なし（札ごと） | 札の間を移る（複数選ぶ札は「左右で選択」を移動と決定に分けた） | 選ぶ・外す |
+| `TextField` | なし | 移る | 入力を始める（`TextField.Focus` = `UiFocus.Request`）。入力の間は方向キー・決定を読まない |
+| `WheelPicker`（時刻ホイールの列も） | 上下 | 上下 = 1 つずつ（`StepBy`）・左右 = 隣の列・部品へ移る | なし |
+| `TabItem` | なし | 移る | タブを選ぶ（`TabBar.OnItemTapped`） |
+| `DialogItem`（選択肢の行） | なし | 移る（窓の中へスクロール） | 選んで閉じる |
+| `ListView` の行（根に `CanvasGesture`〈Tap〉とスクリプト） | なし | 移る（窓の中へスクロール） | 行の根のスクリプトへ `OnGestureTap`（行の真ん中を押した値）。根が SEED.UI の部品ならそのアダプタ |
+
+**フォーカスの枠**（`FocusRing`・`focus_ring.actor`）: 縁だけの角丸の Sprite（`CanvasLayoutItem.ignore_layout`）を UiNavigator の子に 1 つ作り、選んでいる部品の矩形を
+間（`size.focus_ring_gap` 2）＋ 線（`size.focus_ring_width` 3）だけ外へ広げて重ねる。線の色 `color.focus_ring`、角丸は部品の角丸 ＋ 間 ＋ 太さ（角丸でない部品は
+`radius.focus_ring` 4）。置き場は §6 の実行中だけの欄（`Translate` と `LayerBias` = `layer.focus_ring` 500 万 − 祖先の底上げ＝トーストの帯より上）。
+親の座標への写し方は、最初は親のレイアウトの矩形から推し、以後は枠自身の前のフレームの矩形から測り直す（anchor・pivot に左右されない）。
+**見せる・隠す**（`NavInputPolicy`）: 方向キー・決定で出し、指・マウスで触ったら隠す（Windows の「キーボードで操作したときだけフォーカスの枠」）。
+隠している間の最初の 1 回は枠を出すだけ（見えないフォーカスで部品が押されない）。ただし指でホイール・入力欄を選んだ直後（`UiFocus.Changed`）は
+そこを今のフォーカスにしてすぐ効かせる（以前の「触れたホイールを上下の矢印で回す」を保つ）。
+
+**範囲が替わったとき**（`NavScopeMemory`）: フォーカスは範囲ごとに覚える。ダイアログを開く → 下の画面の部品を覚えて外し、枠を出していればダイアログの最初の部品へ
+（読む順。測れるまで最大 30 フレーム待つ）。閉じる・画面を下ろす（入っていた範囲が外れた）→ いちばん前の範囲の覚えへ戻る。今の部品が消えた（一覧の行を消した）→
+枠を出していれば最後の矩形にいちばん近い部品へ。`UiScreen.AutoFocusFirst`（既定 false）なら、画面のスタックの上の画面になったとき（`OnScreenShown` の直後）に
+その画面の最初の部品へ。
+
+**スクロール**（`NavScroll`）: 移った部品の祖先のスクロールの窓（`CanvasScroll` と有効な `CanvasClip`）ごとに、矩形を窓の中へ入れる量（`NavigationMath.RevealDelta`。
+余白 = 枠の分）を `CanvasScroll.ScrollTo`（`motion.short`）で送る。スクロールの向きの成分だけ。入れ子は内から外へ。
+
+**ホイール・時刻ホイール**: UiNavigator が動いている間（`UiNavigation.DrivesKeys`）は、ホイール・時刻ホイール自身の矢印キーの読み取り（W2-5）を止め、
+UiNavigation が同じ `StepBy`・列の間の移動をする（二重に動かない）。UiNavigator が無い・`Enabled = false` なら以前どおり。
+
+**スクリプトの口**: `UiNavigation.Focus(node, showRing)`・`FocusFirstIn(root | scope)`・`Current`・`CurrentNode`・`CurrentChanged`・`Enabled`・`Move(FocusDirection)`・
+`Submit()`・`Cancel()`（= `BackDispatcher.Dispatch()`）・`Clear()`・`IsRingVisible`・`HasNavigator`・`Candidates()`・`Describe()`・`Register(IUiNavigable)`（Dispose で外す）・
+`RegisterAdapter<T>(factory)`（UiWidget の派生の型ごと）。スクリプトの読み直しで状態・足した部品と作り方を捨てる（`ResetForReload`）。ログは `[UI] nav:`。
+
+**制限**（2026-10-03。docs/backlog.md「L3-6」）:
+- **Play での目視は未確認**（単体テストと C# のビルドまで）。枠の位置合わせ（親の座標の写し・1 フレーム遅れの追従）、指で触った後の枠の出し方、
+  ダイアログ・画面の出入りでの覚えへの戻り方、スクロールで見せる量、一覧の行のタップ、パッド（D-pad・スティックの Y の符号）は実機・Play で確かめる。
+- 矩形は前のフレームの値なので、スクロール・出入りの動きの間は枠が 1 フレーム遅れて付いてくる。
+- 枠は画面の上の外接矩形に重ねる（回転した部品は外接矩形）。楕円の部品も角丸の矩形の枠。
+- UiNavigator を置くと Esc（Android の戻る）は画面の組み立ての部品が無いシーンでも戻るの段へ届き、どの層も受けなければ `App.MoveTaskToBack()`（PC はログだけ）になる。
+  ゲームが自分で Esc を読む（ポーズメニュー）なら `BackDispatcher.AddLayer` で受けるか、`CancelDispatchesBack = false`。
+- 入れ子の部品（行の中のトグル）: 行から右へは中のトグルへ入らない（起点が行の右の辺なので）。トグルから左へは行へ戻る。
+- 方向キーの候補は入力があったときに登録簿を全部たどって集める（毎フレームは集めない）。部品が数百あると 1 回の押下で数千の FFI になる見込み（未計測）。
+- 縦に並べたラジオも左右で選ぶ（上下は移る）。チップは札ごと。スライダ・数値欄・セグメント・ラジオ・ホイールは値の軸の向きをいつも受ける（端でも移らない）。
+- 枠のアニメーション（動いて移る）は無い（跳ぶ）。
 
 ## 8. 安全領域とシステムバー
 

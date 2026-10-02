@@ -63,6 +63,12 @@ public sealed class Observable<T> : IReadOnlyObservable<T>
     public int SubscriberCount => _notifier.SubscriberCount;
 
     /// <summary>
+    /// 値の比べ方（作るときに渡したもの。無ければ EqualityComparer&lt;T&gt;.Default）。双方向の結び付けが、部品へ書き戻すかを
+    /// この観測値と同じ比べ方で決めるのに使う（2026-10-03。2 回目のレビュー #25）。
+    /// </summary>
+    internal IEqualityComparer<T> Comparer => _comparer;
+
+    /// <summary>
     /// 値の変化を購読する（変わったときだけ呼ぶ。購読した時点の値では呼ばない）。戻り値を Dispose すると解除する。
     /// スクリプトの寿命に合わせるなら <c>Subscribe(owner: this, handler)</c>。
     /// </summary>

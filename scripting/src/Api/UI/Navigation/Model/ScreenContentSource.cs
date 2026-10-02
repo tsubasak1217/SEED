@@ -64,4 +64,15 @@ public static class ScreenContentPlan
     /// <returns>使う KeepState。</returns>
     public static bool EffectiveKeepState(ScreenContentSource source, bool requested) =>
         source == ScreenContentSource.Supplied || requested;
+
+    /// <summary>
+    /// 段の実体を消す・手放すときに、画面のスクリプトへ OnScreenExit を届けるか（2026-10-03。2 回目のレビュー #24）。
+    /// スタックから外れた（下ろした・置き換えた・根からやり直した）なら届ける。覆われて手放すだけ（KeepState = false）なら従来どおり届けないが、
+    /// 中身を使い回す作り置き（PrewarmMode.Reuse）へ戻すときは届ける（次に貸すと同じ画面のスクリプトにまた OnScreenEnter が届くので、
+    /// 入りと出を対にする。以前は OnScreenExit なしで OnScreenEnter が 2 回届き、入りで取って出で返す数え上げが漏れた）。
+    /// </summary>
+    /// <param name="leavingStack">スタックから外れたか（呼び手の notifyExit）。</param>
+    /// <param name="keptForReuse">中身を使い回す作り置きへ戻すか（PrewarmSlot.KeepsContentOnReturn など）。</param>
+    /// <returns>届けるなら true。</returns>
+    public static bool NotifiesExit(bool leavingStack, bool keptForReuse) => leavingStack || keptForReuse;
 }

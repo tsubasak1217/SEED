@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    スクリプトのインスタンスの登録簿（GameObject.GetScript / SEEDScript.Instances の元。scripting/src/Api/Scripting/。
+    正典 docs/scripting_api.md §7「スクリプトを引く」）の純粋な部分の単体テスト。
+
+    BindingTests・LocalizationTests と同じ方針:
+      1. 外部パッケージ（xunit 等）に依存させず、素のコンソールアプリ + 自前アサート（SpriteRigTests の TestHarness を共有）
+      2. SEEDScripting 本体（ランタイム FFI に依存）を参照せず、純粋な部分（Scripting/Model/*.cs）をリンクで取り込む
+         → 登録簿がエンジンの型（SEED.Entity・SEEDScript・ScriptHost）に依存し始めた瞬間に本テストがビルドできなくなる
+           （＝ScriptBridge の FFI を通さずに登録簿だけを確かめられることの検知器）
+
+    確かめること: 登録（生成を知らせる・持ち主を決める・冪等・持ち主の付け替え）、破棄（束縛済み・OnStart 前・二重）、
+    型の派生（基底で引くと派生も当たる・インターフェース）、スロット順（持ち主の決まる順に関係なく生成の順）、全体の一覧の
+    生成順と写し（列挙の途中の破棄で壊れない）、読み直しの全消去、エンティティの再利用（同じ index の別 generation）で混ざらない、
+    OnStart 前のスクリプトをランタイムのスロットへ問い合わせる口（候補の型だけ・二重に数えない・知らないものは数えない）、
+    木のたどり方（行きがけ順の部分木・近い順の祖先・自分を含めるか）。
+
+    実行方法: dotnet run（project = editor/tests/ScriptRegistryTests）
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ScriptRegistryTests</RootNamespace>
+    <AssemblyName>ScriptRegistryTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: 登録簿の純粋な部分（エンジンの窓口 ScriptRegistry・木の読み方 ScriptHierarchySearch は実行中だけのもの） -->
+    <Compile Include="..\..\..\scripting\src\Api\Scripting\Model\*.cs">
+      <Link>Linked\Scripting\%(Filename)%(Extension)</Link>
+    </Compile>
+
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>
