@@ -224,6 +224,15 @@ seed_prefab_reapply(all: true)
 正典コード: `runtime/src/engine/core/app_base/app/prefab_live_patch/`（設計は `mod.rs` 冒頭）・
 `editor/src/MainWindow.Prefab.cs`・`editor/src/Reload/PrefabPlayReapplyQueue.cs`。
 
+> **重要（2026-10-03）**: **書き戻し（`PREFAB_WRITE_BACK`）はエディタで既定無効**にしてある
+> （`editor_preferences.json` の `prefab_write_back_enabled`、既定 false。メニューとボタンは出るが押すと案内だけ）。
+> レビュー `docs/reviews/2026-10-03_code_review.md` の #1〜#4 で、(1) ScreenStack が枠へ移したファイル由来の画面
+> （置いてある根・`Push(GameObject)` の中身）を刈って書く、(2) 古い版のインスタンスからプレハブを巻き戻す、
+> (3) 対象を DFS 番号だけで決めるので確認の間に木がずれると別のファイルを上書きする、(4) スクリプトが足した
+> コンポーネント・スクリプト・表示の切り替えをそのまま焼く、と分かったため。根本の直し（元の版 `base_cache` との
+> 差分だけを今のファイルへ当てて書く・`PREFAB_WRITE_BACK:{dfs},{仮想パス}` で対象を確かめる・実行時に足した
+> スロットに印を付ける）が入るまで、承知のうえで使う人だけ有効にする。当て直し（`PREFAB_LIVE_PATCH_PATH`）は影響なし。
+
 ### なぜ丸ごとの再展開ではいけないか
 
 2 章の再展開（`PREFAB_REAPPLY_PATH`）はインスタンスを作り直す。Play 中にこれをやると、スクリプトの CLR インスタンスも
