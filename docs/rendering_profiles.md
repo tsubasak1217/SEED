@@ -32,7 +32,7 @@
 
 ## 2. 設定
 
-`project_settings.json`（エディタのプロジェクト設定の画面には欄が無い。JSON を直接書く。保存しても消えない＝`ProjectSettingsData` の `ExtraData`）:
+`project_settings.json`（エディタでは「プロジェクト設定 → グラフィックス → 描画の構成」で選べる＝§2.1。JSON を直接書いてもよい）:
 
 ```jsonc
 "render": { "profile": "ui" }                 // 2D/UI だけ
@@ -51,6 +51,23 @@
 - **検証用の起動オプション**（設定より優先）: PC は `--render-profile=<名前>[,キー=値,…]`、Android は `am start … --es seed.render_profile <同じ書式>`
   （デバッグ版の MainActivity が `seed.` の extra を起動オプションとして渡す）。名前を書くと構成ごと置き換え（プロジェクトの上書きは捨てる＝素の構成で比べられる）、
   名前を空にして `,キー=値` だけ書くと旗だけを上書きする（例: `--render-profile=full`・`--render-profile=,memory_hint=memory_usage`）。
+
+### 2.1 エディタから設定する（2026-10-02）
+
+「プロジェクト設定 → グラフィックス → 描画の構成」（`editor/src/ProjectSettings/ProjectSettingsWindow.Render.cs`。画面の正典は
+[editor_project_settings.md](editor_project_settings.md) §2）。
+
+| 欄 | 選ぶもの | 書くもの |
+|---|---|---|
+| 構成 | `render_profiles.json` の構成（「3D あり（従来どおり）（full・既定）」「2D/UI だけ（ui）」）。下に選んだ構成の説明 | 既定の構成（`default_profile`＝full）を選ぶと `render.profile` を書かない。ほかは `"profile": "ui"` |
+| 旗の上書き（§3 の 8 つ） | 「構成のまま（有効／無効）」・「有効」・「無効」の 3 状態（括弧は選んだ構成の値） | 「構成のまま」は書かない。有効・無効は `"<旗>": true / false` |
+| GPU メモリの確保 | 「構成のまま（…）」・`performance`・`memory_usage` | 「構成のまま」は書かない。ほかは `"memory_hint": "…"` |
+
+- 画面の下に「この設定で起動したときの実効」の要約（`scene_3d` が無効なら影・GI・bindless・RT・G-Buffer も無効と出す）、3D を描かない設定のときは
+  黄色の注意を出す。反映の時期（次の起動から）と「3D のシーンがあるのに ui を選ぶと描かれない」はいつも出す。
+- 何も選ばなければ節ごと書かない。選び直した欄だけを書き、手で書いた知らないキー・読めない値は保つ（黄色で出す。ランタイムは警告して捨てる）。
+- 構成の一覧はエディタのビルドで同じ `runtime/config/render_profiles.json` を埋め込んで読む（`RenderProfileCatalog`）。読めなければ組み込みの
+  既定の一覧（full / ui）と警告。キー名・旗の一覧・3D に依る旗は `editor/tests/ProjectSystemTests` が `flags.rs` などを読んで突き合わせる。
 
 ## 3. 構成と旗
 
@@ -283,7 +300,7 @@ APK の pak（`assets/seed/assets.pak`）の `project_settings.json` に `"rende
 | パイプライン | 3D のパイプライン（メッシュ・G-Buffer・デファード・反射・AO・水…）は従来どおり作る（スキニングの compute の本体だけ作らない）。起動の時間は変わらない（実機の DrawContext 約 1 秒） |
 | 残る大きい資源 | post_ldr（画面と同じ大きさの Rgba16Float。1080x2400 で 19.8 MiB。UI を重ねる先）・グリフのアトラス 16 MiB・深度 2 枚 15.4 MiB・scene_hdr 11.1 MiB・クラスタ 3.4 MiB |
 | スワップチェイン | 形式（Rgba8UnormSrgb / Bgra8UnormSrgb）・枚数（フレーム遅延 2 → 3 枚を要求）は変えていない（§11） |
-| エディタ | プロジェクト設定の画面に欄は無い（JSON を直接書く）。エディタのシーンビュー（Edit）も同じ構成で描くので、ui のプロジェクトでは 3D は出ない（警告のログが出る） |
+| エディタ | プロジェクト設定の画面で選べる（2026-10-02。§2.1）。エディタのシーンビュー（Edit）も同じ構成で描くので、ui のプロジェクトでは 3D は出ない（警告のログが出る）。保存しても、使い回している Edit・Play のランタイムには次の起動まで効かない |
 | シェーディングアセット | デファード専用なので ui では効かない（`[SEED QUALITY][WARN]` が出る） |
 
 ## 11. スワップチェインの見直し（評価）
@@ -329,6 +346,7 @@ APK の pak（`assets/seed/assets.pak`）の `project_settings.json` に `"rende
 | `platform/launch_options.rs`・`android/native/src/launch.rs`・`main.rs` | `seed.gpu_mem_log` / `seed.render_profile`・`--gpu-mem-log` / `--render-profile=` |
 | `platform/screen/simulated.rs` | `SEED_SIM_WINDOW_SIZE` |
 | `runtime/Cargo.toml` | wgpu の `counters` 機能・`ash`（VK_EXT_memory_budget の問い合わせ） |
+| `editor/src/ProjectSettings/RenderProfile*.cs`・`ProjectSettingsWindow.Render.cs` | エディタのプロジェクト設定「描画の構成」（`render` 節の型・旗の表・構成の一覧の埋め込み・画面。§2.1） |
 | `core/clock/fixed_frame_dt.rs` | 検証用の `SEED_FIXED_FRAME_DT`（フレームの経過時間を固定し、同じフレーム番号のゲームの時刻を実行に依らず揃える。§14.6） |
 
 ## 14. full の GPU メモリの無駄の削減（2026-10-02 の 2 回目）

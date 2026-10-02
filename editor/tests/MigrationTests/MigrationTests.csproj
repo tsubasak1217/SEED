@@ -61,6 +61,20 @@
     <Compile Include="..\..\src\ProjectSettings\RenderQualitySettings.cs">
       <Link>Linked\ProjectSettings\RenderQualitySettings.cs</Link>
     </Compile>
+    <!-- ProjectSettingsData の "render" 節（描画の構成と旗の上書き）と旗の表（2026-10-02。WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\RenderProfileSettings.cs">
+      <Link>Linked\ProjectSettings\RenderProfileSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\RenderProfileFlagCatalog.cs">
+      <Link>Linked\ProjectSettings\RenderProfileFlagCatalog.cs</Link>
+    </Compile>
+    <!-- ProjectSettingsData の "font" 節（文字の距離場）と値の表（2026-10-02。WPF 非依存） -->
+    <Compile Include="..\..\src\ProjectSettings\FontFieldSettings.cs">
+      <Link>Linked\ProjectSettings\FontFieldSettings.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\ProjectSettings\FontFieldCatalog.cs">
+      <Link>Linked\ProjectSettings\FontFieldCatalog.cs</Link>
+    </Compile>
 
     <!-- リポジトリルートとランタイム exe の探索（kind.rs の場所と SEED.exe を引くのに使う） -->
     <Compile Include="..\..\src\Runtime\BuildConfig\RuntimeBuildConfig.cs">

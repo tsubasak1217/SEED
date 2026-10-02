@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    プロジェクト設定ウィンドウの「描画の構成」「文字の描画」パネルと、パッケージ化ウィンドウの「開発用のビルド」の欄を
+    「実物のコード」でオフスクリーン描画し、画面の操作 → project_settings.json / packaging_settings.json の書き込みまでを
+    確かめるための検証用コンソール（2026-10-02）。
+
+    ProjectSystemTests（純ロジックの単体テスト）と役割を分けている:
+      - あちら: 節の読み書き・構成の一覧・決め方を WPF 抜きで検証する
+      - こちら: 実際のパネルを組み立てて PNG に落とし、コンボ・チェックを操作したときに設定へ何が書かれるかを表明する
+               （窓は GUI を起動しないと見えないので、目視確認の材料を作る）
+
+    SEEDEditor 本体をプロジェクト参照する。**エディタは起動しない**（App はリソース読み込みのために生成するだけで、
+    Run() は呼ばない）。ランタイムへも何も送らない（RuntimeManager を渡さない）。設定ファイルは一時フォルダにだけ書く。
+
+    実行例（オプションの先頭に付くハイフン 2 個は XML コメントに書けないため省略して記す）:
+      dotnet run (project=editor/tests/ProjectSettingsPreviewProbe) (区切り) (out) "C:\temp\out"
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.ProjectSettingsPreview</RootNamespace>
+    <AssemblyName>ProjectSettingsPreviewProbe</AssemblyName>
+    <!-- 本体と同じ RID（本体の参照の復元条件をそろえる。VersionControlPanelPreviewProbe と同じ）-->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\SEEDEditor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WPF のリソース探索先を本体へ向ける初期化は VersionControlPanelPreviewProbe のものを共有する -->
+    <Compile Include="..\VersionControlPanelPreviewProbe\ResourceAssemblyInitializer.cs">
+      <Link>Linked\ResourceAssemblyInitializer.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

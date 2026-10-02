@@ -121,6 +121,17 @@ public class AndroidSigningSettings
 
 // ─── プラットフォームごとの設定 ───────────────────────────────
 
+/// <summary>
+/// 開発用のビルドの印（pak の .seed/build.json）の上書きの欄の名前（Windows / macOS / iOS の節で共通。2026-10-02）。
+/// 欄が無い（null）＝ビルド種別に合わせる（Debug なら入れる・Release なら入れない＝2026-10-01 からの既定の挙動）。
+/// 決め方は DebugBuildMarkPolicy（editor/src/Packaging/DebugBuildMarkPolicy.cs）。
+/// </summary>
+internal static class DebugBuildMarkKeys
+{
+    /// <summary>packaging_settings.json の欄の名前。</summary>
+    public const string Override = "debug_build_mark";
+}
+
 /// <summary>Windows パッケージング設定。</summary>
 public class WindowsSettings
 {
@@ -132,6 +143,14 @@ public class WindowsSettings
 
     [JsonPropertyName("arch")]
     public WindowsArch Arch { get; set; } = WindowsArch.X64;
+
+    /// <summary>
+    /// 開発用のビルドの印の上書き（null ＝ ビルド種別に合わせる＝欄を書かない。true ＝ 入れる・false ＝ 入れない）。
+    /// パッケージ化ウィンドウの「開発用のビルド」のチェックが、ビルド種別の既定と違うときだけ値を持つ。
+    /// </summary>
+    [JsonPropertyName(DebugBuildMarkKeys.Override)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DebugBuildMark { get; set; }
 }
 
 /// <summary>macOS パッケージング設定。</summary>
@@ -145,6 +164,11 @@ public class MacOsSettings
 
     [JsonPropertyName("arch")]
     public MacArch Arch { get; set; } = MacArch.Arm64;
+
+    /// <summary>開発用のビルドの印の上書き（<see cref="WindowsSettings.DebugBuildMark"/> と同じ意味）。</summary>
+    [JsonPropertyName(DebugBuildMarkKeys.Override)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DebugBuildMark { get; set; }
 }
 
 /// <summary>
@@ -196,6 +220,11 @@ public class IosSettings
 
     [JsonPropertyName("build_type")]
     public BuildType BuildType { get; set; } = BuildType.Release;
+
+    /// <summary>開発用のビルドの印の上書き（<see cref="WindowsSettings.DebugBuildMark"/> と同じ意味）。</summary>
+    [JsonPropertyName(DebugBuildMarkKeys.Override)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DebugBuildMark { get; set; }
 }
 
 // ─── ルートデータ ─────────────────────────────────────────────

@@ -52,6 +52,10 @@
     <Compile Include="..\..\src\Packaging\PackagingData.cs">
       <Link>Linked\Packaging\PackagingData.cs</Link>
     </Compile>
+    <!-- パッケージ化ウィンドウの「開発用のビルド」の決め方（Android の表示が中核の規則と食い違わないことを確かめる。2026-10-02） -->
+    <Compile Include="..\..\src\Packaging\DebugBuildMarkPolicy.cs">
+      <Link>Linked\Packaging\DebugBuildMarkPolicy.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Packaging\Collect\AssetPackagingSettings.cs">
       <Link>Linked\Packaging\Collect\AssetPackagingSettings.cs</Link>
     </Compile>

@@ -3110,7 +3110,7 @@ int n = SEED.Events.SubscriberCount("Bite");  // 現在の購読件数（デバ�
 主な用途は **デバッグ機能を配布版で自動的に無効化する** こと。
 デバッグ表示・当たり判定の可視化・チートコマンドを `SEED.Application.IsDebugAllowed` で囲っておけば、
 配布用（release）のパッケージ（`assets.pak` 同梱）ではそれらが動かなくなります。
-開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウのビルド種別 Debug）は pak 実行でも動きます（`IsDebugBuild`）。
+開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウで「開発用のビルド」にチェックを入れたビルド〈既定はビルド種別 Debug〉）は pak 実行でも動きます（`IsDebugBuild`）。
 
 ```csharp
 public static bool IsPackaged;      // パッケージ実行（assets.pak 同梱）なら true（開発用のビルドの pak 実行も true）
@@ -3127,7 +3127,7 @@ public static bool VsyncEnabled;    // 垂直同期が実際に有効か（設�
 |---|---|---|---|---|
 | エディタで Play | false | **true** | false | **true** |
 | エディタの編集中ビュー（Edit モード） | false | false | false | **true** |
-| 開発用のビルド（SeedAndroid の debug の APK・SeedPak `--debug-build`・パッケージ化ウィンドウの Debug）の pak 実行 | **true** | false | **true** | **true** |
+| 開発用のビルド（SeedAndroid の debug の APK・SeedPak `--debug-build`・パッケージ化ウィンドウの「開発用のビルド」〈既定は Debug〉）の pak 実行 | **true** | false | **true** | **true** |
 | 配布用（release）のビルド（`assets.pak` あり）を単体起動 | **true** | false | false | false |
 | 実ファイルの assets を隣に置いた単体起動・pak の無い開発用の APK（`--assets-dir`） | false | false | false | **true** |
 
@@ -3136,8 +3136,8 @@ public static bool VsyncEnabled;    // 垂直同期が実際に有効か（設�
 | 項目 | 内容 |
 |---|---|
 | 印の正体 | pak の中の予約のエントリ `.seed/build.json`（中身 `{"format":1,"debug":true}`）。パッケージ化が**開発用のビルドのときだけ**入れる |
-| 入れるビルド | SeedAndroid / エディタの Android 実行の開発用（debug）の APK（`--variant debug`。Rust の最適化 `--release` には依らない）・SeedPak `--debug-build`・パッケージ化ウィンドウのビルド種別 Debug（Windows / macOS / iOS） |
-| 入れないビルド | 配布用（release）の APK / AAB・パッケージ化ウィンドウのビルド種別 Release。Android の配布前の検査は、印のある配布物を不合格にする |
+| 入れるビルド | SeedAndroid / エディタの Android 実行の開発用（debug）の APK（`--variant debug`。Rust の最適化 `--release` には依らない）・SeedPak `--debug-build`・パッケージ化ウィンドウの「開発用のビルド」にチェックが入ったビルド（Windows / macOS / iOS。既定はビルド種別 Debug で入る。2026-10-02 から Release でも手で入れられる＝そのパッケージは配布しない） |
+| 入れないビルド | 配布用（release）の APK / AAB・パッケージ化ウィンドウの「開発用のビルド」のチェックを外したビルド（既定はビルド種別 Release）。Android の配布前の検査は、印のある配布物を不合格にする |
 | 読むとき | 起動時に pak を開いた直後に 1 回（印が無い・読めない・知らない版なら false＝安全側）。pak の外のファイル・端末の上書き層からは読まない |
 
 ### 例: デバッグ表示・デバッグコマンドを配布版で無効化する

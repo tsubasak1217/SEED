@@ -2163,7 +2163,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     「今このゲームがどういう立場で動いているか」を調べる API です。主な用途は
     <b>デバッグ機能を配布版で自動的に無効化する</b>こと。デバッグ表示・当たり判定の可視化・チートコマンドを
     <code>Application.IsDebugAllowed</code> で囲っておけば、配布用（release）のパッケージ（<code>assets.pak</code> 同梱）では
-    それらが動かなくなります。開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウのビルド種別 Debug）は
+    それらが動かなくなります。開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウで「開発用のビルド」にチェックを入れたビルド〈既定はビルド種別 Debug〉）は
     pak 実行でも動きます（<code>IsDebugBuild</code>）。
   </p>
   <div class="api"><code class="sig">Application.IsPackaged</code><span class="desc">bool。パッケージ実行（assets.pak 同梱）なら true（開発用のビルドの pak 実行も true）</span></div>
@@ -2194,15 +2194,15 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     <tr><th>実行のしかた</th><th>IsPackaged</th><th>IsEditorPlay</th><th>IsDebugBuild</th><th>IsDebugAllowed</th></tr>
     <tr><td>エディタで Play</td><td>false</td><td><b>true</b></td><td>false</td><td><b>true</b></td></tr>
     <tr><td>エディタの編集中ビュー（Edit モード）</td><td>false</td><td>false</td><td>false</td><td><b>true</b></td></tr>
-    <tr><td>開発用のビルド（SeedAndroid の debug の APK・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウの Debug）の pak 実行</td><td><b>true</b></td><td>false</td><td><b>true</b></td><td><b>true</b></td></tr>
+    <tr><td>開発用のビルド（SeedAndroid の debug の APK・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウの「開発用のビルド」〈既定は Debug〉）の pak 実行</td><td><b>true</b></td><td>false</td><td><b>true</b></td><td><b>true</b></td></tr>
     <tr><td>配布用（release）のビルド（<code>assets.pak</code> あり）を単体起動</td><td><b>true</b></td><td>false</td><td>false</td><td>false</td></tr>
     <tr><td>実ファイルの assets を隣に置いた単体起動・pak の無い開発用の APK（<code>--assets-dir</code>）</td><td>false</td><td>false</td><td>false</td><td><b>true</b></td></tr>
   </table>
   <table>
     <tr><th>開発用のビルドの印</th><th>内容</th></tr>
     <tr><td>印の正体</td><td>pak の中の予約のエントリ <code>.seed/build.json</code>（中身 <code>{"format":1,"debug":true}</code>）。パッケージ化が<b>開発用のビルドのときだけ</b>入れる</td></tr>
-    <tr><td>入れるビルド</td><td>SeedAndroid / エディタの Android 実行の開発用（debug）の APK（<code>--variant debug</code>。Rust の最適化 <code>--release</code> には依らない）・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウのビルド種別 Debug（Windows / macOS / iOS）</td></tr>
-    <tr><td>入れないビルド</td><td>配布用（release）の APK / AAB・パッケージ化ウィンドウのビルド種別 Release。Android の配布前の検査は、印のある配布物を不合格にする</td></tr>
+    <tr><td>入れるビルド</td><td>SeedAndroid / エディタの Android 実行の開発用（debug）の APK（<code>--variant debug</code>。Rust の最適化 <code>--release</code> には依らない）・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウの「開発用のビルド」にチェックが入ったビルド（Windows / macOS / iOS。既定はビルド種別 Debug で入る。2026-10-02 から Release でも手で入れられる＝そのパッケージは配布しない）</td></tr>
+    <tr><td>入れないビルド</td><td>配布用（release）の APK / AAB・パッケージ化ウィンドウの「開発用のビルド」のチェックを外したビルド（既定はビルド種別 Release）。Android の配布前の検査は、印のある配布物を不合格にする</td></tr>
     <tr><td>読むとき</td><td>起動時に pak を開いた直後に 1 回（印が無い・読めない・知らない版なら false＝安全側）。pak の外のファイル・端末の上書き層からは読まない</td></tr>
   </table>
   <table>
