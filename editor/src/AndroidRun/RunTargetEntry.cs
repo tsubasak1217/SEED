@@ -3,6 +3,8 @@
 //
 //  【行の種類】
 //    Pc            … この PC（従来の Play。エディタに埋め込んだランタイム）
+//    PcSimulated   … この PC で端末を模擬する（端末プリセット 1 件ごと。別ウィンドウの Play を模擬の環境変数付きで起動する。
+//                    行を作るのは DevicePresets/DevicePresetRunTargets。docs/editor_device_presets.md）
 //    AndroidAuto   … Android（自動）: 実機（前回使ったものを優先）→ 起動中のエミュレータ → AVD を起動（段階C-3。Android の既定）
 //    AndroidDevice … adb に見える Android の実機・エミュレータ（状態が device 以外・ABI が合わない端末は「選べない行」）
 //    Notice        … 選べない案内の行（端末を探している・見つからない・Android を使えない理由）
@@ -14,6 +16,7 @@
 
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.State;
+using SEEDEditor.DevicePresets;
 
 namespace SEEDEditor.AndroidRun;
 
@@ -22,6 +25,9 @@ public enum RunTargetKind
 {
     /// <summary>この PC（従来の Play）。</summary>
     Pc,
+
+    /// <summary>この PC で端末を模擬する（端末プリセット。別ウィンドウの Play を模擬の環境変数付きで起動する）。</summary>
+    PcSimulated,
 
     /// <summary>Android（自動）: 実行するときに端末を決める（要ればエミュレータを起動する）。</summary>
     AndroidAuto,
@@ -44,7 +50,10 @@ public sealed record RunTargetEntry
     /// </summary>
     public const string AndroidAutoId = AndroidRunState.EditorAutoTarget;
 
-    /// <summary>識別子（PC は <see cref="PcId"/>、自動は <see cref="AndroidAutoId"/>、端末はシリアル、案内の行は "notice:…"）。</summary>
+    /// <summary>
+    /// 識別子（PC は <see cref="PcId"/>、端末の模擬は "pcsim:&lt;プリセットの id&gt;"、自動は <see cref="AndroidAutoId"/>、
+    /// 端末はシリアル、案内の行は "notice:…"）。
+    /// </summary>
     public required string Id { get; init; }
 
     /// <summary>行の種類。</summary>
@@ -62,7 +71,7 @@ public sealed record RunTargetEntry
     /// <summary>この行で実行できるか（選べるか）。案内の行・使えない状態の端末は false。</summary>
     public required bool CanRun { get; init; }
 
-    /// <summary>アイコンのキー（Icons.xaml。PC は Windows、端末は Android、案内は情報・警告）。</summary>
+    /// <summary>アイコンのキー（Icons.xaml。PC は Windows、端末の模擬は画面と端末、端末は Android、案内は情報・警告）。</summary>
     public required string IconKey { get; init; }
 
     /// <summary>端末のシリアル（端末の行だけ）。</summary>
@@ -79,11 +88,17 @@ public sealed record RunTargetEntry
     /// </summary>
     public bool IsMissing { get; init; }
 
+    /// <summary>端末プリセット（端末の模擬の行だけ。起動に足す環境変数と引数の元）。</summary>
+    public DevicePreset? DevicePreset { get; init; }
+
     /// <summary>Android の行か（自動・端末）。</summary>
     public bool IsAndroid => Kind is RunTargetKind.AndroidDevice or RunTargetKind.AndroidAuto;
 
     /// <summary>Android（自動）の行か。</summary>
     public bool IsAndroidAuto => Kind == RunTargetKind.AndroidAuto;
+
+    /// <summary>端末の模擬の行か（PC の仲間。PC の Play と同じボタンの動きで、起動のしかただけが違う）。</summary>
+    public bool IsPcSimulated => Kind == RunTargetKind.PcSimulated;
 
     /// <summary>コンボの閉じた状態・読み上げに使う文字列（ItemTemplate の無い場面の既定表示）。</summary>
     /// <returns>文言。</returns>

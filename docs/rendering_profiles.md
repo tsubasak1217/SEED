@@ -151,6 +151,9 @@ MCP からは `seed_gpu_mem_report(top?)` で内訳（下の IPC `GPU_MEM_REPORT
 環境変数 `SEED_SIM_WINDOW_SIZE=1080x2400`（Play の窓の最初の大きさ。`SEED_SIM_SCALE_FACTOR=2.625`・`SEED_SIM_SAFE_AREA=0,132,0,63` と組み合わせると
 Pixel 6a に近い）。窓が画面より大きいと OS が縮めることがある（実際の大きさは起動ログ・スクリーンショットの寸法で確かめる。1920x1080 の画面で 1080x2400 の窓になった）。
 
+エディタからは、実行先セレクタ（実行ボタンの隣）で「**PC（端末の模擬: Pixel 6a 実寸）**」を選んで実行するだけで、これらの環境変数と `--render-quality=mobile` を
+付けた別ウィンドウの Play になる（端末は `editor/config/device_presets.json` のデータ。正典 [editor_device_presets.md](editor_device_presets.md)）。
+
 ## 5. スキニングの compute がローカルメモリを予約する件
 
 **→ 2026-10-02 の 2 回目で直した（§14.2）。full でもこの予約は起きない（RTX 3060 Laptop で `DrawPipelines::new` の節目 826.9 → 382.6 MiB）。以下は直す前の記録。**
@@ -171,6 +174,7 @@ wgpu-hal の資源の確保は 0（確保の回数も増えない）。`skin_com
 **条件**: RTX 3060 Laptop（Vulkan・ドライバ 616.92）・debug の SEED.exe・Wake or Pay の一覧の画面が落ち着いた後（起動から約 3 秒・スクリーンショット 1 枚の後）。
 窓 1080x2400（`SEED_SIM_WINDOW_SIZE`）・`SEED_SIM_SCALE_FACTOR=2.625`・`SEED_SIM_SAFE_AREA=0,132,0,63`・`--render-quality=mobile`（Android の既定と同じ。
 3D の描画解像度 810x1800）。`full` は `--render-profile=full`、`ui` は設定どおり。スクリプト: `tmp/gpu_mem/measure.py`（作業フォルダ）。
+（窓・倍率・安全領域・品質の組は、エディタの実行先「PC（端末の模擬: Pixel 6a 実寸）」と同じ。[editor_device_presets.md](editor_device_presets.md)）
 
 | | full | ui |
 |---|---|---|

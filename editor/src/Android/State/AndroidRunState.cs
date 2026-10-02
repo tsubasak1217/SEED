@@ -8,7 +8,8 @@
 //
 //  【中身】
 //    last_target … 最後に使った実行先（エディタの実行先セレクタの既定値に使う。段階C-2）
-//    editor_target … エディタの実行先セレクタで最後に選んだもの（"pc"・"auto"（Android（自動）。段階C-3）・端末のシリアル。
+//    editor_target … エディタの実行先セレクタで最後に選んだもの（"pc"・"pcsim:<端末プリセットの id>"（PC（端末の模擬）。
+//                   docs/editor_device_presets.md）・"auto"（Android（自動）。段階C-3）・端末のシリアル。
 //                   段階C-2。PC を選んだことも覚えるため last_target とは別に持つ。SeedAndroid は読まない・書き戻すときは保つ）
 //    installs    … 端末（シリアル）ごとに、最後に自分が入れた APK の SHA-256 と、入れた直後の pm path
 //                   （インストールを飛ばしてよいかの判断。Plan/AndroidBuildPlan.cs）
@@ -159,7 +160,8 @@ public sealed class AndroidRunState
     public AndroidTargetRecord? LastTarget { get; set; }
 
     /// <summary>
-    /// エディタの実行先セレクタで最後に選んだもの（<see cref="EditorPcTarget"/> か端末のシリアル。未選択なら null）。
+    /// エディタの実行先セレクタで最後に選んだもの（<see cref="EditorPcTarget"/>・"pcsim:&lt;端末プリセットの id&gt;"・
+    /// <see cref="EditorAutoTarget"/>・端末のシリアル。未選択なら null）。
     /// 項目を足しただけなので書式の版は変えない（古い記録は null として読む）。
     /// </summary>
     [JsonPropertyName("editor_target")]

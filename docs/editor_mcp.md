@@ -519,7 +519,8 @@ OS が `WM_PAINT` を配送しないため、winit の `RedrawRequested` によ�
   `resume` は Pause 中のみ、`stop` は Play/Pause 中のみ実行できる。それ以外は
   `{"ok":false,"error":"..."}` を返す（現在の状態がメッセージに入る）。
 - `seed_play` は **PC の実行だけ**を扱う（プレイバーの実行先セレクタが Android の端末でも PC の Play になる。
-  Android の実行を MCP から始めるツールは無い。[android.md](android.md) §20）。
+  Android の実行を MCP から始めるツールは無い。[android.md](android.md) §20）。実行先セレクタが「PC（端末の模擬: …）」なら、
+  プレイバーと同じく端末の模擬の別ウィンドウ Play になる（[editor_device_presets.md](editor_device_presets.md)。MCP から端末を選ぶ引数は無い）。
   エディタで **Android の実行が動いている間は `play` を拒否する**（PC の実行と Android の実行は同時に動かさない。
   プレイバーと同じ排他）。
 - `seed_save_scene` は Edit 状態のみ。新規（未保存）シーンは保存先が決まらないためエラー。

@@ -19,6 +19,9 @@ namespace AndroidRunUiTests;
 ///  11. 一時停止中の端末のシーンの写し（取り出しの状態機械と段取り・ビューポート・Output。PauseSnapshotTests。§20.17）
 ///  12. 写しをシーンパネルへ閲覧専用で出す段取り（応答の読み方・編集用ランタイムへの命令・一時停止に合わせた出し入れ・
 ///      閲覧専用の判断。SnapshotViewTests。§20.17）
+///  13. 端末プリセットの JSON の読み込み・検証・フォールバック（DevicePresetCatalogTests。docs/editor_device_presets.md）
+///  14. 実行先「PC（端末の模擬: …）」の行の並び・選択の復元・プレイバー・起動の環境変数と引数・常駐 Play の使い回し・
+///      画面に収まるか（DevicePresetRunTargetTests。docs/editor_device_presets.md）
 /// 端末・adb・cargo・Gradle は使わない。
 /// </summary>
 public static class Program
@@ -41,6 +44,8 @@ public static class Program
         ViewportPolicyTests.Register(harness);
         PauseSnapshotTests.Register(harness);
         SnapshotViewTests.Register(harness);
+        DevicePresetCatalogTests.Register(harness);
+        DevicePresetRunTargetTests.Register(harness);
         return harness.Run();
     }
 }
