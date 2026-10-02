@@ -3,6 +3,8 @@
 //
 //  【一覧の並び】
 //    1. PC（常に先頭。既定の実行先）
+//    1'. PC（端末の模擬: …）（端末プリセット editor/config/device_presets.json の順に 1 件 1 行。PC の直後。
+//       Android を使えない環境でも出す。行は DevicePresets/DevicePresetRunTargets が作る。docs/editor_device_presets.md）
 //    2. Android（自動）（Android を使えるときだけ。Android の既定。段階C-3）: 実行するときに
 //       実機（前回使ったものを優先）→ 起動中のエミュレータ → どちらも無ければ AVD を起動、の順で決める
 //    3. adb に見える端末（adb devices -l の順）。使えない状態（unauthorized / offline 等）と ABI が合わない端末は
@@ -16,9 +18,11 @@
 //    Keep（一覧の取り直し。いまの選択を保つ）      … 見えていればその行（使えない状態でも選んだまま）、
 //                                                  見えなければ「未接続」の行を足してそれを選んだままにする
 //  PC を選んでいれば常に PC、Android（自動）を選んでいれば常に Android（自動）。Android を使えない環境では常に PC。
+//  端末の模擬の行（"pcsim:…"）は Restore・Keep とも、その端末がまだ一覧にあればそれ、無ければ（JSON から消した）PC
+//  （Android を使えるかに関わらない）。
 //
-//  Android を使えない環境（SDK / adb が無い・エンジンのリポジトリが無い・プロジェクトが無い）では PC と理由の行だけ
-//  （エラーにはしない）。
+//  Android を使えない環境（SDK / adb が無い・エンジンのリポジトリが無い・プロジェクトが無い）では PC・端末の模擬と
+//  理由の行だけ（エラーにはしない）。
 //
 //  WPF に依存しない（editor/tests/AndroidRunUiTests からリンクされる）。
 // ============================================================
@@ -30,6 +34,7 @@ using SEEDEditor.Android;
 using SEEDEditor.Android.Adb;
 using SEEDEditor.Android.Emulator;
 using SEEDEditor.Android.Pipeline;
+using SEEDEditor.DevicePresets;
 
 namespace SEEDEditor.AndroidRun;
 
@@ -72,7 +77,9 @@ public sealed record RunTargetCatalogInput
     /// <summary>最後の一覧の取得が失敗した理由（成功していれば null）。</summary>
     public string? ListError { get; init; }
 
-    /// <summary>選んでおきたいもの（<see cref="RunTargetEntry.PcId"/> か端末のシリアル。null なら PC）。</summary>
+    /// <summary>
+    /// 選んでおきたいもの（<see cref="RunTargetEntry.PcId"/>・"pcsim:&lt;プリセットの id&gt;"・"auto"・端末のシリアル。null なら PC）。
+    /// </summary>
     public string? PreferredId { get; init; }
 
     /// <summary>選んでおきたい端末の名前（機種。見えなくなった端末の行の文言に使う。無ければシリアル）。</summary>
@@ -86,6 +93,11 @@ public sealed record RunTargetCatalogInput
     /// Android（自動）の行のツールチップに出す。
     /// </summary>
     public string? EmulatorAvd { get; init; }
+
+    /// <summary>
+    /// 端末プリセット（PC の直後に 1 件 1 行の「PC（端末の模擬: …）」を並べる。既定は無し＝従来どおりの一覧）。
+    /// </summary>
+    public IReadOnlyList<DevicePreset> DevicePresets { get; init; } = Array.Empty<DevicePreset>();
 }
 
 /// <summary>組み立てた一覧と選んでおく行。</summary>
@@ -254,6 +266,9 @@ public static class RunTargetCatalogBuilder
         var entries = new List<RunTargetEntry> { Pc };
         var notices = new List<RunTargetEntry>();
 
+        // 端末の模擬（PC の仲間）は PC の直後。Android を使えるかに関わらず出す
+        entries.AddRange(input.DevicePresets.Select(DevicePresetRunTargets.FromPreset));
+
         if (!input.Android.IsAvailable)
         {
             notices.Add(Notice(UnavailableNoticeId, UnavailableText, input.Android.Reason ?? UnavailableText, ProblemIconKey));
@@ -286,11 +301,18 @@ public static class RunTargetCatalogBuilder
     /// 選んでおく行を決める（見えなくなった端末を Keep で保つときは、その行を一覧へ足す）。
     /// </summary>
     /// <param name="input">材料。</param>
-    /// <param name="entries">PC と端末の行（見えなくなった端末の行を足すことがある）。</param>
+    /// <param name="entries">PC・端末の模擬・端末の行（見えなくなった端末の行を足すことがある）。</param>
     /// <returns>選んでおく行。</returns>
     private static RunTargetEntry ChooseSelection(RunTargetCatalogInput input, List<RunTargetEntry> entries)
     {
         var preferred = input.PreferredId;
+
+        // 端末の模擬: 一覧にあればそれ、無ければ（JSON から消した等）PC。Android を使えるかには関わらない
+        if (DevicePresetRunTargets.IsTargetId(preferred))
+        {
+            return entries.FirstOrDefault(entry => DevicePresetRunTargets.Matches(entry, preferred)) ?? Pc;
+        }
+
         if (string.IsNullOrWhiteSpace(preferred) || preferred == RunTargetEntry.PcId || !input.Android.IsAvailable)
         {
             return Pc;

@@ -207,6 +207,36 @@
 
 - [ ] **`seed_launch` が起動したエディタは MCP サーバー終了後も残る** — 2026-09-07。ジョブオブジェクトで括っていないため、`seed_shutdown` を忘れるとプロセスが残る。必要なら Job Object + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を検討。関連: `editor/SeedMcpServer/Launcher.cs`。
 
+## エディタ MCP の確かめ・計測ツール（2026-10-02 L2-4 実装時の残件）
+
+`seed_platform_sim` / `seed_gpu_mem_report` / `seed_preview` / `seed_template_actor` と `seed_launch(gpu_mem_log)` を足した（正典 docs/editor_mcp.md §4・§5.6・§7.2）。
+
+- [ ] **新ツールの実通信（MCP → エディタ → ランタイム）は未検証** — 2026-10-02。単体テスト（AiSafetyTests 44 件・ScreenPreviewTests 61 件・TemplateImportTests 50 件）と、MCP サーバーの実プロセスでの tools/list の形・未束縛での拒否までは確かめたが、`seed_launch` したヘッドレスエディタで 4 ツールを実際に呼ぶ往復はしていない（別レーンがランタイムを編集中で、このレーンでは cargo を走らせない方針だったため）。次にヘッドレスを動かすときに docs/editor_mcp.md §5.6 の A〜C を一度通すこと。特に (a) `PREVIEW_PREFAB` の応答の順（HIERARCHY → SELECTED → PREVIEW_ADDED）の後で `seed_hierarchy` が新しい木を返すか、(b) `template_actor_add` の `SCENE_MODIFIED` 待ち、(c) `SEED_GPU_MEM_LOG` が Play のランタイム（常駐 Play を含む）まで届くか（.NET の子プロセスへの受け継ぎは AiSafetyTests で実プロセスを起動して確かめ済み）。
+
+- [ ] **描画の構成（render profile）を単独で問い合わせる IPC が無い** — 2026-10-02。`App::render_profile_summary`（`runtime/src/engine/core/app_base/app/render_profile_ops.rs`）は GPU メモリの内訳の `context` にしか出ない。そのため `seed_state` に `render_profile` を足せなかった。今は `seed_launch(gpu_mem_log:true)` → `seed_gpu_mem_report` の要約の「文脈」か、起動ログ `[SEED RENDER PROFILE]`（`seed_log`）で見る。足すなら `GET_RENDER_PROFILE` → `RENDER_PROFILE:{json}`（name・止めた旗）と、エディタの `get_editor_state`（`EditorCommandExecutor.Visual.cs::ExecuteGetEditorState`）での最後の値のキャッシュ。エディタ側の `editor/src/ProjectSettings/RenderProfileCatalog.cs`（project_settings.json から決める）で代用もできるが、起動オプション `--render-profile=` を含まないのでランタイムの実効値と食い違いうる。
+
+- [ ] **MCP 化の候補: `PREFAB_LIVE_PATCH_PATH` / `PREFAB_WRITE_BACK`** — 2026-10-02。別レーンで作っている Play 中のプレハブの当て直し・書き戻しの IPC（応答 `PREFAB_LIVE_PATCH_DONE` / `_ERROR`・`PREFAB_WRITE_BACK_DONE` / `_ERROR`）は未合流のため、今回は触っていない。合流後にツール化を検討する（応答待ちは `MainWindow.AiHost.Tools.cs::AwaitRuntimeReplyAsync` に乗せられる。書き戻しはプレハブのファイルを書く変更系なので `AiOperationPolicy` では拒否側、`confirm` 必須も検討）。
+
+- [ ] **応答待ちに相関 ID が無い（とくにテンプレートアクタの追加）** — 2026-10-02。`PLATFORM_SIM` / `GPU_MEM_REPORT` / `PREVIEW_*` は応答に要求の ID を持たないので、同じ頭の応答を待つ命令が並行すると取り違えうる（MCP は 1 コールずつなので通常は起きない）。`ADD_TEMPLATE_ACTOR` は専用の応答が無く、`SCENE_MODIFIED`（ほかの編集でも届く）と `LOAD_ERROR:`（シーンの読み込みの失敗でも届く）を合図に代用している。利用者が同じエディタで同時に編集していると誤った成否を返しうる（ヘッドレスでは起きない）。直すならランタイムに `ADD_TEMPLATE_ACTOR_DONE:{wl},{root_dfs}` / `_ERROR:{理由}` のような専用の応答を足す（`runtime/.../app/template_actor_ops.rs`）。
+
+- [ ] **`seed_launch` で模擬の起動時の状態を渡せない** — 2026-10-02。権限の初期値・答え・OS の版（`SEED_PLATFORM_SIM_PERMISSIONS` / `SEED_PLATFORM_SIM_PERMISSION_ANSWER` / `SEED_PLATFORM_SIM_OS_VERSION`）や `SEED_SIM_WINDOW_SIZE` は環境変数でしか与えられず、MCP サーバーの環境に入れておく必要がある（エディタ → ランタイムへは受け継がれる）。任意の環境変数を渡せる引数は作らない（`SEED_RUNTIME_EXE` などで任意の exe を起動できてしまう）ので、足すなら名前の許可リスト付き（例 `sim_env:{…}`）で。関連: `editor/SeedMcpServer/Launcher.cs::BuildLaunchEnvironment`。
+
+- [ ] **Pause 中の `seed_platform_sim` / `seed_gpu_mem_report` は時間切れになるかもしれない（未確認）** — 2026-10-02。エディタの Pause（最小化の検知・`PAUSE_RENDER`）の間にランタイムが IPC を読み続けるかを確かめていない。読まないなら応答待ち（5 秒・10 秒）が時間切れになる（エラーの文には「Pause 中」の可能性を書いてある）。実通信の確認のときに一緒に見る。
+
+## 端末プリセット（PC の Play を端末の模擬で）— 2026-10-02 L2-5 実装時の残件（正典: docs/editor_device_presets.md）
+
+実行先セレクタに「PC（端末の模擬: …）」の行（`editor/config/device_presets.json` の 1 件 1 行）を足し、選んで実行すると `SEED_SIM_*` と `--render-quality` 付きの別ウィンドウの Play になるようにした。
+
+- [ ] **【高】実起動の確認（GUI）** — 2026-10-02。環境変数と引数の組み立て・行・選択の復元・常駐の使い回しの判断は単体テスト（`AndroidRunUiTests` の `DevicePreset*Tests` 16 件）だけで、ランタイムを実際に起動していない（このレーンではランタイムを起動しない方針）。「Pixel 6a 半分」で Play し、Output の `[SEED INIT] 窓の大きさを 540x1200 にします`・`PC のキーボードの模擬: 高さ 490 px`・引数の `--render-quality=mobile`、`Screen.DPI` と `Screen.SafeArea`、窓が 540×1200 になること、Stop → 同じ端末で Play（常駐の使い回し）→ 別の端末で Play（作り直し）→ PC（埋め込み）で Play（模擬の常駐を閉じる。Output の「端末の模擬で起動した常駐 Play を閉じる」）の流れを見る。収まらない窓のトースト（「Pixel 6a 実寸」）も。
+- [ ] **一時停止すると模擬の窓がシーンパネルへ取り込まれ、大きさが変わる** — 2026-10-02。従来の別ウィンドウ Play の Pause（`RuntimeManager.Pause` → `EmbedRuntimeWindow`）と同じ仕組みで、取り込んでいる間はビューポートの大きさになる（再開で戻る）。模擬の間は取り込まずに `PAUSE` だけ送る（埋め込み Play と同じ扱い）案があるが、Pause 中のシーン編集の流れ（取り込んで編集する）が変わるので見送った。
+- [ ] **手で大きさを変えた模擬の窓が、同じ端末の次の Play でもその大きさのまま** — 2026-10-02。常駐の Play は起動の条件（環境変数と引数の Key）が同じなら使い回すが、窓の大きさは起動時にしか与えない。案: 使い回すとき（`ReusePersistentPlayRuntime`）に、窓のクライアント領域をプリセットの大きさへ戻す（`AdjustWindowRectEx` ＋ `SetWindowPos`。Key と一緒に窓の大きさを覚える）。
+- [ ] **画面に収まるかを主画面とエディタの DPI で測っている** — 2026-10-02（低）。`SystemParameters.WorkArea`（主画面）× エディタの窓の DPI なので、DPI の違う複数の画面では誤差がある。窓が実際に出る画面の作業領域を Win32（`MonitorFromPoint` / `GetMonitorInfo`）で物理ピクセルのまま取れば正確になる。
+- [ ] **小さい電話・タブレットの値の確認** — 2026-10-02。依頼の「小さい電話 360×800 @2」「タブレット 800×1280 @1.5」を **dp の大きさ × 倍率**と読み、窓を 720×1600 px・1200×1920 px にした（画素と読むと 180×400 dp・533×853 dp で電話・タブレットにならないため）。安全領域（24 dp）とキーボード（≒ 373 dp）は仮の値。意図と違えば `device_presets.json` を直す（コードは変えなくてよい）。
+- [ ] **横向き・回転・3 ボタンのナビゲーション・切り欠きの形は模擬しない** — 2026-10-02（低）。ランタイムの模擬（`platform/screen/simulated.rs`）が縦の自然な向き・回転なしだけ。要れば JSON に `orientation` を足し、ランタイムに向きの模擬（`SEED_SIM_ROTATION` など）を足す。
+- [ ] **プリセットの JSON はエディタの起動中に 1 回だけ読む** — 2026-10-02（低）。書き換えたらエディタを開き直す。要れば `FileSystemWatcher` で読み直して実行先の一覧を作り直す（`MainWindow.DevicePresets.cs` の `_devicePresetCatalog` を差し替えて `RebuildRunTargetsKeepingSelection`）。
+- [ ] **MCP の `seed_play` で端末を選べない** — 2026-10-02（低）。`seed_play` は実行先セレクタで選んでいるものに従う（端末の模擬なら模擬の別ウィンドウ Play）。AI が端末の大きさで確かめるには `seed_play(device_preset:"pixel6a-half")` のような引数があると楽（`seed_launch` の模擬の環境変数の件と合わせて。docs/editor_mcp.md）。
+- [ ] **「ウィンドウを出してプレイ」のチェックが、端末の模擬の行では効かないことが画面から分からない** — 2026-10-02（低）。行のツールチップには書いたが、チェックボックスの側には出ていない。実行先が端末の模擬のときはチェックボックスのツールチップに注記を足す案。
+
 ## 2D パーティクル（2026-09-08 実装の残件）
 
 `ParticleEmitter` を 2D キャンバスアクターへ付けられるようにし、UI の統合描画列

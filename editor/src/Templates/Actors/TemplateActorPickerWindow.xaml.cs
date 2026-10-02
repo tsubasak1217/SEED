@@ -8,6 +8,7 @@
 //     （MainWindow.TemplateActors.cs が ShowFor を呼ぶ。窓は 1 つだけで、2 回目以降は追加先を差し替える）
 //   - 追加: TemplateActorInstaller で準備（まっさらにする・依存ファイルのコピー・一時ファイル）→
 //     ADD_TEMPLATE_ACTOR をランタイムへ送る。ランタイムが木へ入れ、選択し、Undo を 1 件積む。
+//     手順そのものは TemplateActorAddFlow（MCP の seed_template_actor と共通）にあり、窓は結果を出すだけ。
 //   - モードレス。追加しても閉じないので続けて選べる。状態の行に「追加しました: 名前」を出す。
 //
 //  【重い処理は UI スレッドの外】
@@ -367,90 +368,49 @@ public partial class TemplateActorPickerWindow : Window
 
     /// <summary>
     /// 選んでいるテンプレートアクタを追加する。
-    /// 追加先の引き直し → 準備（裏で: まっさらにする・依存ファイルのコピー・一時ファイル）→ 送信。
+    /// 手順（編集できるか → 追加先の引き直し → 入れてよいか → 裏で準備 → 送る直前の引き直し → 送信）は
+    /// MCP の seed_template_actor と共通の <see cref="TemplateActorAddFlow"/> に任せ、ここは結果を状態の行へ出すだけ。
     /// </summary>
     private async Task AddSelectedAsync()
     {
         if (_busy || ListActors.SelectedItem is not TemplateActorListItem item) return;
         var entry = item.Entry;
 
-        // ── 編集できる状態か（閲覧専用の写しを見ている間は追加しない）──
-        if (_context.ReadOnlyReason() is { } readOnly)
-        {
-            SetStatus(readOnly, StatusKind.Error);
-            return;
-        }
-
-        // ── 追加先をいまのツリーで引き直す（DFS 番号のずれ・削除・タブの切り替え）──
-        if (!TryRefreshTarget()) return;
-        if (_target.RejectReason(entry.Is2D) is { } reject)
-        {
-            SetStatus($"「{entry.Name}」はここへ追加できません: {reject}", StatusKind.Error);
-            UpdateAddButton();
-            return;
-        }
-
-        // ── 準備（UI スレッドの外）──
-        _busy = true;
-        UpdateAddButton();
-        SetStatus($"追加しています: {entry.Name}…", StatusKind.Info);
-
-        TemplateActorInstallResult result;
+        TemplateActorAddOutcome outcome;
         try
         {
-            var libraryRoot = _context.LibraryRoot;
-            var assetsRoot  = _context.AssetsRoot();
-            result = await Task.Run(() => TemplateActorInstaller.Prepare(libraryRoot, assetsRoot, entry));
-        }
-        catch (Exception ex)
-        {
-            result = new TemplateActorInstallResult { Error = ex.Message };
+            outcome = await TemplateActorAddFlow.RunAsync(
+                _context, _target, entry,
+                // 引き直せたら「追加先」の表示を合わせる
+                targetRefreshed: refreshed =>
+                {
+                    _target = refreshed;
+                    UpdateTargetLabel();
+                },
+                // 準備（裏の処理）の間は「追加」を押せなくする
+                preparing: () =>
+                {
+                    _busy = true;
+                    UpdateAddButton();
+                    SetStatus($"追加しています: {entry.Name}…", StatusKind.Info);
+                });
         }
         finally
         {
             _busy = false;
         }
 
-        // コピーはできていることがあるので、失敗でもプロジェクトパネルは読み直す
-        if (result.Copy.HasCopied) _context.FilesCopied(result.Copy);
-        LogResult(entry, result);
-
-        if (!result.Success)
+        if (outcome.IsSent && outcome.Result is { } result)
         {
-            SetStatus($"追加できませんでした: {result.Error}", StatusKind.Error);
-            UpdateAddButton();
-            return;
+            var (text, full) = ComposeAddedMessage(entry, result);
+            bool hasProblem = result.Missing.Count > 0 || result.Copy.Failures.Count > 0 || result.Warnings.Count > 0;
+            SetStatus(text, hasProblem ? StatusKind.Error : StatusKind.Success, full);
         }
-
-        // ── 送信の直前にもう一度だけ引き直す（準備の間にツリーが変わりうる）──
-        if (!TryRefreshTarget())
+        else
         {
-            UpdateAddButton();
-            return;
+            SetStatus(outcome.Message ?? TemplateActorAddFlow.TargetLostFallbackMessage, StatusKind.Error);
         }
-        _context.SendToRuntime(TemplateActorIpc.BuildAddCommand(_target, result.StagedPath));
-
-        var (text, full) = ComposeAddedMessage(entry, result);
-        bool hasProblem = result.Missing.Count > 0 || result.Copy.Failures.Count > 0 || result.Warnings.Count > 0;
-        SetStatus(text, hasProblem ? StatusKind.Error : StatusKind.Success, full);
         UpdateAddButton();
-    }
-
-    /// <summary>
-    /// 追加先をいまのヒエラルキーで引き直す。見失ったら理由を状態の行に出す。
-    /// </summary>
-    /// <returns>引き直せたら true。</returns>
-    private bool TryRefreshTarget()
-    {
-        var refresh = _context.RefreshTarget(_target);
-        if (refresh.Target is null)
-        {
-            SetStatus(refresh.Reason ?? "追加先が見つかりません。ヒエラルキーで右クリックし直してください", StatusKind.Error);
-            return false;
-        }
-        _target = refresh.Target;
-        UpdateTargetLabel();
-        return true;
     }
 
     /// <summary>
@@ -481,23 +441,6 @@ public partial class TemplateActorPickerWindow : Window
         Section("入れ子のプレハブの警告", result.Warnings);
 
         return (string.Join(StatusSeparator, shortParts), string.Join("\n", fullLines));
-    }
-
-    /// <summary>追加の結果をエディタのログ（Output パネル）へ書く。</summary>
-    private void LogResult(TemplateActorEntry entry, TemplateActorInstallResult result)
-    {
-        if (_context.Log is not { } log) return;
-        if (!result.Success)
-        {
-            log($"{LogPrefix} 追加できませんでした: {entry.TemplateRelPath} — {result.Error}");
-            return;
-        }
-        log($"{LogPrefix} 追加: {entry.TemplateRelPath}（追加先: {_target.Describe()}）");
-        foreach (var f in result.Copy.Copied)          log($"{LogPrefix}   コピー: {f}");
-        foreach (var f in result.Copy.SkippedExisting) log($"{LogPrefix}   既にあるので触らず: {f}");
-        foreach (var f in result.Copy.Failures)        log($"{LogPrefix}   コピー失敗: {f.RelPath} — {f.Message}");
-        foreach (var m in result.Missing)              log($"{LogPrefix}   見つからない参照: {m}");
-        foreach (var w in result.Warnings)             log($"{LogPrefix}   {w}");
     }
 
     // ============================================================

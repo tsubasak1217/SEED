@@ -864,7 +864,8 @@ public partial class MainWindow
             // 埋め込み Play では同じ子 HWND がゲーム描画も担うため、キーボード入力を
             // ランタイム側へ流すには OS フォーカスを子 HWND へ移す必要がある。
             // Play 開始時に子へ SetFocus し、Edit 復帰時はエディタへ戻す。
-            if (_embeddedPlay)
+            // 端末の模擬の Play は別ウィンドウなので従来の別ウィンドウ Play と同じく何もしない（UsesEmbeddedPlay）。
+            if (UsesEmbeddedPlay)
             {
                 if (state == EditorState.Play)      FocusRuntimeChild();
                 else if (state == EditorState.Edit) ReturnFocusToEditor();

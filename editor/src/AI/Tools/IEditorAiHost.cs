@@ -13,8 +13,12 @@
 //  マーシャルしてから EditorCommandExecutor を呼ぶ）。実装側でのスレッド切替は不要。
 // ============================================================
 
+using System.Collections.Generic;
 using System.Threading.Tasks;
+using SEEDEditor.AI.Tools.RuntimeIpc;
+using SEEDEditor.Preview;
 using SEEDEditor.Runtime;
+using SEEDEditor.Templates.Actors;
 
 namespace SEEDEditor.AI.Tools;
 
@@ -181,6 +185,72 @@ public interface IEditorAiHost
     /// </returns>
     Task<(bool Ok, string Message)> RenderActorThumbnailAsync(
         string actorPath, string outPngPath, int sizePx, string view, int timeoutMs);
+
+    // ── 応答の待ち合わせ・画面プレビュー・テンプレートアクタ（2026-10-02。実装は MainWindow.AiHost.Tools.cs）──
+
+    /// <summary>
+    /// ランタイムへ IPC を 1 行送り、<paramref name="replyPrefixes"/> のどれかで始まる最初の応答行を待つ。
+    ///
+    /// <para>
+    /// 「1 行送ると 1 行返る」命令（PLATFORM_SIM・GPU_MEM_REPORT など）の共通の待ち合わせ。
+    /// 送るより先に RuntimeManager.RawMessageReceived を購読するので、応答を取りこぼさない。
+    /// 同じ頭の応答を待つ命令を並行して送ると、どれがどれの応答か区別できない（呼び出し側は逐次で使うこと）。
+    /// </para>
+    /// </summary>
+    /// <param name="command">送る 1 行（改行を含めないこと）。</param>
+    /// <param name="replyPrefixes">待つ応答行の頭（例: PLATFORM_SIM_OK: と PLATFORM_SIM_ERROR:）。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。</param>
+    /// <returns>結果（応答行・時間切れ・未接続）。</returns>
+    Task<AiIpcReply> SendIpcAwaitReplyAsync(string command, IReadOnlyList<string> replyPrefixes, int timeoutMs);
+
+    /// <summary>
+    /// 画面プレビューの差し込み先の案内の表（editor/config/screen_preview_hosts.json。インスペクタと同じもの）。
+    /// AI ツールが「行の見出し」で差し込み先を選ぶのに使う（PreviewHostSlotSelector）。
+    /// </summary>
+    PreviewHostCatalog ScreenPreviewHosts { get; }
+
+    /// <summary>
+    /// Edit 上の画面プレビューを差し込み、<c>PREVIEW_ADDED</c> / <c>PREVIEW_ERROR</c> を待つ。
+    ///
+    /// <para>
+    /// <paramref name="slot"/> が null ならヒエラルキーの右クリック「プレハブをプレビュー」と同じ（枠なし・親の直下）、
+    /// 指定があればインスペクタの差し込み先の案内と同じ形（差し込む子・枠・底上げ）で送る。
+    /// どちらも UI と同じ道筋（Edit か・閲覧専用か・送る直前の親の引き直し → PREVIEW_PREFAB）を通る。
+    /// AI の差し込みは「最近使ったもの」の一覧には残さない（利用者の UI の便利機能なので）。
+    /// </para>
+    /// </summary>
+    /// <param name="parentDfs">親の DFS 番号（表示中のタブの木）。</param>
+    /// <param name="prefab">中身のプレハブ（assets:// 仮想パスか絶対パス）。</param>
+    /// <param name="slot">差し込み先の案内の行に欄の値を当てたもの（null なら右クリックと同じ）。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。</param>
+    /// <returns>結果（PREVIEW_ADDED / PREVIEW_ERROR の行・時間切れ・断った理由）。</returns>
+    Task<AiIpcReply> AddScreenPreviewAsync(int parentDfs, string prefab, ResolvedPreviewSlot? slot, int timeoutMs);
+
+    /// <summary>
+    /// 画面プレビューを消し、<c>PREVIEW_CLEARED</c> / <c>PREVIEW_ERROR</c> を待つ
+    /// （ヒエラルキーの「プレビューを消す」「すべてのプレビューを消す」と同じ道筋）。
+    /// </summary>
+    /// <param name="dfs">消すプレビューの根か中のノードの DFS 番号（null なら表示中のタブのプレビューを全部）。</param>
+    /// <param name="timeoutMs">応答待ちのタイムアウト（ミリ秒）。</param>
+    /// <returns>結果（PREVIEW_CLEARED / PREVIEW_ERROR の行・時間切れ・断った理由）。</returns>
+    Task<AiIpcReply> ClearScreenPreviewAsync(int? dfs, int timeoutMs);
+
+    /// <summary>
+    /// テンプレートアクタを 1 件追加し、ランタイムの結果（<c>SCENE_MODIFIED</c> / <c>LOAD_ERROR:</c>）を待つ。
+    ///
+    /// <para>
+    /// テンプレートアクタの窓と同じ手順（<see cref="TemplateActorAddFlow"/>）と同じ外部の機能一式
+    /// （MainWindow.CreateTemplateActorContext）を通す。追加先はヒエラルキーの右クリックと同じ形で作る
+    /// （親あり = そのノードの子、親なし = ルート）。
+    /// </para>
+    /// </summary>
+    /// <param name="libraryRoot">テンプレートライブラリ（templates/）の絶対パス。</param>
+    /// <param name="entry">追加するテンプレートアクタ（カタログの 1 件）。</param>
+    /// <param name="parentDfs">親の DFS 番号（null ならルート）。</param>
+    /// <param name="timeoutMs">送ってからランタイムの結果を待つタイムアウト（ミリ秒）。</param>
+    /// <returns>手順の結果と、送った場合のランタイムの結果（送っていなければ Refused）。</returns>
+    Task<(TemplateActorAddOutcome Outcome, AiIpcReply Reply)> AddTemplateActorAsync(
+        string libraryRoot, TemplateActorEntry entry, int? parentDfs, int timeoutMs);
 
     /// <summary>
     /// エディタを正常終了させる（ヘッドレス運用の後始末）。

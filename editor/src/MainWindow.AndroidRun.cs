@@ -1,9 +1,11 @@
 // ============================================================
-//  MainWindow.AndroidRun.cs — 実行先セレクタ（PC / Android（自動）/ Android の実機・エミュレータ）と Android での実行の結線
+//  MainWindow.AndroidRun.cs — 実行先セレクタ（PC / PC（端末の模擬）/ Android（自動）/ Android の実機・エミュレータ）と
+//                             Android での実行の結線
 //                             （段階C-2・C-3）
 //
 //  【役割】WPF の結線だけ。判断はすべて AndroidRun/ の WPF 非依存のクラス（単体テスト editor/tests/AndroidRunUiTests）:
-//    - 実行先コンボ（CmbRunTarget）の一覧と選択 … RunTargetCatalogBuilder（開くたびに adb で端末を探し直す）
+//    - 実行先コンボ（CmbRunTarget）の一覧と選択 … RunTargetCatalogBuilder（開くたびに adb で端末を探し直す）。
+//      PC（端末の模擬: …）の行は端末プリセット（MainWindow.DevicePresets.cs の LoadedDevicePresets）から作る
 //    - 前回の選択（プロジェクトごと）           … RunTargetSelectionStore（cache/android/run_state.json）
 //    - 実行・停止ボタン・状態表示・進捗          … PlayBarPolicy（PC の表示もここから当てる。PC との排他もここ）
 //    - Android の実行（端末の用意〈要ればエミュレータを起動〉→ ビルド → インストール → 起動 → logcat → 停止・
@@ -234,7 +236,7 @@ public partial class MainWindow
 
     /// <summary>いまの材料で一覧を組み立てる。</summary>
     /// <param name="mode">選び方。</param>
-    /// <param name="preferredId">選んでおきたいもの（"pc" か端末のシリアル）。</param>
+    /// <param name="preferredId">選んでおきたいもの（"pc"・"pcsim:…"・"auto"・端末のシリアル）。</param>
     /// <param name="preferredName">選んでおきたい端末の名前（見えなくなった端末の行に使う）。</param>
     /// <returns>一覧。</returns>
     private RunTargetCatalog BuildRunTargetCatalog(RunTargetSelectionMode mode, string? preferredId, string? preferredName) =>
@@ -248,6 +250,8 @@ public partial class MainWindow
             PreferredName = preferredName,
             Mode = mode,
             EmulatorAvd = ConfiguredEmulatorAvd,
+            // PC（端末の模擬: …）の行（editor/config/device_presets.json。MainWindow.DevicePresets.cs）
+            DevicePresets = LoadedDevicePresets.Presets,
         });
 
     /// <summary>いまの選択を保ったまま一覧を組み立て直す。</summary>

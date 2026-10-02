@@ -53,6 +53,10 @@ internal static class SeedInstance
         "seed_launch",
         "seed_attach",
         "seed_instance",
+        // 注意: seed_gpu_mem_report・seed_template_actor(list) はエディタ側では観測系（AiOperationPolicy）だが、
+        //       未束縛（＝既定ポートに居る利用者の対話エディタ）へは送らない。計測は seed_launch(gpu_mem_log:true) で
+        //       起動したインスタンスでしか有効にならず、seed_template_actor は 1 つのツールで追加（変更系）も兼ねるため。
+        // 注意: seed_platform_sim・seed_preview は変更系なので当然ここに入れない。
     };
 
     // ── 状態 ─────────────────────────────────────────────────────

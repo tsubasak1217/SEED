@@ -196,7 +196,11 @@ Undo の各コマンドは対象を (world_line, DFS 番号) で持つので、�
 - `HIERARCHY` の各ノード: `preview`（プレビューの部分木の中か）・`preview_root`（根か）・`preview_source`（根の中身のプレハブ。根以外は null）。
 - `ACTOR_COMPONENTS`: `editor_preview`（プレビューの中なら `{"root_dfs":N,"is_root":bool,"prefab":"..","frame":".."|null}`、外なら null）。
 - 断る命令（`PREVIEW_ERROR`）: Play 中・端末の写しの閲覧中の `PREVIEW_*`、§3 の木の編集。
-- MCP からは `seed_send_ipc` で送れる（専用のツールは無い）。`seed_hierarchy` の結果に上の欄が載る。
+- MCP からは専用のツール **`seed_preview`**（2026-10-02。`action: add | clear | clear_all`）で使う。差し込みは
+  `parent`（DFS ID か名前パス）・`prefab_path`・`host`（差し込み先の案内の行の見出し。省くと右クリックと同じ枠なし）で、
+  UI と同じ道筋（`MainWindow.ScreenPreview.cs` の判定・親の引き直し・送信）を通り、`PREVIEW_ADDED` / `PREVIEW_CLEARED` を待って結果を返す。
+  Undo 履歴へ積まれ選択も動くので、**読み取り専用の対話エディタでは既定で拒否**される（docs/editor_mcp.md §4・§5.6・§7.2）。
+  AI の差し込みは「最近使ったもの」へは足さない。`seed_hierarchy` の結果に上の欄が載る。
 
 ## 9. 制限と持ち越し
 

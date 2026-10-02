@@ -1,0 +1,66 @@
+{
+  "format_version": 1,
+  "_note": "実行先セレクタ（実行ボタンの隣）の「PC（端末の模擬: …）」の行の元。1 件 = 1 行（この順で PC の行の直後に並ぶ）。選んで実行すると、別ウィンドウの Play を端末の模擬の環境変数（SEED_SIM_WINDOW_SIZE・SEED_SIM_SCALE_FACTOR・SEED_SIM_SAFE_AREA・SEED_SIM_KEYBOARD_HEIGHT）と --render-quality 付きで起動する。正典は docs/editor_device_presets.md。ここを消してもエディタは動く（DevicePresetCatalog.cs の組み込みの 1 件＝pixel6a-half へ落ちる）。pixel6a-half の値を変えるときは組み込みの値も同じに直すこと（editor/tests/AndroidRunUiTests の DevicePresetTests が突き合わせる）。端末を増やすときはここへ 1 件足すだけでよい（エディタを開き直すと読む）。",
+
+  "_note_keys": "id = 必須（選択の記録 pcsim:<id> のキー。変えると前回の選択が PC に戻る）。name = 表示名（既定 id）。width_px / height_px = 必須（窓の大きさ。物理ピクセル。1〜16384）。scale_factor = 1 dp の画素数（既定 1）。safe_area_px = [左, 上, 右, 下] の物理ピクセル（既定 [0, 0, 0, 0]）。keyboard_height_px = 入力欄にフォーカスがある間のキーボードの高さ（物理ピクセル。既定 0 = 模擬しない）。render_quality = --render-quality= に渡す名前（既定なし = PC の既定）。description = ツールチップの最後に出す説明。間違った値の 1 件はその 1 件だけ捨てて Output に理由を出す。",
+
+  "_note_values": "Pixel 6a の値は実機の測定（2400x1080・420 dpi = ×2.625・安全領域 上 132 / 下 63 px・Simeji のキーボード 979 px。docs/rendering_profiles.md §4.4・docs/ui_text_input.md §13）。半分・dp 等倍は dp の数が同じになるように縮めた値。小さい電話・タブレットの安全領域（ステータスバー・ジェスチャーの帯 24 dp）とキーボード（Pixel 6a の実測の dp ≒ 373 dp）は仮の値。",
+
+  "presets": [
+    {
+      "id": "pixel6a-full",
+      "name": "Pixel 6a 実寸",
+      "width_px": 1080,
+      "height_px": 2400,
+      "scale_factor": 2.625,
+      "safe_area_px": [0, 132, 0, 63],
+      "keyboard_height_px": 979,
+      "render_quality": "mobile",
+      "description": "Pixel 6a の画面そのまま（画素の数を合わせて描画の資源・GPU メモリを確かめるとき向け）。窓が縦 2400 px なので多くの画面に収まりません。"
+    },
+    {
+      "id": "pixel6a-half",
+      "name": "Pixel 6a 半分",
+      "width_px": 540,
+      "height_px": 1200,
+      "scale_factor": 1.3125,
+      "safe_area_px": [0, 66, 0, 32],
+      "keyboard_height_px": 490,
+      "render_quality": "mobile",
+      "description": "Pixel 6a（1080×2400・×2.625）の縦横を半分にした窓。dp の数（411×914）と安全領域・キーボードの dp は実寸と同じ。"
+    },
+    {
+      "id": "pixel6a-dp",
+      "name": "Pixel 6a dp 等倍",
+      "width_px": 411,
+      "height_px": 914,
+      "scale_factor": 1.0,
+      "safe_area_px": [0, 50, 0, 24],
+      "keyboard_height_px": 373,
+      "render_quality": "mobile",
+      "description": "1 dp = 1 画素にした Pixel 6a（411×914 dp）。いちばん小さい窓で、レイアウトの確かめ向け（文字・線は実機より粗く見える）。"
+    },
+    {
+      "id": "phone-small",
+      "name": "小さい電話",
+      "width_px": 720,
+      "height_px": 1600,
+      "scale_factor": 2.0,
+      "safe_area_px": [0, 48, 0, 48],
+      "keyboard_height_px": 746,
+      "render_quality": "mobile",
+      "description": "幅 360 dp の電話（360×800 dp・×2）。狭い画面で文字・ボタンがあふれないかの確かめ向け。安全領域・キーボードは仮の値。"
+    },
+    {
+      "id": "tablet",
+      "name": "タブレット",
+      "width_px": 1200,
+      "height_px": 1920,
+      "scale_factor": 1.5,
+      "safe_area_px": [0, 36, 0, 36],
+      "keyboard_height_px": 560,
+      "render_quality": "mobile",
+      "description": "800×1280 dp のタブレットの縦向き（×1.5）。広い画面で中身が間延びしないかの確かめ向け。安全領域・キーボードは仮の値。"
+    }
+  ]
+}

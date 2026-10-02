@@ -945,7 +945,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
 
             // 埋め込み Play 中のビューポートクリックは、キーボードフォーカスをランタイム子へ
             // 戻す（エディタ UI へフォーカスが移ったあと再びゲーム操作に戻れるように）。
-            if (_embeddedPlay && _runtimeManager?.State == EditorState.Play)
+            // 端末の模擬の Play は別ウィンドウなので対象外（UsesEmbeddedPlay。MainWindow.DevicePresets.cs）。
+            if (UsesEmbeddedPlay && _runtimeManager?.State == EditorState.Play)
                 FocusRuntimeChild();
 
             var doc = DockManager.Layout.Descendents()
@@ -1136,12 +1137,18 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             CloseActiveSceneCanvasTab();
             EndInactiveSceneCanvasTabs();
 
+            // 実行先が PC（端末の模擬: …）なら、別ウィンドウの Play に足す環境変数と起動引数（窓が画面に収まらなければ
+            // トーストで警告）。この行のときは「ウィンドウを出してプレイ」がオフでも別ウィンドウの Play にする
+            // （UsesEmbeddedPlay。設定の値は変えない。MainWindow.DevicePresets.cs）。ほかの実行先では null（従来どおり）
+            var launchOverrides = PrepareDevicePresetLaunch();
+            var embeddedPlay    = UsesEmbeddedPlay;
+
             if (_playFromStartScene)
             {
                 // 「開始シーンからプレイ」ON: null を渡してランタイムに start_scene を使わせる
                 _runtimeManager.PlayScenePath = null;
             }
-            else if (_embeddedPlay)
+            else if (embeddedPlay)
             {
                 // 埋め込み Play は「稼働中の Edit ランタイムをその場で Play 化する」経路
                 // （ENTER_PLAY を送るだけ）であり、シーンをディスクから読み直さない。
@@ -1177,8 +1184,10 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
             // Play 起動フラグを設定してから PlayAsync を呼ぶ。
             // EmbeddedPlay=true のときは別プロセスを起動せず、現 Edit ランタイムへ
             // ENTER_PLAY を送ってその場で Play 化する（地形・散布・GPU を保持）。
-            _runtimeManager.PlayColliderDraw = _playColliderDraw;
-            _runtimeManager.EmbeddedPlay     = _embeddedPlay;
+            // PlayLaunchOverrides（端末の模擬）はウィンドウ Play の起動にだけ足される（null なら従来の起動）。
+            _runtimeManager.PlayColliderDraw    = _playColliderDraw;
+            _runtimeManager.EmbeddedPlay        = embeddedPlay;
+            _runtimeManager.PlayLaunchOverrides = launchOverrides;
             try { await _runtimeManager.PlayAsync(); }
             catch (Exception ex)
             {
