@@ -54,10 +54,13 @@ internal sealed class ValueBinding<TSource, TTarget> : BindingBase
     {
         if (IsDisposed) return;
 
-        // 当てる先が無くなった（破棄した GameObject・部品）: 自分を外す
+        // 当てる先が見えない: すぐには外さず、フレームの区切り（World が見える LateUpdate の頭）で確かめ直す。
+        // OnDestroy の中では World が見えず IsValid / HasComponent が false になるので、別のスクリプトの OnDestroy で
+        // 観測値を変えただけで「当てる先が消えた」と誤って外れないようにする（docs/reviews/2026-10-03_code_review.md #7）。
+        // 本当に消えていれば OnFrame で外れる。
         if (!_target.IsAlive)
         {
-            Dispose();
+            WaitForTarget();
             return;
         }
 

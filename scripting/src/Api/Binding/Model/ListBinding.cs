@@ -28,8 +28,9 @@ internal sealed class ListBinding<T> : BindingBase
         _items = items;
         _target = target;
         Own(items.Subscribe(OnChanged));
+        // 当てる先が見えなければ区切りで確かめ直す（OnDestroy の中で作られた場合に誤って外れないため。ValueBinding と同じ規則）
         if (_target.IsAlive) _target.SetCount(_items.Count);
-        else Dispose();
+        else WaitForTarget();
     }
 
     /// <summary>一覧が変わった: 種類に合わせて行の並びの口を呼ぶ。</summary>
@@ -37,9 +38,10 @@ internal sealed class ListBinding<T> : BindingBase
     private void OnChanged(ListChange<T> change)
     {
         if (IsDisposed) return;
+        // 当てる先が見えない（OnDestroy の中など）: 区切りで確かめ直し、生きていれば数を合わせ直す
         if (!_target.IsAlive)
         {
-            Dispose();
+            WaitForTarget();
             return;
         }
         switch (change.Kind)
@@ -61,5 +63,15 @@ internal sealed class ListBinding<T> : BindingBase
     }
 
     /// <inheritdoc />
-    protected override bool OnFrame() => false;
+    protected override bool OnFrame()
+    {
+        // 区切り（World が見える）で生死を確かめる: 消えていれば外れ、生きていれば待っている間の変化をまとめて数に反映する
+        if (!_target.IsAlive)
+        {
+            Dispose();
+            return false;
+        }
+        _target.SetCount(_items.Count);
+        return false;
+    }
 }
