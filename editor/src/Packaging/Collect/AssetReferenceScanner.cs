@@ -16,6 +16,11 @@
 //  1・2・glTF uri は「確実」（IsExplicit=true）。実体が無ければ欠落として報告する。
 //  3・4 の一般文字列は「推測」。実在するときだけ採用し、外れても警告は出さない
 //  （数値・識別子など、たまたまドットを含む文字列を誤検出しても実害を出さないため）。
+//
+//  【C# のコメントの中の参照（2026-10-03）】
+//  .cs の 1・2 の参照は、コメント（// ・ /// ・ /* */。CSharpCommentSpans）の中にだけ書かれていれば
+//  OnlyInComments の印を付ける（同じ文字列がコードにも書かれていれば付けない）。拾うこと自体は従来どおりで、
+//  印は「実体が無くても警告しない」ためだけに使う（AssetCollector）。説明の例のパスの誤検出（Wake or Pay で 2 件）を消すため。
 // ============================================================
 
 using System;
@@ -37,10 +42,16 @@ namespace SEEDEditor.Packaging.Collect;
 /// true なら確実な参照（実体が無ければ欠落として報告する）。
 /// false なら推測（実在しなければ黙って捨てる）。
 /// </param>
+/// <param name="OnlyInComments">
+/// true なら C# のソースのコメント（// ・ /// ・ /* */）の中にだけ書かれていた参照（同じ文字列がコードにも書かれていれば false）。
+/// 説明の例として書いたパスなので、実体が無くても「参照先が見つからない」の警告にしない（AssetCollector）。
+/// 実在すれば従来どおり収録する（収録は保守的に。コメントに頼って入っていたものを落とさない）。.cs 以外では常に false。
+/// </param>
 public readonly record struct AssetReferenceCandidate(
     string Raw,
     IReadOnlyList<string> Candidates,
-    bool IsExplicit);
+    bool IsExplicit,
+    bool OnlyInComments = false);
 
 /// <summary>テキストアセットからアセット参照を抽出する。状態を持たない純粋な処理。</summary>
 public static class AssetReferenceScanner
@@ -59,6 +70,9 @@ public static class AssetReferenceScanner
     /// <summary>glTF の "uri" フィールドを拾う正規表現（JSON エスケープを含む文字列に対応）。</summary>
     private static readonly Regex GltfUriRegex =
         new("\"uri\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"", RegexOptions.Compiled);
+
+    /// <summary>コメントの範囲を見る拡張子（C# のソース。// ・ /// ・ /* */）。</summary>
+    private const string CSharpSourceExtension = ".cs";
 
     // ============================================================
     //  公開 API
@@ -81,11 +95,15 @@ public static class AssetReferenceScanner
         var sourceDir = AssetPathUtil.GetDirectory(sourceRelPath);
         var sourceExt = AssetPathUtil.GetExtensionLower(sourceRelPath);
 
+        // 確実な参照（1・2）の印「コメントの中にだけある」を付けるための材料（.cs だけ。ほかの形式は印を付けない）
+        var explicitRefs = new ExplicitReferences(
+            sourceExt == CSharpSourceExtension ? CSharpCommentSpans.Find(text) : null, seen, result);
+
         // ── 1. assets:// 形式 ──────────────────────────────────
-        CollectVirtualPaths(text, seen, result);
+        CollectVirtualPaths(text, explicitRefs);
 
         // ── 2. アセットルートの絶対パス（4 種の表記） ──────────
-        CollectAbsolutePaths(text, assetsRoot, seen, result);
+        CollectAbsolutePaths(text, assetsRoot, explicitRefs);
 
         // ── 3. glTF の uri（.bin / テクスチャ。参照元からの相対） ─
         if (sourceExt == ".gltf") CollectGltfUris(text, sourceDir, seen, result);
@@ -103,8 +121,7 @@ public static class AssetReferenceScanner
     // ============================================================
 
     /// <summary>"assets://..." 形式の仮想パスをすべて拾う。</summary>
-    private static void CollectVirtualPaths(
-        string text, HashSet<string> seen, List<AssetReferenceCandidate> result)
+    private static void CollectVirtualPaths(string text, ExplicitReferences explicitRefs)
     {
         int from = 0;
         while (true)
@@ -120,9 +137,8 @@ public static class AssetReferenceScanner
             // 仮想パス部分（スキームを除いた相対パス）を正規化する
             var rel = AssetPathUtil.NormalizeRelative(UnescapePath(text[start..end]));
             if (rel.Length == 0 || rel.Length > MaxReferenceLength) continue;
-            if (!seen.Add(raw)) continue;
 
-            result.Add(new AssetReferenceCandidate(raw, [rel], IsExplicit: true));
+            explicitRefs.Add(raw, rel, position: i);
         }
     }
 
@@ -139,8 +155,7 @@ public static class AssetReferenceScanner
     ///   (3) JSON エスケープされたバックスラッシュ C:\\proj\\assets\\
     ///   (4) JSON エスケープされたスラッシュ       C:\/proj\/assets\/
     /// </summary>
-    private static void CollectAbsolutePaths(
-        string text, string assetsRoot, HashSet<string> seen, List<AssetReferenceCandidate> result)
+    private static void CollectAbsolutePaths(string text, string assetsRoot, ExplicitReferences explicitRefs)
     {
         var rootSlash = assetsRoot.Replace('\\', '/').TrimEnd('/');
         var rootBack  = rootSlash.Replace('/', '\\');
@@ -171,9 +186,8 @@ public static class AssetReferenceScanner
 
                 var rel = AssetPathUtil.NormalizeRelative(UnescapePath(text[start..end]));
                 if (rel.Length == 0 || rel.Length > MaxReferenceLength) continue;
-                if (!seen.Add(raw)) continue;
 
-                result.Add(new AssetReferenceCandidate(raw, [rel], IsExplicit: true));
+                explicitRefs.Add(raw, rel, position: i);
             }
         }
     }
@@ -353,5 +367,62 @@ public static class AssetReferenceScanner
             sb.Append(s[i]);
         }
         return sb.ToString();
+    }
+
+    // ============================================================
+    //  確実な参照の積み先（重複の除去と「コメントの中にだけある」の印）
+    // ============================================================
+
+    /// <summary>
+    /// 確実な参照（1 の assets:// と 2 の絶対パス）の積み先。生の文字列ごとに 1 件にまとめ（従来どおり）、
+    /// .cs ではどの出現もコメントの中なら OnlyInComments の印を付ける（後でコードの中にも出たら印を外す）。
+    /// Scan 1 回だけで使う（ファイルをまたいで状態を持たない）。
+    /// </summary>
+    private sealed class ExplicitReferences
+    {
+        /// <summary>コメントの範囲（.cs 以外は null ＝ 印を付けない）。</summary>
+        private readonly IReadOnlyList<CSharpCommentSpans.Span>? _commentSpans;
+
+        /// <summary>重複を落とすための既出の生の文字列（ほかの系統と共有。glTF・推測は頭に印を付けた鍵なので重ならない）。</summary>
+        private readonly HashSet<string> _seen;
+
+        /// <summary>結果の一覧（ほかの系統と共有）。</summary>
+        private readonly List<AssetReferenceCandidate> _result;
+
+        /// <summary>生の文字列 → 結果の一覧の位置（2 度目の出現で印を外すため）。</summary>
+        private readonly Dictionary<string, int> _indexByRaw = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>積み先を作る。</summary>
+        /// <param name="commentSpans">コメントの範囲（.cs 以外は null）。</param>
+        /// <param name="seen">既出の生の文字列。</param>
+        /// <param name="result">結果の一覧。</param>
+        public ExplicitReferences(
+            IReadOnlyList<CSharpCommentSpans.Span>? commentSpans, HashSet<string> seen, List<AssetReferenceCandidate> result)
+        {
+            _commentSpans = commentSpans;
+            _seen = seen;
+            _result = result;
+        }
+
+        /// <summary>
+        /// 確実な参照を 1 つ積む（同じ生の文字列は 1 件にまとめる）。
+        /// </summary>
+        /// <param name="raw">元のテキストに書かれていた文字列。</param>
+        /// <param name="rel">正規化したアセットルート相対パス。</param>
+        /// <param name="position">元のテキストでの出現位置（コメントの中かの判定に使う）。</param>
+        public void Add(string raw, string rel, int position)
+        {
+            bool inComment = _commentSpans is not null && CSharpCommentSpans.Contains(_commentSpans, position);
+            if (_seen.Add(raw))
+            {
+                _indexByRaw[raw] = _result.Count;
+                _result.Add(new AssetReferenceCandidate(raw, [rel], IsExplicit: true, OnlyInComments: inComment));
+                return;
+            }
+
+            // 前にも出ていた文字列: 今度の出現がコードの中なら「コメントの中にだけ」ではない（警告の対象に戻す）
+            if (!inComment && _indexByRaw.TryGetValue(raw, out var at) && _result[at].OnlyInComments)
+                _result[at] = _result[at] with { OnlyInComments = false };
+        }
     }
 }

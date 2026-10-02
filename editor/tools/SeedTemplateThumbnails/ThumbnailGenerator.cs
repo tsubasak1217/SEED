@@ -2,6 +2,7 @@
 //  ThumbnailGenerator.cs — 計画した件をランタイムで順に撮って書き出す
 //
 //  【流れ】
+//    0. （呼び出し側）作業の置き場を借りて前の実行の中身を消してある（ThumbnailWorkFolder。ここは何も消さない）
 //    1. 一時のプロジェクトを作る（起動用の舞台・件ごとの舞台・参照するファイル）
 //    2. 窓の大きさが同じ件をまとめ、まとまりごとにランタイムを 1 回だけ起動する
 //       （1 件ずつ起動すると起動〈GPU の準備・スクリプトのコンパイル〉の時間が件数ぶんかかる。
@@ -20,20 +21,18 @@ using System.Globalization;
 using SEEDEditor.Tools.SeedTemplateThumbnails.Imaging;
 using SEEDEditor.Tools.SeedTemplateThumbnails.Runtime;
 using SEEDEditor.Tools.SeedTemplateThumbnails.Stage;
+using SEEDEditor.Tools.SeedTemplateThumbnails.Work;
 
 namespace SEEDEditor.Tools.SeedTemplateThumbnails;
 
 /// <summary>撮影の実行。</summary>
 public sealed class ThumbnailGenerator
 {
-    /// <summary>撮った元の画像の置き場（作業フォルダの下）。</summary>
-    private const string ShotsFolderName = "shots";
-
-    /// <summary>ランタイムのログのファイル名の書式（{0}x{1} = 窓の大きさ・{2} = その大きさで何回目の起動か）。</summary>
+    /// <summary>
+    /// ランタイムのログのファイル名の書式（{0}x{1} = 窓の大きさ・{2} = その大きさで何回目の起動か）。
+    /// 次の実行で消す形 <see cref="ThumbnailWorkFolder.RuntimeLogSearchPattern"/>（runtime*.log）に当たる名前にすること。
+    /// </summary>
     private const string RuntimeLogNameFormat = "runtime_{0}x{1}_{2}.log";
-
-    /// <summary>前の起動のランタイムのログを探す形（起動のたびに消す）。</summary>
-    private const string RuntimeLogSearchPattern = "runtime*.log";
 
     /// <summary>同じ窓の大きさで起動し直してよい回数（止まった件の撮り直し。暴走の歯止め）。</summary>
     private const int MaxRestartsPerWindowSize = 3;
@@ -60,6 +59,9 @@ public sealed class ThumbnailGenerator
     /// <summary>入力。</summary>
     private readonly ThumbnailInputs _inputs;
 
+    /// <summary>借りた作業の置き場（一時のプロジェクト・撮った元の画像・ログ・セーブの置き場）。</summary>
+    private readonly ThumbnailWorkFolder _workFolder;
+
     /// <summary>書き出す一辺（画素）。</summary>
     private readonly int _size;
 
@@ -73,12 +75,14 @@ public sealed class ThumbnailGenerator
     /// 実行を作る。
     /// </summary>
     /// <param name="inputs">確定した入力。</param>
+    /// <param name="workFolder">借りた作業の置き場（前の実行の中身は消してあること）。</param>
     /// <param name="size">書き出す一辺（画素）。</param>
     /// <param name="firstPort">IPC の最初のポート。</param>
     /// <param name="write">出力先。</param>
-    public ThumbnailGenerator(ThumbnailInputs inputs, int size, int firstPort, Action<string> write)
+    public ThumbnailGenerator(ThumbnailInputs inputs, ThumbnailWorkFolder workFolder, int size, int firstPort, Action<string> write)
     {
         _inputs = inputs;
+        _workFolder = workFolder;
         _size = size;
         _firstPort = firstPort;
         _write = write;
@@ -94,16 +98,13 @@ public sealed class ThumbnailGenerator
     {
         if (plans.Count == 0) return null;
 
-        // ── 1. 一時のプロジェクト ──
-        var project = new StageProject(_inputs.LibraryRoot, _inputs.WorkRoot);
+        // ── 1. 一時のプロジェクト（前の実行の assets/・shots/・ログは借りたときに消してある。ここは作るだけ）──
+        var project = new StageProject(_inputs.LibraryRoot, _workFolder);
         project.WriteBoot();
         var stages = new Dictionary<StagePlan, (string ScenePath, IReadOnlyList<string> Missing)>();
         foreach (var plan in plans) stages[plan] = project.WriteStage(plan);
-        var shots = Path.Combine(_inputs.WorkRoot, ShotsFolderName);
-        if (Directory.Exists(shots)) Directory.Delete(shots, recursive: true);
+        var shots = _workFolder.ShotsRoot;
         Directory.CreateDirectory(shots);
-        // 前の起動のランタイムのログも消す（モデルのキャッシュ cache/ は残して次の読み込みを速くする）
-        foreach (var oldLog in Directory.EnumerateFiles(_inputs.WorkRoot, RuntimeLogSearchPattern)) File.Delete(oldLog);
         _write($"一時のプロジェクト: {project.AssetsRoot}（舞台 {plans.Count} 件）");
 
         // ── 2〜4. 窓の大きさのまとまりごとに起動して撮る（カタログに現れた順のまとまり）──
@@ -200,7 +201,7 @@ public sealed class ThumbnailGenerator
         try
         {
             session = ThumbnailRuntimeSession.Start(_inputs.RuntimeExe, _inputs.RuntimeWorkingDirectory, project.AssetsRoot,
-                project.BootSceneVirtualPath, _firstPort, _inputs.WorkRoot, logName, ThumbnailStageDefaults.RenderScale, _write);
+                project.BootSceneVirtualPath, _firstPort, _workFolder.Root, logName, ThumbnailStageDefaults.RenderScale, _write);
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
         {
@@ -271,7 +272,7 @@ public sealed class ThumbnailGenerator
                 warnings.Add("ほぼ背景だけです（部品が写っていない疑い。frame・focus・script を見直してください）");
             ThumbnailImage.SavePng(plan.OutputPath, pixels, _size, _size);
             long bytes = new FileInfo(plan.OutputPath).Length;
-            return new ThumbnailResult(plan.Name, plan.Entry.Name, ThumbnailOutcome.Written, "", plan.OutputPath,
+            return new ThumbnailResult(plan.Name, plan.Entry.TemplateRelPath, plan.Entry.Name, ThumbnailOutcome.Written, "", plan.OutputPath,
                 bytes, _size, stats, warnings, clock.Elapsed);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException
@@ -292,7 +293,7 @@ public sealed class ThumbnailGenerator
 
     /// <summary>撮れなかった結果。</summary>
     private static ThumbnailResult Failed(StagePlan plan, string reason, IReadOnlyList<string> warnings, TimeSpan elapsed) =>
-        new(plan.Name, plan.Entry.Name, ThumbnailOutcome.Failed, reason, null, 0, 0, null, warnings, elapsed);
+        new(plan.Name, plan.Entry.TemplateRelPath, plan.Entry.Name, ThumbnailOutcome.Failed, reason, null, 0, 0, null, warnings, elapsed);
 
     /// <summary>まとまりの件をすべて同じ理由で失敗として積み、理由を返す。</summary>
     private static string FailAll(IEnumerable<StagePlan> plans, List<ThumbnailResult> results, string reason)

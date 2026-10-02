@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    見本の画像の生成の道具（editor/tools/SeedTemplateThumbnails）の単体テスト。
+    道具そのものは実行しない（ランタイムを起動しない）。判定と後片付けの部品だけをリンクで取り込んで確かめる。
+
+    対象:
+      - WorkFolderPolicy / ThumbnailWorkFolder : 作業の置き場（引数 work）を使ってよいか・印・錠・前の中身の消し方・返し方
+                                                 （docs/reviews/2026-10-02_code_review.md #2）
+      - ThumbnailResultOrder                   : 結果をカタログの順へ並べる鍵（ライブラリ相対パス。#19）
+      - QuietProcess                           : 見張りのスレッドを止めてから Process を捨てる（#17。ping を 1 つ起動して確かめる）
+
+    PackagingCollectorTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサート（SpriteRigTests の TestHarness）で回す
+      - 道具の本体（WPF の画像の機能を使う）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+
+    実行方法: dotnet run (project=editor/tests/TemplateThumbnailsTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- QuietProcess は Windows の API（CreateProcess・窓の列挙）を呼ぶので Windows 専用（道具と同じ） -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.TemplateThumbnails</RootNamespace>
+    <AssemblyName>TemplateThumbnailsTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 作業の置き場の判定（純粋な処理）と、借りる・消す・返す -->
+    <Compile Include="..\..\tools\SeedTemplateThumbnails\Work\WorkFolderPolicy.cs">
+      <Link>Linked\Tools\SeedTemplateThumbnails\Work\WorkFolderPolicy.cs</Link>
+    </Compile>
+    <Compile Include="..\..\tools\SeedTemplateThumbnails\Work\ThumbnailWorkFolder.cs">
+      <Link>Linked\Tools\SeedTemplateThumbnails\Work\ThumbnailWorkFolder.cs</Link>
+    </Compile>
+    <!-- 結果の並べ方（鍵の比べ方は AssetPathUtil.PathComparer） -->
+    <Compile Include="..\..\tools\SeedTemplateThumbnails\ThumbnailResultOrder.cs">
+      <Link>Linked\Tools\SeedTemplateThumbnails\ThumbnailResultOrder.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Packaging\Collect\AssetPathUtil.cs">
+      <Link>Linked\Packaging\Collect\AssetPathUtil.cs</Link>
+    </Compile>
+    <!-- フォーカスを奪わない起動と窓の見張り（後片付けの順） -->
+    <Compile Include="..\..\tools\SeedTemplateThumbnails\Runtime\QuietProcess.cs">
+      <Link>Linked\Tools\SeedTemplateThumbnails\Runtime\QuietProcess.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

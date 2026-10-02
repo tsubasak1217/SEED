@@ -19,7 +19,8 @@ public enum ThumbnailOutcome
 }
 
 /// <summary>1 件の結果。</summary>
-/// <param name="Name">テンプレートのファイル名（拡張子なし）。</param>
+/// <param name="Name">テンプレートのファイル名（拡張子なし。表示用。別のカタログに同じ名前がありうるので鍵にしない）。</param>
+/// <param name="TemplateRelPath">テンプレートのライブラリ相対パス（結果を並べる鍵。ThumbnailResultOrder）。</param>
 /// <param name="DisplayName">カタログの表示名。</param>
 /// <param name="Outcome">結果の種類。</param>
 /// <param name="Detail">飛ばした・撮れなかった理由（書けたときは空）。</param>
@@ -31,6 +32,7 @@ public enum ThumbnailOutcome
 /// <param name="Elapsed">この件にかかった時間。</param>
 public sealed record ThumbnailResult(
     string Name,
+    string TemplateRelPath,
     string DisplayName,
     ThumbnailOutcome Outcome,
     string Detail,
