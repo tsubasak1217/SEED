@@ -1232,6 +1232,22 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   （`dotnet run --project editor/tools/SeedTemplateThumbnails`）。撮り忘れは窓のプローブ（`TemplateActorPickerPreviewProbe` の 01）が
   「全件に画像がある」で気付くが、古い絵のままかどうかは分からない。必要になったら、部品・テーマの変更を検知して撮り直しを促す仕組みを考える。
 
+- [x] **サムネイルの道具の `--work` が中身を確かめずに `<work>/assets` を再帰削除する・既定の置き場が固定名で同時実行が互いを壊す** — 2026-10-02
+  （docs/reviews/2026-10-02_code_review.md #2）。→ **2026-10-03 に済（lane2）**: 道具が作った印 `<work>/.seed_thumbnails` のある置き場の中身だけを消し、
+  印の無いプロジェクト（`assets/project_settings.json`）・`*.seedproj` のあるフォルダ・印の無い中身のあるフォルダ・ファイルは断って終了コード 4。
+  使用中は錠 `.seed_thumbnails.lock`（`FileShare.None`・閉じると消える）で 2 つ目の実行を断る。既定の置き場は実行ごとの
+  `%TEMP%\seed_template_thumbnails\run_<PID>_<乱数>`（成功したら消す・失敗したら残す）。判定は純粋な `WorkFolderPolicy`、テストは
+  `editor/tests/TemplateThumbnailsTests`（道具とランタイムは起動しない）。docs/template_library.md §9.10「作業の置き場の安全装置」。
+  同じ直しで #17（見張りのスレッドが Dispose 後の `Process.Id` を読む → 起動時に控えた ID を使い、Join してから Process を捨てる）と
+  #19（結果を並べる `ToDictionary` が同じファイル名で落ちる → 鍵をライブラリ相対パスに。`ThumbnailResultOrder`）も済。
+  残り: 実際に道具を走らせての確認はしていない（ランタイムを起動しない方針。判定・後片付け・並べ方は単体テスト 12 件）。
+
+- [ ] **サムネイルの道具が、同じカタログのフォルダの別の下位フォルダにある同じファイル名のテンプレートを見分けられない** — 2026-10-03（#19 の直しで気付いた。
+  コードを読んで確認・実行はしていない）。舞台のシーンの名前が `__thumbnails/<カタログのフォルダ>_<ファイル名>.scene`（`StageSceneBuilder`）なので、
+  `ui/prefabs/button.actor` と `ui/samples/button.actor` のような 2 件は同じシーンに書かれ、前の件は合図の札が合わずに時間切れ（起動し直しを含む）で撮れない見込み。
+  既定の見本の画像の置き場（`<フォルダ>/thumbnails/<ファイル名>.png`。`TemplateActorCatalog.DefaultThumbnailRelPath`）も重なる。今のカタログには無い。
+  直すならシーンの名前に件の札（`t01` など）かライブラリ相対パス全体を入れる。
+
 - [ ] **一覧の行（list_row）が見本のスクリプトをプロジェクトへコピーする** — 2026-10-01。`templates/ui/prefabs/list_row.actor` の
   ルートのスクリプトは見本の `assets://ui/scripts/UiGalleryListRow.cs`（フルスワイプで削除）なので、追加するとその `.cs` が
   プロジェクトへ入り、プロジェクトのスクリプトとしてコンパイルされる。エンジンのスクリプト（`SEED.UI.*`）に削除の動きを持たせれば
@@ -3601,7 +3617,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 
 ### W3: Wake or Pay の移植で見つかったエンジンの不具合・制限（2026-09-30〜。移植先は D:\SEED_projects\WakeOrPay）
 
-- [ ] **パッケージの収録が末尾 `/` のフォルダ参照を拾わない（Android でデータファイルが APK に入らない）** — 2026-09-30（W3-0 で発見）。
+- [x] **パッケージの収録が末尾 `/` のフォルダ参照を拾わない（Android でデータファイルが APK に入らない）** — 2026-09-30（W3-0 で発見）。
   スクリプトの `"assets://common/data/"` のような末尾が `/` のフォルダの参照が収録されず、Wake or Pay の APK にデータの JSON が 1 つも入らなかった
   （pak の収録 27 件。プロジェクトの `packaging_settings.json` の `additional_folders` に `common/data`・`common/themes` を足して 47 件にして回避）。
   原因（コードを読んで確認・直していない）: `editor/src/Packaging/Collect/AssetPathUtil.NormalizeRelative` が末尾の `/` を落とさず
@@ -3609,6 +3625,12 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （`CollectFrom` の `_dirsOnDisk.Contains(rel)`、参照の候補の照合 `_dirsOnDisk.Contains(cand)` も同じ形の見込み）。
   案: `NormalizeRelative` で末尾の `/` を落とす（ファイルの参照には影響しない）＋単体テスト。PC の Play はディスクから直接読むので気づけない。
   W3-D/W3-S の DomainSmoke も Android では同じ理由で動かない見込み（推測）。
+  → **2026-10-03 に済（lane2）**: 見立てどおり。`AssetPathUtil.NormalizeRelative` で末尾の `/` を落とした（ファイルの参照の正規形は変わらない）。
+  再現テスト（`editor/tests/PackagingCollectorTests/FolderReferenceTests.cs`。走査の候補・`Collect` の閉包・`CollectFrom` の起点・`additional_folders`）が直す前に 4 件落ち、直した後に通る。
+  Wake or Pay のドライラン（既定の収録ルール＝`additional_folders` なし）で `common/data/` 14 件・`common/themes/` 4 件がすべて入ることを確かめた（APK は作っていない）。
+  **収録が増える変更**: 末尾 `/` 付きの連結の前半（`"assets://ui/" + name`）もフォルダごと入るようになった（docs/packaging.md §2）。2026-10-03 時点の該当は Wake or Pay の 2 つだけ。
+  残り: Wake or Pay の `packaging_settings.json` の `additional_folders`（`common/data`・`common/themes`）の回避は外してよい（プロジェクト側。外さなくても害は無い）。
+  DomainSmoke の Android での確認は未（上の見込みはこの直しで解消するはず・推測）。
 - [x] **PC の 1 倍で小さな文字の細い横線が消える・かすれる** — 2026-09-30（W3-0 で発見）。→ **2026-10-01 に済**（下の項目と一緒に直した。docs/ui_components.md §12）。16 px 以下で長音符「ー」が消えたりかすれたりする
   （「トークン」が「ト クン」、「データ」が「デ タ」。1.3139 倍の模擬では正常）。上の「W2 の手直し P2-3 の残り」(1)・「P2-1 の残り」(1) と同じ見立て
   （SDF を画素の中心で 1 回だけ読む）。実機（2.625 倍）では未確認。
@@ -3658,6 +3680,11 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (6) **PC の 1 倍で「−」（U+2212）が消える**（「スヌーズ（−50 コイン）」が「（ 50 コイン）」に見える。書体に字形はある）。上の「PC の 1 倍で小さな文字の横線が欠けて別の字に見える」と同じ見立て。
   → **2026-10-01 に済**（同じ直し。docs/ui_components.md §12。鳴動画面の「スヌーズ（−50 コイン）」で「−」が見えることを確かめた）。
   (7) **SeedPak の「参照先が見つからないパス」が説明のコメントの中の例の文字列を拾う**（Wake or Pay で 2 件の誤検出。W3-0 から）。
+  → **(7) は 2026-10-03 に済（lane2）**: `.cs` のコメント（`//`・`///`・`/* */`）の中にだけ書かれ実体の無い参照は、警告（`MissingReferences`）ではなく
+  `IgnoredCommentReferences` へ入れ、ログは「参考:」の件数 1 行だけにした（`CSharpCommentSpans`・`AssetReferenceCandidate.OnlyInComments`。docs/packaging.md §2・§6）。
+  **収録は変えない**（コメントの中でも実在すれば従来どおり入る）。誤検出の 2 件は `GameData.cs` の `"assets://common/data/xxx.json"` と `SoundDef.cs` の
+  `"assets://common/audio/&lt;id&gt;.wav"`。再現テスト（`CommentReferenceTests.cs`）が直す前に落ち、Wake or Pay のドライランで警告 0 件・参考 2 件になった。
+  コメントの判定は Roslyn と 1,792 本・209,814 か所で突き合わせて食い違い 0。残した制限: `.cs` 以外（WGSL など）のコメントは見ない・`#if` で外れた部分はコード扱い。
 - [ ] **W2-6 の実機の確認（2026-09-30・Pixel 6a・Simeji）の結果と残り** — 2026-09-30（W2-6 の実機の確認で発見）。手順 1〜10 は期待どおり、手順 11（根の画面の欄で戻る 2 回）が NG
   （2 回目でアプリが背面へ）。原因は (a) 戻るのジェスチャーが奪った指（`Cancelled`）を欄の外のタップと数えていた、(b) `TextField.HandleBack` がキーボードを閉じた後の戻るを
   根でも後ろへ回していた。ログからもう 1 点、Simeji は `set_text_input_state` の返りを送らない（キーボードが隠れている間の差し替え）ので、500 ms 以内の最初の打鍵を

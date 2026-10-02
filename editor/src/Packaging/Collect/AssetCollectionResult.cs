@@ -47,8 +47,15 @@ public sealed class AssetCollectionResult
     /// <summary>アセットルート配下の総バイト数（除外判定前）。</summary>
     public long TotalBytes { get; init; }
 
-    /// <summary>参照されていたが実体が無かったパス一覧。</summary>
+    /// <summary>参照されていたが実体が無かったパス一覧（警告。パッケージ版で読み込みに失敗する箇所）。</summary>
     public IReadOnlyList<MissingReference> MissingReferences { get; init; } = [];
+
+    /// <summary>
+    /// 実体が無いが、C# のコメント（// ・ /// ・ /* */）の中にだけ書かれていたので警告から外した参照
+    /// （説明の例。"assets://common/data/xxx.json" など）。実行時に読まれないのでパッケージ版の失敗にならない。
+    /// 2026-10-03 から <see cref="MissingReferences"/> ではなくここへ入る（docs/packaging.md §2）。
+    /// </summary>
+    public IReadOnlyList<MissingReference> IgnoredCommentReferences { get; init; } = [];
 
     /// <summary>
     /// 除外ルールに当たっているが参照されていたため同梱したファイル。

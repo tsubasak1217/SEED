@@ -9,9 +9,13 @@
 //      --runtime <SEED.exe> 撮影に使うランタイム（既定: <リポジトリ>/runtime/target/debug/SEED.exe）
 //      --runtime-cwd <フォルダ> ランタイムの作業フォルダ（既定: <リポジトリ>/runtime。
 //                            ランタイムはここから ../scripting/bin/Debug/net10.0/SEEDScripting.dll を読む）
-//      --work <フォルダ>     一時のプロジェクト・撮った画像・ランタイムのログの置き場（既定: %TEMP%\seed_template_thumbnails。
-//                            一時のプロジェクト・撮った元の画像・ログは起動のたびに作り直し、終わっても消さない
-//                            ＝後から見られる。モデルのキャッシュ cache/ は残して次の読み込みを速くする）
+//      --work <フォルダ>     一時のプロジェクト・撮った画像・ランタイムのログの置き場。
+//                            既定: %TEMP%\seed_template_thumbnails\run_<プロセス ID>_<乱数>（実行ごとの下位フォルダ。
+//                            成功したら消し、失敗したらログを見られるよう残す）。
+//                            指定した置き場は、道具の印（.seed_thumbnails）がある・無い・空のときだけ使い、
+//                            一時のプロジェクト・撮った元の画像・ログを起動のたびに作り直す（終わっても消さない＝後から見られる。
+//                            モデルのキャッシュ cache/ は残して次の読み込みを速くする）。プロジェクト（assets/project_settings.json・
+//                            *.seedproj がある）・印の無い中身のあるフォルダ・別の実行が使っている置き場は断る（終了コード 4。ThumbnailWorkFolder）
 //      --port <番号>         IPC（TCP）の最初のポート（既定 47770。使われていれば次の番号を試す）
 //      --sheet <PNG>         書き出した見本を名前付きで 1 枚に並べた確認用の画像も書く
 //      --help                使い方を出す
@@ -41,7 +45,7 @@ public sealed class ThumbnailOptions
     /// <summary>ランタイムの作業フォルダ（null ならリポジトリの runtime/）。</summary>
     public string? RuntimeWorkingDirectory { get; set; }
 
-    /// <summary>作業フォルダ（null なら %TEMP% の下）。</summary>
+    /// <summary>作業の置き場（null なら %TEMP% の下の実行ごとの下位フォルダ。成功したら消す）。</summary>
     public string? Work { get; set; }
 
     /// <summary>IPC の最初のポート。</summary>
@@ -89,11 +93,14 @@ public static class ThumbnailArguments
         "  --library <フォルダ>   テンプレートライブラリ（既定: 上へ探した templates/）\n" +
         "  --runtime <SEED.exe>   撮影に使うランタイム（既定: <リポジトリ>/runtime/target/debug/SEED.exe）\n" +
         "  --runtime-cwd <フォルダ> ランタイムの作業フォルダ（既定: <リポジトリ>/runtime。../scripting の DLL を読む）\n" +
-        "  --work <フォルダ>      一時のプロジェクト・撮った画像・ログの置き場（既定: %TEMP%\\seed_template_thumbnails）\n" +
+        "  --work <フォルダ>      一時のプロジェクト・撮った画像・ログの置き場（既定: %TEMP%\\seed_template_thumbnails\\run_<PID>_<乱数>。\n" +
+        "                         成功したら消す。指定したフォルダは中の assets/・shots/・ログを作り直すので、\n" +
+        "                         プロジェクト・道具の印（.seed_thumbnails）の無い中身のあるフォルダは断る）\n" +
         $"  --port <番号>          IPC（TCP）の最初のポート（既定 {DefaultPort}。使用中なら次を試す）\n" +
         "  --sheet <PNG>          書き出した見本を 1 枚に並べた確認用の画像も書く\n" +
         "  --help                 この説明\n" +
-        "終了コード: 0 = すべて書けた（飛ばした件を含む）/ 1 = 引数・入力の誤り / 2 = 撮れなかった件がある / 3 = ランタイムを使えなかった";
+        "終了コード: 0 = すべて書けた（飛ばした件を含む）/ 1 = 引数・入力の誤り / 2 = 撮れなかった件がある / 3 = ランタイムを使えなかった\n" +
+        "           / 4 = 作業の置き場を使えない（プロジェクト・印の無い中身のあるフォルダ・別の実行が使用中）";
 
     /// <summary>
     /// 引数を解釈する。

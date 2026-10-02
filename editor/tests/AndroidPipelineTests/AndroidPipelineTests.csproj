@@ -109,6 +109,10 @@
     <Compile Include="..\..\src\Packaging\Collect\AssetReferenceScanner.cs">
       <Link>Linked\Packaging\Collect\AssetReferenceScanner.cs</Link>
     </Compile>
+    <!-- C# のコメントの範囲（AssetReferenceScanner がコメントの中にだけある参照に印を付けるのに使う） -->
+    <Compile Include="..\..\src\Packaging\Collect\CSharpCommentSpans.cs">
+      <Link>Linked\Packaging\Collect\CSharpCommentSpans.cs</Link>
+    </Compile>
     <Compile Include="..\..\src\Packaging\Collect\AssetCollectionResult.cs">
       <Link>Linked\Packaging\Collect\AssetCollectionResult.cs</Link>
     </Compile>

@@ -71,6 +71,8 @@ public static class Program
         ExtraSeedTests.Register(h);
         EngineLibraryReferenceTests.Register(h);
         DebugBuildMarkTests.Register(h);
+        FolderReferenceTests.Register(h);
+        CommentReferenceTests.Register(h);
 
         return h.Run();
     }
@@ -234,6 +236,12 @@ public static class Program
             Console.WriteLine($"  {m.ReferencePath}  <- {m.SourceRelPath}");
         if (result.MissingReferences.Count > DryRunMissingListLimit)
             Console.WriteLine($"  ...ほか {result.MissingReferences.Count - DryRunMissingListLimit} 件");
+
+        // C# のコメントの中にだけある、実体の無いパス（説明の例。警告の対象外。2026-10-03）
+        Console.WriteLine();
+        Console.WriteLine($"コメントの中にだけある参照先の無いパス（警告の対象外）: {result.IgnoredCommentReferences.Count} 件");
+        foreach (var m in result.IgnoredCommentReferences.Take(DryRunMissingListLimit))
+            Console.WriteLine($"  {m.ReferencePath}  <- {m.SourceRelPath}");
 
         // 実体の無い登録シーン
         Console.WriteLine();

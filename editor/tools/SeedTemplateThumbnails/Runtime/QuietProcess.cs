@@ -22,6 +22,11 @@
 //  画面の外なのでマウスのカーソルが窓に乗らず、部品のホバーの見た目で絵が揺れることもない。
 //
 //  自分が起動したプロセスだけを扱う（他のプロセスの窓・プロセスには触れない）。
+//
+//  【後片付けの順（docs/reviews/2026-10-02_code_review.md #17）】
+//  見張りのスレッドはプロセス ID を起動時に控えた値（_processId）で窓を探し、Process.Id を読まない
+//  （以前は Dispose の後に Process.Id を読むと InvalidOperationException で道具ごと落ちる隙があった）。
+//  Dispose は 中断の合図 → スレッドの Join（上限つき）→ Process の Dispose の順。待ちは中断の合図で起きるので Join はすぐ終わる。
 // ============================================================
 
 using System.ComponentModel;
@@ -69,11 +74,29 @@ public sealed class QuietProcess : IDisposable
     /// <summary>窓が出た後も見張る間隔（ミリ秒）。窓が作り直されたら退け直す。</summary>
     private const int WindowWatchIntervalMs = 250;
 
+    /// <summary>
+    /// Dispose で見張りのスレッドが止まるのを待つ上限。待ちは中断の合図で起きるのでふつうはすぐ終わる。
+    /// 止まったランタイムの窓へ SetWindowPos を送った直後などで戻らないときは、待たずに先へ進む（スレッドは背景なので道具の終了を妨げない）。
+    /// </summary>
+    private static readonly TimeSpan WatchStopTimeout = TimeSpan.FromSeconds(2);
+
     /// <summary>起動したプロセス。</summary>
     public Process Process { get; }
 
+    /// <summary>起動したプロセスの ID（起動時に控える。見張りのスレッドは Process.Id を読まずにこれを使う）。</summary>
+    private readonly int _processId;
+
+    /// <summary>見張りのスレッド。</summary>
+    private readonly Thread _watchThread;
+
     /// <summary>見張りの中断の合図。</summary>
     private readonly CancellationTokenSource _watchCancel = new();
+
+    /// <summary>Dispose 済みか（0 = まだ・1 = 済み。2 回目の Dispose は何もしない）。</summary>
+    private int _disposed;
+
+    /// <summary>見張りのスレッドが動いているか（Dispose の後は false。診断・単体テスト用）。</summary>
+    public bool IsWatching => _watchThread.IsAlive;
 
     /// <summary>退けた本体の窓（0 = まだ）。</summary>
     private IntPtr _mainWindow;
@@ -87,12 +110,13 @@ public sealed class QuietProcess : IDisposable
     /// <summary>出来事を伝える先（ログの行）。</summary>
     private readonly Action<string> _log;
 
-    private QuietProcess(Process process, Action<string> log)
+    private QuietProcess(Process process, int processId, Action<string> log)
     {
         Process = process;
+        _processId = processId;
         _log = log;
-        var thread = new Thread(WatchWindows) { IsBackground = true, Name = "thumbnail-window-watch" };
-        thread.Start();
+        _watchThread = new Thread(WatchWindows) { IsBackground = true, Name = "thumbnail-window-watch" };
+        _watchThread.Start();
     }
 
     /// <summary>
@@ -153,7 +177,7 @@ public sealed class QuietProcess : IDisposable
             {
                 // プロセスのハンドルを握ったまま Process を作る（その間に終わっても番号が使い回されない）
                 var process = Process.GetProcessById(info.dwProcessId);
-                return new QuietProcess(process, log);
+                return new QuietProcess(process, info.dwProcessId, log);
             }
             finally
             {
@@ -194,7 +218,8 @@ public sealed class QuietProcess : IDisposable
                 _log($"[thumbnails] 窓を画面の外へ退けました（見えた位置 {found.Left},{found.Top}・" +
                      $"前面を奪ったか: {(StoleForeground == true ? "はい" : "いいえ")}）");
             }
-            Thread.Sleep(MainWindow == IntPtr.Zero ? WindowPollIntervalMs : WindowWatchIntervalMs);
+            // 間を置く（中断の合図で起きる。Dispose がすぐ Join できるように Thread.Sleep は使わない）
+            if (token.WaitHandle.WaitOne(MainWindow == IntPtr.Zero ? WindowPollIntervalMs : WindowWatchIntervalMs)) break;
         }
     }
 
@@ -203,7 +228,8 @@ public sealed class QuietProcess : IDisposable
     {
         IntPtr best = IntPtr.Zero;
         long bestArea = 0;
-        int pid = Process.Id;
+        // Process.Id は Dispose の後に読むと例外になるので、起動時に控えた ID を使う
+        int pid = _processId;
         EnumWindows((hwnd, _) =>
         {
             GetWindowThreadProcessId(hwnd, out var owner);
@@ -225,11 +251,19 @@ public sealed class QuietProcess : IDisposable
         catch (Win32Exception) { return true; }
     }
 
-    /// <summary>見張りを止める（プロセスには触れない）。</summary>
+    /// <summary>
+    /// 見張りを止める（プロセスには触れない）。中断の合図 → 見張りのスレッドの Join → Process の Dispose の順。2 回呼んでもよい。
+    /// </summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
         _watchCancel.Cancel();
+        // スレッドが止まってから Process を捨てる（止まる前に捨てると、スレッドが捨てた Process を触りうる）
+        bool stopped = _watchThread.Join(WatchStopTimeout);
         Process.Dispose();
+        // 合図はスレッドが止まったときだけ捨てる（止まりきらなかったスレッドが合図の待ちを読み続けても落ちないように）
+        if (stopped) _watchCancel.Dispose();
     }
 
     // ============================================================

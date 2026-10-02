@@ -22,6 +22,11 @@
 //  除外ルールは「未参照ファイルの掃除」であって、参照より優先しない。
 //  参照されていれば除外設定に当たっていても同梱し、警告として報告する。
 //
+//  【C# のコメントの中の参照（2026-10-03）】
+//  .cs のコメント（// ・ /// ・ /* */）の中にだけ書かれた参照も、実在すれば従来どおり収録する（収録は保守的に）。
+//  実体が無いときだけ扱いを変え、「参照先が見つからない」の警告（MissingReferences）ではなく
+//  IgnoredCommentReferences へ入れる（説明の例のパスの誤検出。Resolve の ⑤）。
+//
 //  【2 つの入口】
 //  ・Collect()     … パッケージ化用。上記の既定の起点（project_settings.json ほか）から辿る。
 //                    Collect(extraSeeds) は既定の起点に「追加の起点」を足す版（SeedPak の --extra-scene。
@@ -117,6 +122,15 @@ public sealed class AssetCollector
     /// <summary>欠落の重複報告を防ぐキー集合（参照先 + 参照元）。</summary>
     private readonly HashSet<string> _missingKeys;
 
+    /// <summary>
+    /// 実体が無いが C# のコメントの中にだけ書かれていたので警告から外した参照（説明の例。2026-10-03）。
+    /// 重複は <see cref="_missingKeys"/> と同じ鍵（参照先 + 参照元）で落とす。
+    /// </summary>
+    private readonly List<MissingReference> _ignoredCommentReferences;
+
+    /// <summary><see cref="_ignoredCommentReferences"/> の重複を防ぐキー集合（参照先 + 参照元）。</summary>
+    private readonly HashSet<string> _ignoredCommentKeys;
+
     /// <summary>ランタイム側の Rust ソース・エンジンの C# ライブラリのソースから、引用符で囲んだ assets:// パスを拾う正規表現。</summary>
     private static readonly Regex QuotedAssetPathRegex =
         new("\"(assets://[^\"]*)\"", RegexOptions.Compiled);
@@ -171,6 +185,8 @@ public sealed class AssetCollector
         _expandedFolders = new HashSet<string>(AssetPathUtil.PathComparer);
         _missing         = [];
         _missingKeys     = new HashSet<string>(AssetPathUtil.PathComparer);
+        _ignoredCommentReferences = [];
+        _ignoredCommentKeys       = new HashSet<string>(AssetPathUtil.PathComparer);
 
         BuildDiskIndex();
     }
@@ -345,6 +361,7 @@ public sealed class AssetCollector
             TotalFileCount          = _filesOnDisk.Count,
             TotalBytes              = _filesOnDisk.Values.Sum(),
             MissingReferences       = _missing,
+            IgnoredCommentReferences = _ignoredCommentReferences,
             IncludedDespiteExclusion = despite,
             MissingScenes           = missingScenes,
         };
@@ -715,7 +732,17 @@ public sealed class AssetCollector
         var primary = candidate.Candidates[0];
         if (!AssetPathUtil.IsLikelyExtension(AssetPathUtil.GetExtensionLower(primary))) return;
 
-        // ⑤ 拡張子付きなのに実体が無い = 本物の欠落
+        // ⑤ C# のコメントの中にだけ書かれた参照（説明の例 "assets://common/data/xxx.json" など）は、
+        //    実行時に読まれないのでパッケージ版の失敗にならない。警告にせず別の一覧へ残す（2026-10-03。
+        //    Wake or Pay で 2 件の誤検出）。実在するものは ①〜③ で従来どおり収録してある（収録は保守的に）。
+        if (candidate.OnlyInComments)
+        {
+            if (_ignoredCommentKeys.Add(primary + "|" + sourceRel))
+                _ignoredCommentReferences.Add(new MissingReference(primary, candidate.Raw, sourceRel));
+            return;
+        }
+
+        // ⑥ 拡張子付きなのに実体が無い = 本物の欠落
         AddMissing(primary, candidate.Raw, sourceRel);
     }
 
