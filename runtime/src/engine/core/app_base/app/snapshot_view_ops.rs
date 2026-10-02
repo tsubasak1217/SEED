@@ -341,6 +341,10 @@ pub(super) fn snapshot_view_refusal(command: &IpcCommand) -> Option<ViewRefusal>
             plain("EDIT_COMPONENT")
         }
         C::CreateSpriteBoneActors { .. } => plain("CREATE_SPRITE_BONES"),
+        // エディタのプレビューの出し入れ・作り直しもツリーの編集（待っている相手に失敗を返す）
+        C::PreviewPrefab { .. } | C::PreviewClear { .. } | C::PreviewClearAll { .. } | C::PreviewRefreshPath { .. } => {
+            with_reply("PREVIEW", super::editor_preview::format_preview_error(VIEW_REFUSED_REASON))
+        }
         C::UnlinkPrefab { .. } | C::ReapplyPrefab { .. } | C::ReapplyPrefabPath { .. } | C::ReapplyAllPrefabs => plain("PREFAB"),
         C::AiAddActor { .. } | C::AiRemoveActor { .. } | C::AiMoveActor { .. } | C::AiAddComponent { .. } | C::AiSetValue { .. } => {
             plain("AI_EDIT")
@@ -423,6 +427,9 @@ mod tests {
         // テンプレートアクタの追加もツリーの編集なので、写しには入れない
         let template = IpcCommand::AddTemplateActor { world_line: 0, parent_dfs_id: None, path: "a.actor".into() };
         assert_eq!(snapshot_view_refusal(&template).unwrap().label, "ADD_ACTOR");
+        // エディタのプレビューの出し入れも写しには入れない（PREVIEW_ERROR で相手の待ち合わせを解く）
+        let preview = snapshot_view_refusal(&IpcCommand::PreviewClearAll { world_line: 0 }).expect("捨てる");
+        assert_eq!((preview.label, preview.reply), ("PREVIEW", Some(format!("PREVIEW_ERROR:{VIEW_REFUSED_REASON}"))));
     }
 
     /// 見るための命令（選択・カメラ・問い合わせ・表示の設定・終わる命令）は通すこと。

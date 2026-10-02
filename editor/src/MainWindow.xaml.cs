@@ -591,6 +591,8 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // 右クリック「アクタを追加」→「テンプレートアクタ...」でテンプレートアクタの窓を開く（MainWindow.TemplateActors.cs）
         PanelHierarchy.TemplateActorPickerRequested += OpenTemplateActorPicker;
         PanelInspector.SetRuntime(_runtimeManager);
+        // Edit 上の画面プレビュー（保存されないプレビュー）の配線（MainWindow.ScreenPreview.cs）
+        InitScreenPreview();
         PanelInspector.SetAssetsPath(AssetsPath);
         PanelInspector.TransformCommitted += MarkDirty;
         PanelProject.SetAssetsPath(AssetsPath);

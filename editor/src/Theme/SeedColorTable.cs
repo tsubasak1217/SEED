@@ -325,6 +325,24 @@ public static class SeedColorTable
     public const string THUMBNAIL_PLACEHOLDER_FG = "#C8C8C8";
 
     // ══════════════════════════════════════════════════════════
+    //  画面プレビューの帯（インスペクタの最上部。docs/editor_screen_preview.md §3）
+    //
+    //  保存されないプレビューのアクタを選んだときに出す「プレビュー（保存されません）」の帯。
+    //  すぐ下に並ぶことのあるプレハブ参照バー（青系）や、通知帯（琥珀）と取り違えないよう紫系にする。
+    //  見出しとアイコンはアクセント色、ファイル名は本文色（DIALOG_TEXT）が乗る。
+    //  帯の中のボタンは共通書式（Seed.Button.Outlined）のままで、色を足していない。
+    // ══════════════════════════════════════════════════════════
+
+    /// <summary>プレビューの帯の地（暗い紫）。</summary>
+    public const string PREVIEW_BANNER_BG = "#2E2640";
+
+    /// <summary>プレビューの帯の左端・アイコン・見出しの色（明るい紫）。</summary>
+    public const string PREVIEW_BANNER_ACCENT = "#B49BE0";
+
+    /// <summary>プレビューの帯の本文（ファイル名）の色。</summary>
+    public const string PREVIEW_BANNER_TEXT = DIALOG_TEXT;
+
+    // ══════════════════════════════════════════════════════════
     //  コントラストの基準（WCAG 2.1）
     // ══════════════════════════════════════════════════════════
 
@@ -437,6 +455,12 @@ public static class SeedColorTable
 
         // ── テンプレートアクタのサムネイルの枠（画像が無いときの頭文字は読ませる文字）──
         new("サムネイル/頭文字の板", THUMBNAIL_PLACEHOLDER_BG, null, THUMBNAIL_PLACEHOLDER_FG, MIN_RATIO_TEXT),
+
+        // ── 画面プレビューの帯（帯の上に見出し・アイコン・本文が乗る）──
+        new("プレビューの帯/見出し", PREVIEW_BANNER_BG, null, PREVIEW_BANNER_ACCENT, MIN_RATIO_TEXT),
+        new("プレビューの帯/本文",   PREVIEW_BANNER_BG, null, PREVIEW_BANNER_TEXT,   MIN_RATIO_TEXT),
+        // 左端の帯がインスペクタの地から浮いて見えるか（文字ではないので 3:1）
+        new("プレビューの帯/左端",   SURFACE_WINDOW,    null, PREVIEW_BANNER_ACCENT, MIN_RATIO_NON_TEXT),
     };
 
     // ══════════════════════════════════════════════════════════

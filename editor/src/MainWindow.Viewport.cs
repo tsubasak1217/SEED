@@ -526,7 +526,8 @@ public partial class MainWindow
                 AddViewportMenuItem(menu, "コピー", "Ctrl+C", () => _runtimeManager?.SendToRuntime("COPY"));
                 AddViewportMenuItem(menu, "削除",   "Del / Esc",    () =>
                 {
-                    var ids = PanelHierarchy.GetSelectedNonGroupIds();
+                    // 画面プレビューの根は PREVIEW_CLEAR・中は消さない・残りだけ従来どおり（MainWindow.ScreenPreview.cs）
+                    var ids = RouteDeletionAroundPreviews(PanelHierarchy.GetSelectedNonGroupIds()).Ids;
                     if (ids.Count > 0)
                         _runtimeManager?.SendToRuntime($"DELETE_RECURSIVE:{string.Join(",", ids)}");
                 });

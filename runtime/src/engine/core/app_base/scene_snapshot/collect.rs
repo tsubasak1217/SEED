@@ -9,6 +9,8 @@
 //  ・「保存できないもの」は飛ばして続ける: アクタ 1 体ずつ（子を外した本体だけ）を JSON にして読み戻し、読み戻せないもの
 //    （Transform 等に NaN・無限大が入ると JSON では null になり、読み込めない）はその子孫ごと飛ばす。
 //    子の 1 体が壊れていても親や兄弟は残る（親だけを確かめてから子を 1 体ずつ確かめるため）。
+//  ・エディタのプレビュー（保存されない表示用のアクタ。docs/editor_screen_preview.md）は、写しも .scene のファイルなので
+//    保存と同じく含めない（トップレベルの根は飛ばし、子孫は部分木ごと取り除く）。
 //  【メインカメラ】シーンの is_main のカメラ（Scene::find_main_camera。Transform はワールド空間）の位置と YXZ オイラー角。
 //  書き出しの本体（ファイル・応答）は app/scene_snapshot_ops.rs。
 // ============================================================
@@ -17,6 +19,7 @@ use crate::engine::components::Transform;
 use crate::engine::core::app_base::scene::DebugCameraData;
 use crate::engine::ecs::World;
 use crate::engine::structs::objects::actor::ActorData;
+use crate::engine::structs::objects::actor::editor_preview::strip_editor_previews;
 use crate::engine::structs::objects::Actor;
 
 use super::wire::CameraPose;
@@ -47,8 +50,15 @@ pub struct CollectedActors {
 /// * `world` - コンポーネントの値（`Scene::world`）
 pub fn collect_snapshot_actors(actors: &[Actor], world: &World) -> CollectedActors {
     let mut out = CollectedActors::default();
-    for root in actors.iter().filter(|a| a.world_line == SCENE_WORLD_LINE) {
-        if let Some(data) = keep_serializable(root.to_data(world), &mut out) {
+    // 写しも .scene のファイルなので保存と同じくプレビュー（エディタの保存されない表示用のアクタ）を含めない:
+    // トップレベルのプレビューの根は飛ばし、子孫のプレビューは部分木ごと取り除く（数にも入れない）。
+    for root in actors
+        .iter()
+        .filter(|a| a.world_line == SCENE_WORLD_LINE && a.editor_preview.is_none())
+    {
+        let mut data = root.to_data(world);
+        strip_editor_previews(&mut data);
+        if let Some(data) = keep_serializable(data, &mut out) {
             out.actors.push(data);
         }
     }
@@ -177,6 +187,38 @@ mod tests {
         let json = scene.to_json_with_actors(None, &out.actors).expect("書ける");
         let back: serde_json::Value = serde_json::from_str(&json).expect("読める");
         assert_eq!(back["actors"][0]["name"], "Group");
+    }
+
+    /// エディタのプレビュー（子孫のもの・トップレベルのもの）は写しに入らず、数にも入らないこと。実アクタは残ること。
+    #[test]
+    fn collect_excludes_editor_previews_like_saving() {
+        use crate::engine::structs::objects::actor::EditorPreviewInfo;
+        let info = |prefab: &str| EditorPreviewInfo {
+            prefab: prefab.to_string(),
+            frame: None,
+            frame_body: String::new(),
+            layer_bias: 0,
+        };
+
+        let mut scene = Scene::new("snap");
+        let mut screens = spawn(&mut scene, "Screens", [0.0, 0.0, 0.0], 0);
+        let mut preview = spawn(&mut scene, "PreviewHome", [0.0, 0.0, 0.0], 0);
+        preview.add_child(spawn(&mut scene, "PreviewInner", [0.0, 0.0, 0.0], 0));
+        preview.editor_preview = Some(info("assets://ui/screens/Home.actor"));
+        screens.add_child(preview);
+        screens.add_child(spawn(&mut scene, "RealChild", [0.0, 0.0, 0.0], 0));
+        scene.actors.push(screens);
+        let mut top_preview = spawn(&mut scene, "TopPreview", [0.0, 0.0, 0.0], 0);
+        top_preview.editor_preview = Some(info("assets://ui/screens/Top.actor"));
+        scene.actors.push(top_preview);
+
+        let out = collect_snapshot_actors(&scene.actors, &scene.world);
+        let names: Vec<&str> = out.actors.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["Screens"], "トップレベルのプレビューは入らない");
+        let children: Vec<&str> = out.actors[0].children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(children, vec!["RealChild"], "子孫のプレビューは部分木ごと入らない");
+        assert_eq!(out.saved, 2, "Screens・RealChild だけを数える");
+        assert_eq!(out.skipped, 0, "プレビューは「保存できないもの」として数えない");
     }
 
     /// メインカメラの姿勢は位置と YXZ オイラー角（度）をそのまま載せ、エディタ視点は前方向から yaw / pitch を出すこと。

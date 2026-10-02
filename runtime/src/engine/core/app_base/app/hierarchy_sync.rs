@@ -1,7 +1,7 @@
 // ============================================================
 //  hierarchy_sync.rs — ヒエラルキー・アクターデータ送信
 //
-//  do_send_hierarchy / send_hierarchy / send_actor_data /
+//  do_send_hierarchy / send_hierarchy / send_hierarchy_quiet / send_actor_data /
 //  send_world_line_info / send_selected
 // ============================================================
 
@@ -24,6 +24,13 @@ const HIERARCHY_SEND_INTERVAL_EDIT_MS: u128 = 100;
 /// Play モードでのヒエラルキー送信の最小間隔（ミリ秒）。
 /// 生成／破棄が毎フレーム発生しても、この間隔までは 1 回にまとめる。
 const HIERARCHY_SEND_INTERVAL_PLAY_MS: u128 = 400;
+
+/// 次の HIERARCHY が「保存されるシーンの中身を変えていない」ことをエディタへ知らせる印（直後に HIERARCHY が続く）。
+///
+/// エディタはこれを受けると、次の HIERARCHY 1 通だけ未保存の印（dirty）を付けない
+/// （HIERARCHY_RESET と同じ「直前の印」の流儀）。エディタのプレビュー（保存されない表示用のアクタ）の
+/// 出し入れと、その Undo/Redo の後に使う（docs/editor_screen_preview.md）。
+pub(super) const HIERARCHY_QUIET_MARKER: &str = "HIERARCHY_QUIET";
 
 impl App {
     /// 現在のモードに応じたヒエラルキー送信の最小間隔（ミリ秒）を返す。
@@ -49,7 +56,8 @@ impl App {
             // is_vp（ビューポート所属）はトップレベルルートが Actor2D かで決まり、
             // サブツリー全体へ伝播する（3D ワールドキャンバス配下の 2D スプライトは false）
             // parent_active / parent_visible はトップレベルなので両方 true から始める。
-            collect_actor_nodes(root, None, &mut counter, root.is_2d(), true, true, &mut nodes);
+            // parent_in_preview（エディタのプレビューの中か）はトップレベルなので false から始める。
+            collect_actor_nodes(root, None, &mut counter, root.is_2d(), true, true, false, &mut nodes);
         }
 
         let json = build_hierarchy_json(&nodes);
@@ -96,6 +104,19 @@ impl App {
     /// 「入れ替わった」ことはランタイムしか知らないので、推測させずに明示的に伝える。
     pub(super) fn send_hierarchy_reset(&mut self) {
         if let Some(ipc) = &self.ipc { ipc.send("HIERARCHY_RESET"); }
+        self.send_hierarchy_now();
+    }
+
+    /// 「保存されるシーンの中身は変わっていない」ことをエディタへ知らせ、続けてヒエラルキーを即時送信する。
+    ///
+    /// エディタのプレビュー（保存されない表示用のアクタ）の出し入れ・作り直しと、その Undo/Redo の後に使う。
+    /// エディタは印（HIERARCHY_QUIET）の直後の HIERARCHY 1 通だけ未保存の印を付けない。
+    pub(super) fn send_hierarchy_quiet(&mut self) {
+        // 遅らせている HIERARCHY（hierarchy_dirty）がある = 本物の編集の知らせがまだ出ていない。
+        // それを今まとめて送るので、印は付けない（エディタは普通どおり未保存にする。取りこぼすより安全）。
+        if !self.hierarchy_dirty {
+            if let Some(ipc) = &self.ipc { ipc.send(HIERARCHY_QUIET_MARKER); }
+        }
         self.send_hierarchy_now();
     }
 

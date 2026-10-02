@@ -1558,6 +1558,8 @@ pub(super) fn terrain_marker_data(actor: &Actor) -> ActorData {
         prefab_source:    None,
         prefab_hash:      None,
         scatter_prop_id:  None,
+        // 地形ルートはエディタのプレビューにならない（プレビューは .actor から作る）。
+        editor_preview:   None,
     }
 }
 

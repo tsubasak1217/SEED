@@ -41,8 +41,10 @@ namespace SEEDEditor.Runtime;
 ///   2 回目以降の Play では保持プロセスへ LOAD_SCENE を送ってシーンだけ差し替える
 ///   （GPU・モデルキャッシュが温かいため数秒で再生できる）。保持プロセスがクラッシュ／
 ///   終了していれば従来どおり新規起動へフォールバックする。初回 Play はコールドのまま。
+///
+/// 画面プレビューの知らせ（HIERARCHY_QUIET・PREVIEW_*）の振り分けは RuntimeManager.ScreenPreview.cs。
 /// </summary>
-public sealed class RuntimeManager : IDisposable
+public sealed partial class RuntimeManager : IDisposable
 {
     // ── Win32 デリゲート ───────────────────────────────────────
     private delegate void WinEventProc(
@@ -1850,6 +1852,11 @@ public sealed class RuntimeManager : IDisposable
                 // 書式違反（相関できない応答）は握り潰さず記録する。
                 EditorLog.Write($"[Runtime→Editor] WGSL_DIAG 書式不正: {payload[..Math.Min(80, payload.Length)]}");
             }
+        }
+        else if (TryHandleScreenPreviewMessage(msg))
+        {
+            // 画面プレビューの知らせ（HIERARCHY_QUIET・PREVIEW_*）。処理は RuntimeManager.ScreenPreview.cs。
+            // HIERARCHY_QUIET は直後の HIERARCHY より先に数えるため、この受信スレッドで同期的に上げている。
         }
         else if (msg.Equals("HIERARCHY_RESET", StringComparison.Ordinal))
         {

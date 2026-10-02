@@ -471,6 +471,8 @@ public partial class InspectorPanel : UserControl
 
             try { BuildActorComponentList(json); }
             catch (Exception ex) { EditorLog.Write($"InspectorPanel: ACTOR_COMPONENTS parse error: {ex.Message}"); }
+            // 閲覧専用・画面プレビューの中なら編集の UI を押せなくする（InspectorPanel.ReadOnly.cs）
+            ApplyEditability();
         });
     }
 
@@ -493,6 +495,8 @@ public partial class InspectorPanel : UserControl
         ClearTransformRefs();
         // 鍵トグルは表示対象があるときだけ出す（InspectorPanel.Lock.cs）
         RefreshInspectorLockToggle();
+        // 画面プレビューの読み取り専用を解く（InspectorPanel.Preview.cs）
+        ResetPreviewState();
     }
 
     private void ClearTransformRefs()
@@ -1322,6 +1326,8 @@ public partial class InspectorPanel : UserControl
         var prevSlotIdxSet = _slotInfos.Select(s => s.SlotIdx).ToHashSet();
         AccordionStack.Children.Clear();
         _accordionHeaders.Clear();
+        // 画面プレビューの中なら最上部（プレハブ参照バーより上）に帯を出す（InspectorPanel.Preview.cs）
+        BeginPreviewBanner(root);
         // 制御点リストの行参照は UI ごと作り直されるので、ここで古い参照を捨てる
         // （残すと破棄済みの Border を塗り続けることになる）。
         _controlPointRows.Clear();
@@ -10160,6 +10166,9 @@ public partial class InspectorPanel : UserControl
 
         // スクリプトファイルを開くボタン（内蔵スクリプトエディタ）
         sp.Children.Add(BuildOpenScriptButton(info.ModelPath));
+
+        // ScreenStack・ModalHost などなら、画面プレビューの差し込み先の案内（InspectorPanel.Preview.cs）
+        AppendPreviewHostSection(sp, info);
 
         // スクリプト型の解決（[SerializeField] フィールド表示用）。
         // 未キャッシュのコンパイルは Roslyn のフルコンパイル（Emit + Assembly.Load）で

@@ -69,6 +69,8 @@ public partial class MainWindow
         _savingActorPath = null;
 
         if (string.IsNullOrEmpty(path)) return;
+        // 画面プレビューは設定に関わらず作り直す（シーンの内容を変えないため。MainWindow.ScreenPreview.cs）
+        RequestPreviewRefresh(path);
         if (!EditorPreferences.Instance.PrefabAutoPropagateOnSave) return;
 
         // ランタイムがシーンを持っていなければ反映先が無い（アクタータブ単独編集など）。

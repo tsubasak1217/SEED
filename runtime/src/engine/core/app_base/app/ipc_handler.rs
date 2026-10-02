@@ -173,6 +173,11 @@ impl App {
             if self.refuse_in_snapshot_view(&cmd) {
                 continue;
             }
+            // ── エディタのプレビュー（保存されない表示用のアクタ）へ／から既存の中身を動かす・中へ足す木の編集を捨てる ──
+            //   （判断と応答〈PREVIEW_ERROR:〉は app/editor_preview/guard.rs。Edit のときだけ判定する）
+            if self.refuse_preview_structure_edit(&cmd) {
+                continue;
+            }
             // ── インスペクタのフィールド編集を Undo 履歴へ載せる（汎用機構） ──
             //   コマンドを分類し、対象があれば適用「前」の値をスナップショットしておく。
             //   個別ハンドラには一切手を入れず、この 1 箇所で全 SET_* 経路を拾う
@@ -317,7 +322,13 @@ impl App {
                             self.send_selected();
                         }
                         if structural {
-                            self.send_hierarchy();
+                            // エディタのプレビューの出し入れ（保存されるシーンを変えない操作）を戻したときは、
+                            // 未保存にしない知らせ付きで送る（app/editor_preview/。それ以外は従来どおり）
+                            if self.undo_history.peek_undone_is_scene_neutral() {
+                                self.send_hierarchy_quiet();
+                            } else {
+                                self.send_hierarchy();
+                            }
                         }
                         // シーン設定ウィンドウの「シェーダ」行（SceneShadingCommand）は
                         // ACTOR_COMPONENTS に載らないので、専用に送り直す。
@@ -365,7 +376,12 @@ impl App {
                             self.send_selected();
                         }
                         if structural {
-                            self.send_hierarchy();
+                            // Undo 側と同じく、プレビューの出し入れをやり直したときは未保存にしない知らせ付きで送る
+                            if self.undo_history.peek_redone_is_scene_neutral() {
+                                self.send_hierarchy_quiet();
+                            } else {
+                                self.send_hierarchy();
+                            }
                         }
                         // Undo 側と同じ理由でシーン設定のシェーダ行を送り直す。
                         self.send_scene_shading_params();
@@ -1261,6 +1277,19 @@ impl App {
                 // テンプレートアクタ（まっさらなアクタとして追加。app/template_actor_ops.rs）
                 IpcCommand::AddTemplateActor { world_line, parent_dfs_id, path } => {
                     self.handle_add_template_actor(world_line, parent_dfs_id, &path);
+                }
+                // ── エディタのプレビュー（保存されないプレビューの出し入れ・作り直し。app/editor_preview/）──
+                IpcCommand::PreviewPrefab { world_line, parent_dfs, request } => {
+                    self.handle_preview_prefab(world_line, parent_dfs, request);
+                }
+                IpcCommand::PreviewClear { world_line, dfs } => {
+                    self.handle_preview_clear(world_line, dfs);
+                }
+                IpcCommand::PreviewClearAll { world_line } => {
+                    self.handle_preview_clear_all(world_line);
+                }
+                IpcCommand::PreviewRefreshPath { path } => {
+                    self.handle_preview_refresh_path(&path);
                 }
                 IpcCommand::RemoveActor(dfs_id) => {
                     self.handle_remove_actor(dfs_id);

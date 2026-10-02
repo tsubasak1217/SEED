@@ -43,14 +43,19 @@ use crate::engine::methods::gizmo_interact::mat4x4_mul;
 /// 最後の `has_canvas` は「このアクター自身が CanvasComponent を持つか」。
 /// エディタ側で「2D アクターの新しい親として、Canvas を持たない 3D アクターを禁止する」
 /// ドロップ制限（3D Canvas アクターは 2D の親として許可）に使用する。
+///
+/// `parent_in_preview` は「親がエディタのプレビュー（保存されない表示用のアクタ）の部分木の中か」。
+/// トップレベル呼び出しでは false を渡し、再帰では「親が中 or 自分がプレビューの根」を子へ伝える
+/// （エディタはプレビューの行に印を付け、読み取り専用にする。docs/editor_screen_preview.md）。
 pub(super) fn collect_actor_nodes(
-    actor:          &Actor,
-    parent:         Option<u32>,
-    counter:        &mut u32,
-    root_is_vp:     bool,
-    parent_active:  bool,
-    parent_visible: bool,
-    out:            &mut Vec<ActorNodeInfo>,
+    actor:             &Actor,
+    parent:            Option<u32>,
+    counter:           &mut u32,
+    root_is_vp:        bool,
+    parent_active:     bool,
+    parent_visible:    bool,
+    parent_in_preview: bool,
+    out:               &mut Vec<ActorNodeInfo>,
 ) {
     let id = *counter;
     *counter += 1;
@@ -75,6 +80,11 @@ pub(super) fn collect_actor_nodes(
     // is_folder: 整理専用のフォルダノードか（Transform 非保持・透過）。
     // エディタでフォルダアイコン表示＋Inspector で Transform を出さない判定に使う。
     let is_folder = actor.is_folder();
+    // preview / preview_root / preview_source: エディタのプレビュー（保存されない表示用のアクタ）の印。
+    // 部分木の中か（親から伝わる or 自分が根）・自分が根か・根なら中身のプレハブのパス。
+    let preview_source = actor.editor_preview.as_ref().map(|info| info.prefab.clone());
+    let preview_root = preview_source.is_some();
+    let in_preview = parent_in_preview || preview_root;
     out.push(ActorNodeInfo {
         id,
         name: actor.name.clone(),
@@ -91,10 +101,14 @@ pub(super) fn collect_actor_nodes(
         prefab_source,
         prefab_hash,
         is_folder,
+        preview: in_preview,
+        preview_root,
+        preview_source,
     });
     for child in actor.children() {
         // ルートのビューポート所属フラグを子孫全体へそのまま伝播する
-        collect_actor_nodes(child, Some(id), counter, root_is_vp, active, visible, out);
+        // （プレビューの部分木の中かどうかも子孫全体へ伝える）
+        collect_actor_nodes(child, Some(id), counter, root_is_vp, active, visible, in_preview, out);
     }
 }
 
@@ -129,6 +143,12 @@ pub(super) struct ActorNodeInfo {
     pub prefab_hash:   Option<String>,
     /// 整理専用のフォルダノードか。
     pub is_folder:    bool,
+    /// エディタのプレビュー（保存されない表示用のアクタ）の部分木の中か（根を含む）。
+    pub preview:      bool,
+    /// エディタのプレビューの根か。
+    pub preview_root: bool,
+    /// プレビューの根の中身のプレハブ（`EditorPreviewInfo::prefab`）。根でなければ None。
+    pub preview_source: Option<String>,
 }
 
 /// ヒエラルキー JSON 1 ノード分のシリアライズ用構造体。
@@ -173,6 +193,13 @@ struct HierarchyNode<'a> {
     /// エディタのヒエラルキーでフォルダアイコン表示、Inspector で Transform を
     /// 出さない（名前変更のみ）判定に使用する。地形ルート／チャンクの器などに付く。
     is_folder: bool,
+    /// エディタのプレビュー（保存されない表示用のアクタ）の部分木の中か（根を含む）。
+    /// エディタはこの行に印を付け、読み取り専用にする（docs/editor_screen_preview.md）。
+    preview: bool,
+    /// エディタのプレビューの根か（「プレビューを消す」などの操作の対象になる行）。
+    preview_root: bool,
+    /// プレビューの根の中身のプレハブ（assets:// 仮想パス or 絶対パス）。根でなければ None（JSON では null）。
+    preview_source: Option<&'a str>,
 }
 
 /// フラットリストから HIERARCHY JSON を生成する。
@@ -196,6 +223,9 @@ pub(super) fn build_hierarchy_json(nodes: &[ActorNodeInfo]) -> String {
             prefab_source: n.prefab_source.as_deref(),
             prefab_hash:   n.prefab_hash.as_deref(),
             is_folder: n.is_folder,
+            preview:        n.preview,
+            preview_root:   n.preview_root,
+            preview_source: n.preview_source.as_deref(),
         })
         .collect();
     serde_json::to_string(&items).unwrap_or_default()
@@ -1423,7 +1453,8 @@ pub(super) fn actor_subtree_contains_entity(actor: &Actor, entity: Entity) -> bo
 }
 
 /// アクターの種別情報 (is_2d, has_canvas) を取り出す（親候補の検証用）。
-fn actor_kind_info(actor: &Actor) -> (bool, bool) {
+/// エディタのプレビューの組み立て（app/editor_preview/ops.rs）も差し込み先の確かめに使う。
+pub(super) fn actor_kind_info(actor: &Actor) -> (bool, bool) {
     (actor.is_2d(), actor.has_kind(ComponentKind::Canvas))
 }
 
@@ -2025,7 +2056,7 @@ mod visible_hierarchy_tests {
 
         let mut nodes   = Vec::new();
         let mut counter = 0u32;
-        collect_actor_nodes(&root, None, &mut counter, false, true, true, &mut nodes);
+        collect_actor_nodes(&root, None, &mut counter, false, true, true, false, &mut nodes);
 
         assert_eq!(nodes.len(), 2, "root と child の 2 ノード");
         // 親: 自身も実効も非表示。
@@ -2049,9 +2080,57 @@ mod visible_hierarchy_tests {
 
         let mut nodes   = Vec::new();
         let mut counter = 0u32;
-        collect_actor_nodes(&root, None, &mut counter, false, true, true, &mut nodes);
+        collect_actor_nodes(&root, None, &mut counter, false, true, true, false, &mut nodes);
 
         assert!(nodes.iter().all(|n| n.visible && n.self_visible));
+    }
+
+    /// エディタのプレビューの印がヒエラルキーへ載ること:
+    /// 親 → 子（プレビューの根）→ 孫 の木で、子と孫が preview=true、子だけ preview_root=true で
+    /// preview_source を持ち、親は preview=false・preview_root=false・preview_source=null。
+    #[test]
+    fn hierarchy_json_marks_editor_preview_subtree() {
+        use crate::engine::structs::objects::actor::EditorPreviewInfo;
+        const PREVIEW_PREFAB: &str = "assets://ui/screens/Home.actor";
+
+        let mut world = World::new();
+        let mut parent = actor3d(&mut world, "parent");
+        let mut child  = actor3d(&mut world, "child");
+        child.add_child(actor3d(&mut world, "grandchild"));
+        child.editor_preview = Some(EditorPreviewInfo {
+            prefab: PREVIEW_PREFAB.to_string(),
+            frame: None,
+            frame_body: String::new(),
+            layer_bias: 0,
+        });
+        parent.add_child(child);
+
+        let mut nodes   = Vec::new();
+        let mut counter = 0u32;
+        collect_actor_nodes(&parent, None, &mut counter, false, true, true, false, &mut nodes);
+
+        assert_eq!(nodes.len(), 3, "parent・child・grandchild の 3 ノード");
+        // 親: プレビューの外
+        assert!(!nodes[0].preview && !nodes[0].preview_root && nodes[0].preview_source.is_none());
+        // 子: プレビューの根
+        assert!(nodes[1].preview && nodes[1].preview_root);
+        assert_eq!(nodes[1].preview_source.as_deref(), Some(PREVIEW_PREFAB));
+        // 孫: プレビューの中（根ではない）
+        assert!(nodes[2].preview, "根の子孫は preview=true");
+        assert!(!nodes[2].preview_root && nodes[2].preview_source.is_none(), "根でなければ印は無い");
+
+        // JSON の欄名と null の出方（エディタが読む形）
+        let json = build_hierarchy_json(&nodes);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON として読めること");
+        assert_eq!(value[0]["preview"], false);
+        assert_eq!(value[0]["preview_root"], false);
+        assert!(value[0]["preview_source"].is_null(), "根でなければ null: {json}");
+        assert_eq!(value[1]["preview"], true);
+        assert_eq!(value[1]["preview_root"], true);
+        assert_eq!(value[1]["preview_source"], PREVIEW_PREFAB);
+        assert_eq!(value[2]["preview"], true);
+        assert_eq!(value[2]["preview_root"], false);
+        assert!(value[2]["preview_source"].is_null());
     }
 }
 

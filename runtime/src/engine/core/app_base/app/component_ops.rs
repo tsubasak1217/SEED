@@ -912,6 +912,12 @@ impl App {
             Some(p) => serde_json::to_string(p).unwrap_or_else(|_| "null".to_string()),
             None    => "null".to_string(),
         };
+        // エディタのプレビュー（保存されない表示用のアクタ）: このアクタを含むいちばん近いプレビューの根の情報
+        // （根の DFS・自分が根か・中身と枠のプレハブ）。プレビューの外なら null。
+        // エディタはこれを見てインスペクタを読み取り専用にし、「プレビューを消す」等の操作の宛先にする。
+        let editor_preview_json = super::editor_preview::inspector_preview_json(
+            super::editor_preview::preview_root_of_dfs(&scene.actors, wl, dfs_id).as_ref(),
+        );
         // selected_slot_idx: Inspector 側でどのコンポーネントスロットを選択状態にするかを示す
         // transform_json は 3D: "transform":{...}、2D: "canvas_transform":{...} のいずれか
         // is_root / is_vp: ルートキャンバス判定用（HIERARCHY の is_vp と同一の分類規則）
@@ -922,8 +928,9 @@ impl App {
         //   transform_json の有無から 2D/3D を判別できない。2D フォルダに対して
         //   コンポーネント選択ウィンドウが 3D 用の一覧を出さないよう、種別を明示的に送る。
         //   （is_vp は「サブツリーのルートが 2D か」であって自身の種別ではない）
+        // editor_preview: エディタのプレビューの根の情報（null = プレビューの外）
         let json = format!(
-            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{},"visible":{},"is_folder":{},"is_2d":{},"prefab_source":{prefab_source_json}{transform_json},"components":{comps_json}}}"#,
+            r#"{{"id":{dfs_id},"name":{name_json},"selected_slot":{selected_slot_idx},"is_root":{},"is_vp":{},"active":{},"visible":{},"is_folder":{},"is_2d":{},"prefab_source":{prefab_source_json},"editor_preview":{editor_preview_json}{transform_json},"components":{comps_json}}}"#,
             is_root as u8, root_is_2d as u8, actor.active as u8, actor.visible as u8, is_folder as u8, is_2d as u8,
         );
         ipc.send(&format!("ACTOR_COMPONENTS:{json}"));

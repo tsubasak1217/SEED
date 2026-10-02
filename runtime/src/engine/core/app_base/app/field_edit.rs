@@ -332,6 +332,12 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::WrapActor { .. }
         // テンプレートアクタの追加はハンドラ側が ActorTreeSnapshotCommand を 1 件積む（2D/3D の追加と同じ）。
         | IpcCommand::AddTemplateActor { .. }
+        // プレビューの出し入れはハンドラ側が専用の Undo（シーンを変えない印付き）を 1 件積む
+        // （app/editor_preview/。ここで記録すると二重になる）。
+        | IpcCommand::PreviewPrefab { .. }
+        | IpcCommand::PreviewClear { .. }
+        | IpcCommand::PreviewClearAll { .. }
+        | IpcCommand::PreviewRefreshPath { .. }
         | IpcCommand::RemoveActor(..)
         | IpcCommand::RenameActor { .. }
         | IpcCommand::Rename { .. }

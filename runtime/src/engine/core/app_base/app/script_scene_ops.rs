@@ -151,20 +151,7 @@ impl App {
                     // 3D アクター: スクリプトが設定した（または identity の）現在の
                     // Transform からモデルの instance_mats を同期する。
                     // Transform だけでは GPU 描画に反映されないため（drop 配置と同じ処理）。
-                    let spawn_mat = scene.world.get::<Transform>(actor.entity)
-                        .map(|t| t.to_mat4());
-                    if let Some(mat) = spawn_mat {
-                        for slot in actor.slots() {
-                            if slot.kind == ComponentKind::Model {
-                                if let Some(mc) = scene.world.get_mut::<ModelComponent>(slot.entity) {
-                                    for m in mc.instance_mats.iter_mut() {
-                                        *m = mat;
-                                    }
-                                    mc.mark_batch_dirty();
-                                }
-                            }
-                        }
-                    }
+                    sync_spawned_model_mats(&mut scene.world, &actor);
                 }
                 // 親指定があれば末尾の子として取り付ける（失敗時はルートへフォールバック）
                 if !attach_actor_under(&mut scene.actors, parent, actor) {
@@ -539,6 +526,26 @@ impl App {
         scene.actors.iter().any(|a| {
             a.entity == entity && self.canvas_edit_sessions.contains_key(&a.world_line)
         })
+    }
+}
+
+/// プレハブから生成した 3D アクタの根のモデル（Model スロット）の instance_mats を、根の現在の Transform に合わせる。
+///
+/// Transform だけでは GPU 描画に反映されないため（drop 配置と同じ処理）。スクリプトの Instantiate と、
+/// エディタのプレビューの組み立て（app/editor_preview/ops.rs）が同じ手順で使う。
+/// 根の Transform が無いとき（フォルダ等）は何もしない。子アクタのモデルには触れない（Instantiate と同じ）。
+pub(super) fn sync_spawned_model_mats(world: &mut World, actor: &Actor) {
+    let spawn_mat = world.get::<Transform>(actor.entity).map(|t| t.to_mat4());
+    let Some(mat) = spawn_mat else { return };
+    for slot in actor.slots() {
+        if slot.kind == ComponentKind::Model {
+            if let Some(mc) = world.get_mut::<ModelComponent>(slot.entity) {
+                for m in mc.instance_mats.iter_mut() {
+                    *m = mat;
+                }
+                mc.mark_batch_dirty();
+            }
+        }
     }
 }
 

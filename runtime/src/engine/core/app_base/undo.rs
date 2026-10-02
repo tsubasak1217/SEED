@@ -97,6 +97,15 @@ pub trait Command {
     fn cover_fields_for_redo(&self) -> Option<CoverFieldSnapshots> {
         None
     }
+    /// 保存されるシーンの中身を変えない操作か（エディタのプレビューの出し入れだけ）。
+    /// true なら Undo/Redo の後のヒエラルキーを未保存にしない知らせ（HIERARCHY_QUIET）で送る。
+    ///
+    /// それでも履歴へ積むのは、Undo の各コマンドが対象を (world_line, DFS 番号) で持つため。
+    /// 履歴に載らない木の変更が挟まると、それより前の Undo の DFS 番号が別のアクタを指してしまう
+    /// （docs/editor_screen_preview.md・app/editor_preview/mod.rs）。
+    fn is_scene_neutral(&self) -> bool {
+        false
+    }
 }
 
 // ============================================================
@@ -234,6 +243,17 @@ impl UndoHistory {
     /// redo() 直後: 地形へ書き戻すべきカバー場スナップショット。
     pub fn peek_redone_cover_fields(&self) -> Option<CoverFieldSnapshots> {
         self.past.last()?.cover_fields_for_redo()
+    }
+    /// undo() 直後: 今戻したコマンドが「保存されるシーンの中身を変えない操作」か
+    /// （エディタのプレビューの出し入れ。ヒエラルキーを未保存にしない知らせで送るかの判断に使う）。
+    /// 戻したコマンドが無ければ false。
+    pub fn peek_undone_is_scene_neutral(&self) -> bool {
+        self.future.last().is_some_and(|cmd| cmd.is_scene_neutral())
+    }
+    /// redo() 直後: 今やり直したコマンドが「保存されるシーンの中身を変えない操作」か。
+    /// やり直したコマンドが無ければ false。
+    pub fn peek_redone_is_scene_neutral(&self) -> bool {
+        self.past.last().is_some_and(|cmd| cmd.is_scene_neutral())
     }
 }
 
@@ -494,6 +514,11 @@ impl Command for CompositeCommand {
     }
     fn cover_fields_for_redo(&self) -> Option<CoverFieldSnapshots> {
         self.commands.iter().rev().find_map(|c| c.cover_fields_for_redo())
+    }
+    /// 空でなく、まとめた全部がシーンを変えない操作のときだけ true
+    /// （1 つでも普通の編集が混ざれば、Undo/Redo の後は普通どおり未保存にする）。
+    fn is_scene_neutral(&self) -> bool {
+        !self.commands.is_empty() && self.commands.iter().all(|c| c.is_scene_neutral())
     }
 }
 

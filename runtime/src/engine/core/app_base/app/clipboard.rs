@@ -13,12 +13,15 @@ use crate::engine::core::app_base::scene::build_actor;
 use super::{
     App, find_actor_by_dfs, actor_subtree_size, insert_actors_after_dfs, ClipboardItem,
 };
+use super::editor_preview::is_dfs_in_preview;
 use crate::engine::structs::objects::Actor;
+use crate::engine::structs::objects::actor::editor_preview::strip_editor_previews;
 
 impl App {
     /// 選択アクター / 選択インスタンスをクリップボードへコピーする。
     ///
     /// - アクターツリー選択（selected_actor_dfs_ids が非空）→ ActorData をコピー
+    ///   （エディタのプレビューの部分木の中にあるアクタと、子孫のプレビューはコピーしない）
     /// - レガシー MC インスタンス選択（selected_instances が非空）→ ClipboardItem をコピー（後方互換）
     pub(super) fn do_copy(&mut self) {
         // シーンモード / アクターツリー選択: ActorData 単位でコピーする
@@ -31,9 +34,17 @@ impl App {
             let mut src_dfs_ids = self.selected_actor_dfs_ids.clone();
             src_dfs_ids.sort_unstable();
             for &dfs_id in &src_dfs_ids {
+                // プレビューの中身はコピーしない（保存されない表示用のアクタ。根もその中も
+                // 貼り付けると保存されるアクタになってしまう。docs/editor_screen_preview.md）
+                if is_dfs_in_preview(&scene.actors, wl, dfs_id as u32) {
+                    continue;
+                }
                 let mut c = 0u32;
                 if let Some(actor) = find_actor_by_dfs(&scene.actors, wl, dfs_id as u32, &mut c) {
-                    new_clipboard.push(actor.to_data(&scene.world));
+                    let mut data = actor.to_data(&scene.world);
+                    // 選んだアクタの子孫にあるプレビューも、プレビューの中身なのでコピーしない
+                    strip_editor_previews(&mut data);
+                    new_clipboard.push(data);
                 }
             }
             if !new_clipboard.is_empty() {

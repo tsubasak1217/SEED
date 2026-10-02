@@ -170,6 +170,12 @@ impl App {
         // 詳細は play_snapshot.rs を参照。
         self.capture_play_start_scene();
 
+        // ── 1-b) エディタのプレビュー（保存されない表示用のアクタ）を外す ─────────────
+        //   写しを取ってから外す: Play の中にはプレビューが無い（ScreenStack の置いてある根の引き取り・
+        //   ModalPlane の自己消去などに混ざらない）。写しにはプレビューが入っているので、Play を止めると戻る
+        //   （Play 前の Undo 履歴の DFS 番号とも合う。Undo には積まない。app/editor_preview/ops.rs）。
+        self.remove_previews_for_play();
+
         // ── 2) 編集専用状態のリセット（選択・ギズモ・ホバー・ドラッグ）──────────
         self.selected_instances.clear();
         self.selected_actor_dfs_ids.clear();

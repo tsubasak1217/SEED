@@ -26,6 +26,12 @@
 pub mod visibility;
 /// レイアウトの部品（W2-1b の 5 種）のスロットの出し入れ（作成・保存・読込・削除・既定値・インスペクタの JSON）
 pub mod canvas_layout_slots;
+/// エディタのプレビューの印（保存されない表示用のアクタ）と、保存系の濾過（docs/editor_screen_preview.md）
+pub mod editor_preview;
+/// エディタのプレビューの根へレイヤーの底上げ（CanvasLayoutItem の layer_bias）を付ける
+pub mod editor_preview_bias;
+
+pub use editor_preview::EditorPreviewInfo;
 
 use std::any::TypeId;
 use serde::{Deserialize, Serialize};
@@ -163,6 +169,13 @@ pub struct ActorData {
     /// 手動配置のアクタは常に None。旧 `.scene` との互換のため省略可（省略時 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scatter_prop_id: Option<String>,
+    /// エディタのプレビュー（保存されない表示用のアクタ）の印と作り直しの材料（docs/editor_screen_preview.md）。
+    /// **プレビューの根だけが Some** を持ち、中のノードは None。
+    /// ファイル（.scene / .actor・コピー・写し）へは書かない（保存系の経路が
+    /// `editor_preview::strip_editor_previews` で取り除く）。Undo・Play のメモリ上の写しには残る
+    /// （Undo/Play の後に印ごと戻すため）。欄の無い旧ファイルは None として読める。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_preview: Option<EditorPreviewInfo>,
 }
 
 /// actor_kind が Actor3D（デフォルト）の場合は JSON に書き出さない。
@@ -227,6 +240,10 @@ pub struct Actor {
     /// 子のワールド変換に影響しない（描画・物理・スクリプトから透過）。
     /// ActorData の同名フィールドと往復する。地形ルート／チャンクの器などに使う。
     pub is_folder:  bool,
+    /// エディタのプレビューの根の印と作り直しの材料。ActorData の同名フィールドと対応する。
+    /// **プレビューの根だけが Some**（中のノード・普通のアクタは None）。
+    /// build_actor で ActorData から復元し、to_data で書き戻す（ファイルへの濾過は保存系の経路が行う）。
+    pub editor_preview: Option<EditorPreviewInfo>,
     /// 保持コンポーネントの目録（実データは World）
     slots:          Vec<ComponentSlot>,
 }
@@ -255,6 +272,8 @@ impl Actor {
             prefab_hash: None,
             scatter_prop_id: None,
             is_folder,
+            // プレビューの印は既定で無し（エディタのプレビューの出し入れだけが根に付ける）。
+            editor_preview: None,
             slots:      Vec::new(),
         }
     }
@@ -419,6 +438,9 @@ impl Actor {
             prefab_hash:      self.prefab_hash.clone(),
             // 散布自動生成マーカーを往復させる（手動配置は None）。
             scatter_prop_id:  self.scatter_prop_id.clone(),
+            // エディタのプレビューの印を往復させる（根だけ Some）。ファイルへは書かない
+            // （.scene / .actor の保存系の経路が取り除く）。Undo・Play のメモリ上の写しには残す。
+            editor_preview:   self.editor_preview.clone(),
         }
     }
 }
@@ -613,6 +635,7 @@ mod folder_tests {
             prefab_source:    None,
             prefab_hash:      None,
             scatter_prop_id:  None,
+            editor_preview:   None,
         };
 
         // is_folder=true は出力され、往復で保持される。
@@ -713,6 +736,7 @@ mod visible_tests {
             prefab_source:    None,
             prefab_hash:      None,
             scatter_prop_id:  None,
+            editor_preview:   None,
         }
     }
 

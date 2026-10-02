@@ -99,6 +99,36 @@ pub struct TerrainChunkConfig {
     pub voxel_size: f32,
 }
 
+/// エディタのプレビュー（`PREVIEW_PREFAB`）の要求（命令の末尾の JSON。docs/editor_screen_preview.md）。
+///
+/// `prefab` だけ必須。知らないキーは無視する（将来の欄の追加でも古いランタイムが読めるように）。
+/// 空白だけの `prefab` は命令ごと捨て、空の `frame` は「枠なし」（None）へそろえる（`parse_preview_prefab_request`）。
+#[derive(serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct PreviewPrefabRequest {
+    /// 中身のプレハブ（assets:// 仮想パス or 絶対パス）
+    pub prefab: String,
+    /// 親の下で差し込む子のパス（'/' 区切りの名前。空 = 親の直下）
+    #[serde(default)]
+    pub under: String,
+    /// 枠のプレハブ（ScreenStack の screen_frame.actor 等。無し = 枠なし）
+    #[serde(default)]
+    pub frame: Option<String>,
+    /// 枠の中で中身を入れる子のパス（'/' 区切りの名前。空 = 枠の直下）
+    #[serde(default)]
+    pub frame_body: String,
+    /// 根のレイヤーの底上げ（根の CanvasLayoutItem の layer_bias へ書く。0・無し = 付けない）。
+    /// 値はエディタが決める（ScreenStack の差し込みなら 1 段 = 10,000、ModalHost のダイアログの帯なら 3,000,000 など）。
+    /// 解釈で ±`MAX_PREVIEW_LAYER_BIAS` に収める。i32 に入らない数・整数でない数は JSON として読めず、命令ごと捨てる。
+    #[serde(default)]
+    pub layer_bias: i32,
+}
+
+/// プレビューの根のレイヤーの底上げの上限（絶対値。2^24 = f32 で整数を正確に表せる範囲）。
+///
+/// スクリプトの `UiLayers.MaxBias`・`core/scripting/canvas_layout_api.rs` の `MAX_EXACT_LAYER_BIAS` と同じ範囲
+/// （描画の並べ替えでレイヤーが f32 を通っても、底上げした値の前後が崩れないため）。
+const MAX_PREVIEW_LAYER_BIAS: i32 = 16_777_216;
+
 // ============================================================
 //  IpcCommand — エディタから受け取るコマンド
 // ============================================================
@@ -497,6 +527,25 @@ pub enum IpcCommand {
     /// 置き方は app/template_actor_ops.rs（2D は Canvas の規則。Undo は 1 操作）。
     /// フォーマット: ADD_TEMPLATE_ACTOR:{world_line},{parent_dfs|-1},{path}（path はカンマを含みうるので最後）
     AddTemplateActor { world_line: u32, parent_dfs_id: Option<u32>, path: String },
+    /// エディタのプレビュー: 親（DFS）の下の `under` の子へ、プレハブを保存されないプレビューとして作る（docs/editor_screen_preview.md）。
+    /// フォーマット: PREVIEW_PREFAB:{world_line},{parent_dfs},{json}
+    ///   json = {"prefab":"assets://..","under":"Screens","frame":"assets://ui/prefabs/screen_frame.actor","frame_body":"Body","layer_bias":10000}
+    ///   （prefab だけ必須。under 空 = 親の直下、frame 無し・空 = 枠なし、frame_body 空 = 枠の直下、
+    ///     layer_bias 無し・0 = 底上げなし〈±16,777,216 に収める〉）
+    /// 応答: PREVIEW_ADDED:{world_line},{root_dfs} / PREVIEW_ERROR:{message}（app/editor_preview/wire.rs）
+    PreviewPrefab { world_line: u32, parent_dfs: u32, request: PreviewPrefabRequest },
+    /// エディタのプレビューを 1 つ消す（dfs を含むプレビュー。根でも中のノードでもよい）。
+    /// フォーマット: PREVIEW_CLEAR:{world_line},{dfs}
+    /// 応答: PREVIEW_CLEARED:{count}（含むプレビューが無ければ 0）
+    PreviewClear { world_line: u32, dfs: u32 },
+    /// その世界線のエディタのプレビューを全部消す。
+    /// フォーマット: PREVIEW_CLEAR_ALL:{world_line}
+    /// 応答: PREVIEW_CLEARED:{count}
+    PreviewClearAll { world_line: u32 },
+    /// そのプレハブ・枠から作ったエディタのプレビューを作り直す（プレハブを保存したときにエディタが送る）。
+    /// フォーマット: PREVIEW_REFRESH_PATH:{path}（絶対パス or assets://）
+    /// 応答: PREVIEW_REFRESHED:{count},{path}（path は受け取ったまま）
+    PreviewRefreshPath { path: String },
     /// アクターを削除する
     RemoveActor(u32),
     /// アクターをリネームする
@@ -1794,6 +1843,66 @@ fn parse_add_template_actor(rest: &str) -> Option<IpcCommand> {
     Some(IpcCommand::AddTemplateActor { world_line, parent_dfs_id, path: path.to_string() })
 }
 
+// ── エディタのプレビュー（PREVIEW_*。docs/editor_screen_preview.md）──────────────
+
+/// プレビューを作る命令の頭（`PREVIEW_PREFAB:{world_line},{parent_dfs},{json}`）。
+const PREVIEW_PREFAB_PREFIX: &str = "PREVIEW_PREFAB:";
+/// プレビューを 1 つ消す命令の頭（`PREVIEW_CLEAR:{world_line},{dfs}`）。
+/// `PREVIEW_CLEAR_ALL:` とは「CLEAR」の直後の文字（':' と '_'）で区別できる（取り違えはテストで固定）。
+const PREVIEW_CLEAR_PREFIX: &str = "PREVIEW_CLEAR:";
+/// 世界線のプレビューを全部消す命令の頭（`PREVIEW_CLEAR_ALL:{world_line}`）。
+const PREVIEW_CLEAR_ALL_PREFIX: &str = "PREVIEW_CLEAR_ALL:";
+/// プレハブ・枠のパスでプレビューを作り直す命令の頭（`PREVIEW_REFRESH_PATH:{path}`）。
+const PREVIEW_REFRESH_PATH_PREFIX: &str = "PREVIEW_REFRESH_PATH:";
+
+/// `PREVIEW_PREFAB:` の残り `{world_line},{parent_dfs},{json}` を解釈する。
+///
+/// json の中（パス）にカンマがあってよいので、先頭から 2 つだけ区切って残りを丸ごと json にする。
+/// 数値でない欄・json が読めない・prefab が空白だけ、のどれかなら None（半端な命令を実行しない）。
+fn parse_preview_prefab(rest: &str) -> Option<IpcCommand> {
+    let (world_line, parent_dfs, json) = parse2u_tail(rest)?;
+    let request = parse_preview_prefab_request(json)?;
+    Some(IpcCommand::PreviewPrefab { world_line, parent_dfs, request })
+}
+
+/// プレビューの要求の JSON を読み、パスの前後の空白を落として形をそろえる。
+///
+/// prefab が空（空白だけ）なら None。frame が空（空白だけ）なら枠なし（None）にする。
+/// under / frame_body は名前のパスなのでそのまま（空 = 直下）。layer_bias は ±MAX_PREVIEW_LAYER_BIAS に収める。
+fn parse_preview_prefab_request(json: &str) -> Option<PreviewPrefabRequest> {
+    let mut request: PreviewPrefabRequest = serde_json::from_str(json.trim()).ok()?;
+    request.prefab = request.prefab.trim().to_string();
+    if request.prefab.is_empty() {
+        return None;
+    }
+    request.frame = request
+        .frame
+        .map(|frame| frame.trim().to_string())
+        .filter(|frame| !frame.is_empty());
+    request.layer_bias = request.layer_bias.clamp(-MAX_PREVIEW_LAYER_BIAS, MAX_PREVIEW_LAYER_BIAS);
+    Some(request)
+}
+
+/// `PREVIEW_CLEAR:` の残り `{world_line},{dfs}` を解釈する（数値でない・欄の数が違えば None）。
+fn parse_preview_clear(rest: &str) -> Option<IpcCommand> {
+    let (world_line, dfs) = parse2u(rest)?;
+    Some(IpcCommand::PreviewClear { world_line, dfs })
+}
+
+/// `PREVIEW_CLEAR_ALL:` の残り `{world_line}` を解釈する（数値でなければ None）。
+fn parse_preview_clear_all(rest: &str) -> Option<IpcCommand> {
+    let world_line = rest.trim().parse::<u32>().ok()?;
+    Some(IpcCommand::PreviewClearAll { world_line })
+}
+
+/// `PREVIEW_REFRESH_PATH:` の残り `{path}` を解釈する（空なら None。path は受け取ったまま持つ）。
+fn parse_preview_refresh_path(rest: &str) -> Option<IpcCommand> {
+    if rest.trim().is_empty() {
+        return None;
+    }
+    Some(IpcCommand::PreviewRefreshPath { path: rest.to_string() })
+}
+
 /// `rest` から `u32, u32, u32, <tail>` をカンマ区切りでパースして (a, b, c, tail) を返す。
 /// tail にカンマが含まれてもよい（JSON 文字列等）。json の中身にカンマがあるため
 /// `splitn(4, ',')` で先頭 3 フィールドのみを厳密に切り出し、残り全部を tail とする
@@ -2286,6 +2395,23 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
                             // ADD_TEMPLATE_ACTOR:{world_line},{parent_dfs_id|-1},{path}
                             // path はカンマを含みうるので、先頭から 2 つだけ区切って残りを丸ごと path にする
                             parse_add_template_actor(&s["ADD_TEMPLATE_ACTOR:".len()..])
+                        }
+                        // ── エディタのプレビュー（保存されないプレビューの出し入れ・作り直し）──
+                        // PREVIEW_PREFAB:{world_line},{parent_dfs},{json}（json はカンマを含みうるので最後）
+                        s if s.starts_with(PREVIEW_PREFAB_PREFIX) => {
+                            parse_preview_prefab(&s[PREVIEW_PREFAB_PREFIX.len()..])
+                        }
+                        // PREVIEW_CLEAR:{world_line},{dfs}（PREVIEW_CLEAR_ALL: はこの頭に当たらない）
+                        s if s.starts_with(PREVIEW_CLEAR_PREFIX) => {
+                            parse_preview_clear(&s[PREVIEW_CLEAR_PREFIX.len()..])
+                        }
+                        // PREVIEW_CLEAR_ALL:{world_line}
+                        s if s.starts_with(PREVIEW_CLEAR_ALL_PREFIX) => {
+                            parse_preview_clear_all(&s[PREVIEW_CLEAR_ALL_PREFIX.len()..])
+                        }
+                        // PREVIEW_REFRESH_PATH:{path}
+                        s if s.starts_with(PREVIEW_REFRESH_PATH_PREFIX) => {
+                            parse_preview_refresh_path(&s[PREVIEW_REFRESH_PATH_PREFIX.len()..])
                         }
                         s if s.starts_with("WRAP_ACTOR:") => {
                             // WRAP_ACTOR:{child_dfs},{is_2d(0|1)}
@@ -3537,6 +3663,109 @@ mod tests {
                 assert_eq!(path, "C:\\tmp\\x.actor2d");
             }
             _ => panic!("AddTemplateActor を期待した"),
+        }
+    }
+
+    /// エディタのプレビューを作る命令（PREVIEW_PREFAB:{wl},{親},{json}）。json の中のパスはカンマを含んでよく、
+    /// 知らないキーは無視し、空の frame は枠なしへそろえる。数値でない欄・json が無い／読めない・空の prefab は捨てる。
+    #[test]
+    fn read_loop_parses_preview_prefab() {
+        let (commands, _) = read_all(
+            "PREVIEW_PREFAB:0,5,{\"prefab\":\"assets://ui/screens/Home.actor\",\"under\":\"Screens\",\"frame\":\"assets://ui/prefabs/screen_frame.actor\",\"frame_body\":\"Body\",\"layer_bias\":10000}\n\
+             PREVIEW_PREFAB:2,7,{\"prefab\":\"C:\\\\tmp\\\\a,b.actor\",\"future_key\":1,\"frame\":\"  \"}\n\
+             PREVIEW_PREFAB:0,x,{\"prefab\":\"assets://a.actor\"}\n\
+             PREVIEW_PREFAB:0,5\n\
+             PREVIEW_PREFAB:0,5,not json\n\
+             PREVIEW_PREFAB:0,5,{\"prefab\":\"   \"}\n\
+             PREVIEW_PREFAB:0,5,{\"under\":\"Screens\"}\n",
+        );
+        assert_eq!(commands.len(), 2, "壊れた行は捨てる");
+        match &commands[0] {
+            IpcCommand::PreviewPrefab { world_line, parent_dfs, request } => {
+                assert_eq!(*world_line, 0);
+                assert_eq!(*parent_dfs, 5);
+                assert_eq!(
+                    *request,
+                    PreviewPrefabRequest {
+                        prefab: "assets://ui/screens/Home.actor".to_string(),
+                        under: "Screens".to_string(),
+                        frame: Some("assets://ui/prefabs/screen_frame.actor".to_string()),
+                        frame_body: "Body".to_string(),
+                        layer_bias: 10_000,
+                    }
+                );
+            }
+            _ => panic!("PreviewPrefab を期待した"),
+        }
+        match &commands[1] {
+            IpcCommand::PreviewPrefab { world_line, parent_dfs, request } => {
+                assert_eq!(*world_line, 2);
+                assert_eq!(*parent_dfs, 7);
+                assert_eq!(request.prefab, "C:\\tmp\\a,b.actor", "パスのカンマを区切りにしない");
+                assert_eq!(request.under, "", "under 省略は親の直下");
+                assert_eq!(request.frame, None, "空白だけの frame は枠なし");
+                assert_eq!(request.frame_body, "", "frame_body 省略は枠の直下");
+                assert_eq!(request.layer_bias, 0, "layer_bias 省略は底上げなし");
+            }
+            _ => panic!("PreviewPrefab を期待した"),
+        }
+    }
+
+    /// プレビューのレイヤーの底上げ（layer_bias）: 範囲内はそのまま、範囲外は ±16,777,216（f32 で正確な整数の範囲）に収め、
+    /// i32 に入らない数・整数でない数は JSON として読めないので命令ごと捨てる。
+    #[test]
+    fn read_loop_clamps_preview_layer_bias() {
+        let (commands, _) = read_all(
+            "PREVIEW_PREFAB:0,1,{\"prefab\":\"a.actor\",\"layer_bias\":-3000000}\n\
+             PREVIEW_PREFAB:0,1,{\"prefab\":\"a.actor\",\"layer_bias\":20000000}\n\
+             PREVIEW_PREFAB:0,1,{\"prefab\":\"a.actor\",\"layer_bias\":-2147483648}\n\
+             PREVIEW_PREFAB:0,1,{\"prefab\":\"a.actor\",\"layer_bias\":5000000000}\n\
+             PREVIEW_PREFAB:0,1,{\"prefab\":\"a.actor\",\"layer_bias\":1.5}\n",
+        );
+        let biases: Vec<i32> = commands
+            .iter()
+            .map(|command| match command {
+                IpcCommand::PreviewPrefab { request, .. } => request.layer_bias,
+                _ => panic!("PreviewPrefab を期待した"),
+            })
+            .collect();
+        assert_eq!(
+            biases,
+            vec![-3_000_000, MAX_PREVIEW_LAYER_BIAS, -MAX_PREVIEW_LAYER_BIAS],
+            "範囲内はそのまま・範囲外は収める・i32 に入らない／整数でない数の行は捨てる"
+        );
+        assert_eq!(MAX_PREVIEW_LAYER_BIAS, 1 << 24, "f32 で整数を正確に表せる範囲（2^24）");
+    }
+
+    /// プレビューを消す・作り直す命令（PREVIEW_CLEAR / PREVIEW_CLEAR_ALL / PREVIEW_REFRESH_PATH）。
+    /// PREVIEW_CLEAR: と PREVIEW_CLEAR_ALL: を取り違えないこと、欄の数・数値の誤りと空のパスを捨てること。
+    #[test]
+    fn read_loop_parses_preview_clear_and_refresh() {
+        let (commands, _) = read_all(
+            "PREVIEW_CLEAR:0,12\n\
+             PREVIEW_CLEAR_ALL:3\n\
+             PREVIEW_REFRESH_PATH:assets://ui/screens/Home,1.actor\n\
+             PREVIEW_CLEAR:0\n\
+             PREVIEW_CLEAR:0,1,2\n\
+             PREVIEW_CLEAR:a,1\n\
+             PREVIEW_CLEAR_ALL:\n\
+             PREVIEW_CLEAR_ALL:0,1\n\
+             PREVIEW_REFRESH_PATH:\n",
+        );
+        assert_eq!(commands.len(), 3, "壊れた行は捨てる");
+        assert!(
+            matches!(commands[0], IpcCommand::PreviewClear { world_line: 0, dfs: 12 }),
+            "PREVIEW_CLEAR は 1 つ消す命令"
+        );
+        assert!(
+            matches!(commands[1], IpcCommand::PreviewClearAll { world_line: 3 }),
+            "PREVIEW_CLEAR_ALL は全部消す命令（PREVIEW_CLEAR と取り違えない）"
+        );
+        match &commands[2] {
+            IpcCommand::PreviewRefreshPath { path } => {
+                assert_eq!(path, "assets://ui/screens/Home,1.actor", "パスは受け取ったまま（カンマも含む）");
+            }
+            _ => panic!("PreviewRefreshPath を期待した"),
         }
     }
 

@@ -21,8 +21,9 @@ namespace SEEDEditor.Panels;
 /// <summary>
 /// Hierarchy パネルのツリー表示用ノード。Rust 側から届く JSON（id/name/parent/is_group 等）を
 /// ParseHierarchy で変換して保持し、アイコン色分け・ドラッグ&amp;ドロップ可否判定・選択種別判定に使う。
+/// 画面プレビューの印（PreviewFlags）は HierarchyPanel.Preview.cs の部分クラスにある。
 /// </summary>
-public class ActorNode : IHierarchySyncNode
+public partial class ActorNode : IHierarchySyncNode
 {
     public int             Id       { get; set; }
     public string          Name     { get; set; } = "";
@@ -507,6 +508,8 @@ public partial class HierarchyPanel : UserControl
                     IsPrefab  = e.TryGetProperty("is_prefab", out var ip) && ip.GetBoolean(),
                     // 整理専用フォルダノードか（旧 JSON にフィールドが無ければ false）
                     IsFolder  = e.TryGetProperty("is_folder", out var iff) && iff.GetBoolean(),
+                    // 画面プレビュー（保存されない表示用のアクタ）の印（旧 JSON は外。HierarchyPanel.Preview.cs）
+                    PreviewFlags = SEEDEditor.Preview.HierarchyPreviewFlags.Read(e),
                 })
                 .ToList();
 
@@ -679,7 +682,8 @@ public partial class HierarchyPanel : UserControl
         || a.IsPrefab != b.IsPrefab
         || a.Active   != b.Active
         || a.Visible     != b.Visible
-        || a.SelfVisible != b.SelfVisible;
+        || a.SelfVisible != b.SelfVisible
+        || PreviewHeaderDiffers(a, b);   // 画面プレビューの印（HierarchyPanel.Preview.cs）
 
     /// <summary>
     /// 差分更新後の選択復元。
@@ -860,6 +864,8 @@ public partial class HierarchyPanel : UserControl
         // テキスト色（プレハブ青）と Opacity は併存し、色を保ったまま淡くなる。
         if (!node.Active || !node.Visible)
             tb.Opacity = SEEDEditor.Controls.VisibilityToggle.DimmedRowOpacity;
+        // 画面プレビューの行は薄く、根には「（プレビュー）」を付ける（HierarchyPanel.Preview.cs）
+        ApplyPreviewHeaderStyle(tb, node);
         return tb;
     }
 
@@ -1122,6 +1128,9 @@ public partial class HierarchyPanel : UserControl
 
     private ContextMenu BuildSelectedContextMenu()
     {
+        // 画面プレビューの中のノードは、プレビューの項目だけのメニューにする（HierarchyPanel.Preview.cs）
+        if (TryBuildPreviewNodeMenu() is { } previewMenu) return previewMenu;
+
         var menu = new ContextMenu();
 
         // ── アクタを追加 サブメニュー（2D/3D → 親(ラップ)/子 の2段選択）──────
@@ -1154,6 +1163,8 @@ public partial class HierarchyPanel : UserControl
             AddMenuItem(menu, "プレハブリンク解除", null,
                 (_, _) => ConfirmAndUnlinkPrefab(prefabNode.Id));
         }
+        // 末尾に区切り＋画面プレビューの項目（HierarchyPanel.Preview.cs）
+        AppendPreviewNodeItems(menu);
         return menu;
     }
 
@@ -1226,6 +1237,8 @@ public partial class HierarchyPanel : UserControl
             AddMenuItem(menu, "シーン内の全プレハブを更新", null,
                 (_, _) => ConfirmAndReapplyAllPrefabs());
         }
+        // 画面プレビューがあれば「すべてのプレビューを消す」（HierarchyPanel.Preview.cs）
+        AppendPreviewBlankItems(menu);
         return menu;
     }
 
@@ -1740,6 +1753,9 @@ public partial class HierarchyPanel : UserControl
         // _pendingDragNode が null = OnTreeMouseDown が呼ばれていない（コンテキストメニュー誤操作防止）
         if (_pendingDragNode == null) return;
 
+        // 画面プレビューはドラッグを始めない（並べ替え・アクタファイル化とも。HierarchyPanel.Preview.cs）
+        if (DragWouldIncludePreview(_pendingDragNode)) return;
+
         CancelRenameTimer();
         _pendingRenameId = -1;
 
@@ -1976,6 +1992,8 @@ public partial class HierarchyPanel : UserControl
             else
             {
                 // ── 中央 → 子として追加。実効的な新しい親は targetNode 自身。──
+                // 画面プレビューの中へは動かせない（保存されないので。HierarchyPanel.Preview.cs）
+                if (RejectDropIntoPreview(e, targetNode, pos)) return;
                 // targetNode が 2D かつドラッグ中に 3D が含まれる場合はドロップ不可とする。
                 if (draggingHas3D && targetNode.Is2D)
                 {
@@ -2056,6 +2074,8 @@ public partial class HierarchyPanel : UserControl
         DragEventArgs e, ActorNode? effectiveParent,
         bool draggingHas3D, bool draggingHas2D, Point pos)
     {
+        // 実効親が画面プレビューの中なら動かせない（保存されないので。HierarchyPanel.Preview.cs）
+        if (RejectDropIntoPreview(e, effectiveParent, pos)) return false;
         // 3D を含むドラッグを 2D 親の兄弟へ入れる（＝2D 親の子になる）のは禁止。
         if (draggingHas3D && effectiveParent is { Is2D: true })
         {
@@ -2360,6 +2380,8 @@ public partial class HierarchyPanel : UserControl
     {
         // 閲覧専用（端末の写しの表示中）は名前を変えさせない（HierarchyPanel.ReadOnly.cs）
         if (IsReadOnlyView) return;
+        // 画面プレビューは読み取り専用（直すのは元のプレハブ。HierarchyPanel.Preview.cs）
+        if (IsPreviewNode(nodeId)) return;
         var item = FindTreeItemById(ActorTree.Items, nodeId);
         if (item?.Tag is not ActorNode node) return;
 

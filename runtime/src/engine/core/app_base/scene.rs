@@ -31,6 +31,7 @@ use crate::engine::components::{
 };
 use crate::engine::structs::objects::Actor;
 use crate::engine::structs::objects::actor::{ActorData, ActorKind};
+use crate::engine::structs::objects::actor::editor_preview::strip_editor_previews;
 use crate::engine::core::app_base::actor_file::{self, ActorFileError};
 use crate::engine::core::app_base::scene_settings::SceneSettingsData;
 use crate::engine::core::migration::{self, FormatKind, MigrationError};
@@ -81,6 +82,12 @@ impl From<ActorFileError> for SceneError {
             ActorFileError::Io(e)        => Self::Io(e),
             ActorFileError::Json(e)      => Self::Json(e),
             ActorFileError::Migration(e) => Self::Migration(e),
+            // 書き出しの拒否（プレビューの根）は読み込みでは起きないが、網羅のため
+            // 文言を保ったまま入出力の誤り（不正な入力）として移す。
+            refused @ ActorFileError::EditorPreview => Self::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                refused.to_string(),
+            )),
         }
     }
 }
@@ -501,7 +508,13 @@ impl Scene {
 
     /// シーンを `.scene` の JSON テキストへ直列化する（ファイルへは書かない）。
     ///
-    /// アクター列は `self.actors` を丸ごと `to_data` した内容になる。
+    /// **保存用の形。エディタのプレビュー（保存されない表示用のアクタ）は含めない**:
+    /// トップレベルのプレビューの根は飛ばし、各アクタの子孫のプレビューは部分木ごと取り除く
+    /// （`.scene` の保存〈SAVE_SCENE〉と Play 用一時シーン〈SAVE_SCENE_COPY〉がこの経路）。
+    /// メモリ上の写し（Play 開始時の退避・Undo・写しの表示前の退避）は `to_json_with_actors` を使い、
+    /// プレビューを残す（Play を止めた後・Undo の後にプレビューごと戻すため）。
+    ///
+    /// アクター列はそれ以外は `self.actors` を丸ごと `to_data` した内容になる。
     /// **アクター列を差し替えて書きたい場合**（Play スナップショットのように地形
     /// サブツリーを位置マーカーへ削ぐなど）は `to_json_with_actors` を直接呼ぶ。
     ///
@@ -509,8 +522,18 @@ impl Scene {
     /// * `camera` - エディタ視点を `debug_camera` 節として埋め込むか。
     ///   共有される `.scene` には **必ず `None`**（規約は `SceneDataRef::debug_camera` 参照）。
     pub fn to_json(&self, camera: Option<&DebugCameraData>) -> Result<String, SceneError> {
-        let actors: Vec<ActorData> =
-            self.actors.iter().map(|a| a.to_data(&self.world)).collect();
+        let actors: Vec<ActorData> = self
+            .actors
+            .iter()
+            // トップレベルにあるプレビューの根は丸ごと書かない
+            .filter(|a| a.editor_preview.is_none())
+            .map(|a| {
+                let mut data = a.to_data(&self.world);
+                // 子孫のプレビューを部分木ごと取り除く（保存されるのは利用者の作ったアクタだけ）
+                strip_editor_previews(&mut data);
+                data
+            })
+            .collect();
         self.to_json_with_actors(camera, &actors)
     }
 
@@ -775,9 +798,16 @@ pub fn build_actor(
     // プレハブ参照リンクを復元する（インスタンスのルートのみ Some、子は None）。
     // シーンロード時の再展開・ライブ反映の対象判定に使用する。
     actor.prefab_source = data.prefab_source;
+    // 取り込んだプレハブの版（prefab_hash）も写す。写さないとシーンを開くたびに落ち、
+    // 保存で .scene から消えて版ずれの検出（docs/editor_prefab.md §3）が働かなくなる
+    // （2026-10-02 の画面プレビューの通し確認で発覚）。
+    actor.prefab_hash = data.prefab_hash;
     // 地形散布の自動生成マーカーを復元する（手動配置は None）。
     // 再散布時に既存生成アクタを特定して置き換えるために使用する。
     actor.scatter_prop_id = data.scatter_prop_id;
+    // エディタのプレビューの印を復元する（根だけ Some。ファイルには書かれないので、
+    // ここに Some が来るのは Undo・Play のメモリ上の写しから組み直すときだけ）。
+    actor.editor_preview = data.editor_preview;
 
     for slot in data.components {
         let slot_name = slot.name.clone();
@@ -1138,6 +1168,15 @@ pub fn build_actor(
         }
     }
 
+    // エディタのプレビューの根なら、印にあるレイヤーの底上げを根の CanvasLayoutItem へ付け直す。
+    // `layer_bias` は保存されない実行中だけの欄（ActorData の写しに入らない）なので、Undo/Redo・Play 停止の復元
+    // （写しの ActorData から組み直す）のたびにここで付け直さないと、底上げが消えて下の画面の文字が重なって見える。
+    // 印はファイルに書かれないので、ファイルからの読み込みでは何もしない。スロットが無ければ黙って付けない
+    // （組み立てのときに知らせ済み。editor_preview_bias.rs）。
+    if actor.editor_preview.is_some() {
+        crate::engine::structs::objects::actor::editor_preview_bias::apply_preview_layer_bias(world, &actor);
+    }
+
     for child_data in data.children {
         // 子アクターは常に新規エンティティで構築する（予約は ルートのみ）
         actor.add_child(build_actor(child_data, ctx, world, scripting_host, None)?);
@@ -1467,5 +1506,73 @@ mod folder_transform_tests {
         );
         assert!(world2.contains::<CanvasTransform>(e2),
                 "読み込んだ 2D フォルダに CanvasTransform が入っていない");
+    }
+}
+
+// ============================================================
+//  テスト — 保存用の直列化（to_json）はエディタのプレビューを含めない
+//  （Undo・Play のメモリ上の写しは to_json_with_actors でプレビューを残す）
+// ============================================================
+#[cfg(test)]
+mod editor_preview_save_tests {
+    use super::*;
+    use crate::engine::structs::objects::actor::EditorPreviewInfo;
+
+    /// テスト用: Transform を持つ 3D アクタを 1 体作る。
+    fn spawn(scene: &mut Scene, name: &str) -> Actor {
+        let e = scene.world.spawn();
+        scene.world.insert(e, Transform::default());
+        Actor::new(e, name)
+    }
+
+    /// テスト用: プレビューの根の印を付ける。
+    fn mark_preview(actor: &mut Actor, prefab: &str) {
+        actor.editor_preview = Some(EditorPreviewInfo {
+            prefab: prefab.to_string(),
+            frame: None,
+            frame_body: String::new(),
+            layer_bias: 0,
+        });
+    }
+
+    /// 実アクタの子にあるプレビューも、トップレベルのプレビューも .scene の JSON に出ず、実アクタは残ること。
+    /// メモリ上の写しの形（to_json_with_actors に to_data をそのまま渡す）ではプレビューが残ること。
+    #[test]
+    fn to_json_drops_previews_but_keeps_real_actors() {
+        let mut scene = Scene::new("preview_save");
+
+        // Screens（実アクタ）
+        // ├─ RealChild（実アクタ）
+        // └─ PreviewHome（プレビューの根）
+        //     └─ PreviewInner（プレビューの中身）
+        let mut screens = spawn(&mut scene, "Screens");
+        screens.add_child(spawn(&mut scene, "RealChild"));
+        let mut preview = spawn(&mut scene, "PreviewHome");
+        preview.add_child(spawn(&mut scene, "PreviewInner"));
+        mark_preview(&mut preview, "assets://ui/screens/Home.actor");
+        screens.add_child(preview);
+        scene.actors.push(screens);
+        // トップレベルに取り残されたプレビューの根（念のための経路）も書かない
+        let mut top_preview = spawn(&mut scene, "TopPreview");
+        mark_preview(&mut top_preview, "assets://ui/screens/Top.actor");
+        scene.actors.push(top_preview);
+
+        let json = scene.to_json(None).expect("直列化できること");
+        assert!(!json.contains("PreviewHome"), "子のプレビューの根が書かれている:\n{json}");
+        assert!(!json.contains("PreviewInner"), "プレビューの中身が書かれている:\n{json}");
+        assert!(!json.contains("TopPreview"), "トップレベルのプレビューが書かれている:\n{json}");
+        assert!(!json.contains("editor_preview"), "プレビューの印が書かれている:\n{json}");
+
+        let data: SceneData = serde_json::from_str(&json).expect("読み込み側の型で読めること");
+        assert_eq!(data.actors.len(), 1, "実アクタ（Screens）だけが残ること");
+        assert_eq!(data.actors[0].name, "Screens");
+        let children: Vec<&str> = data.actors[0].children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(children, vec!["RealChild"], "実アクタの子は残ること");
+
+        // メモリ上の写しの形（Undo・Play の退避と同じく to_data をそのまま渡す）ではプレビューを残す
+        let actors: Vec<ActorData> = scene.actors.iter().map(|a| a.to_data(&scene.world)).collect();
+        let in_memory = scene.to_json_with_actors(None, &actors).expect("直列化できること");
+        assert!(in_memory.contains("PreviewHome"), "メモリ上の写しにはプレビューが残ること");
+        assert!(in_memory.contains("editor_preview"), "メモリ上の写しには印も残ること");
     }
 }

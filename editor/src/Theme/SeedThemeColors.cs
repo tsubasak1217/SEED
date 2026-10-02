@@ -215,6 +215,17 @@ public static class SeedThemeColors
     /// <inheritdoc cref="SeedColorTable.THUMBNAIL_PLACEHOLDER_FG"/>
     public static readonly Color ThumbnailPlaceholderFg = ToColor(SeedColorTable.THUMBNAIL_PLACEHOLDER_FG);
 
+    // ── 画面プレビューの帯（インスペクタ）──────────────────
+
+    /// <inheritdoc cref="SeedColorTable.PREVIEW_BANNER_BG"/>
+    public static readonly Color PreviewBannerBg = ToColor(SeedColorTable.PREVIEW_BANNER_BG);
+
+    /// <inheritdoc cref="SeedColorTable.PREVIEW_BANNER_ACCENT"/>
+    public static readonly Color PreviewBannerAccent = ToColor(SeedColorTable.PREVIEW_BANNER_ACCENT);
+
+    /// <inheritdoc cref="SeedColorTable.PREVIEW_BANNER_TEXT"/>
+    public static readonly Color PreviewBannerText = ToColor(SeedColorTable.PREVIEW_BANNER_TEXT);
+
     /// <summary>
     /// 色表の 16 進文字列を WPF の <see cref="Color"/> へ変換する。
     /// </summary>

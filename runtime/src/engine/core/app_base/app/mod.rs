@@ -208,6 +208,8 @@ pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
 /// テンプレートアクタの追加（ADD_TEMPLATE_ACTOR）: まっさらなアクタとして Canvas の規則で入れる
 mod template_actor_ops;
+/// エディタのプレビュー（PREVIEW_*）: 保存されないプレビューの出し入れ・作り直し・Play 開始で外す・木の編集の拒否
+mod editor_preview;
 /// ロジック配置（LOGIC_PLACE）: パターン生成 → 接地 → アクタ生成／制御点追記
 mod logic_placement_ops;
 mod placement_mode;

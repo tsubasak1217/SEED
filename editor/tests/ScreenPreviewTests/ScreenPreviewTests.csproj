@@ -1,0 +1,81 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Edit 上の画面プレビュー（保存されないプレビュー。docs/editor_screen_preview.md）のエディタ側の単体テスト。
+
+    試すもの（すべて editor/src/Preview/ の WPF 非依存のファイル）:
+      - IPC の組み立てと応答の解釈（ScreenPreviewIpc）
+      - 差し込み先の案内の表（PreviewHostCatalog と editor/config/screen_preview_hosts.json。スクリプトの既定とのずれ検知を含む）
+      - 右クリックの項目（PreviewMenuModel）
+      - プレハブの一覧・検索・並び（PrefabPreviewCatalog）と最近の一覧（PreviewRecentList / PreviewRecentStore）
+      - ヒエラルキー・インスペクタの印の読み取り（HierarchyPreviewFlags / InspectorPreviewInfo）
+      - Delete の振り分け（PreviewDeletionPlanner）
+
+    HierarchySyncTests と同じ流儀:
+      外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す。
+      SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+      （リンクしたファイルが WPF 型を使い始めたらここでビルドが壊れ、設計崩れの検知器になる）。
+
+    実行方法: dotnet run (project = editor/tests/ScreenPreviewTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ScreenPreviewTests</RootNamespace>
+    <AssemblyName>ScreenPreviewTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（WPF 非依存の純粋ロジック） -->
+    <Compile Include="..\..\src\Preview\ScreenPreviewRequest.cs">
+      <Link>Linked\Preview\ScreenPreviewRequest.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PreviewInsertTarget.cs">
+      <Link>Linked\Preview\PreviewInsertTarget.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\ScreenPreviewIpc.cs">
+      <Link>Linked\Preview\ScreenPreviewIpc.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PreviewHostCatalogFormat.cs">
+      <Link>Linked\Preview\PreviewHostCatalogFormat.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PreviewHost.cs">
+      <Link>Linked\Preview\PreviewHost.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PreviewHostCatalog.cs">
+      <Link>Linked\Preview\PreviewHostCatalog.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PreviewMenuModel.cs">
+      <Link>Linked\Preview\PreviewMenuModel.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PrefabPreviewCatalog.cs">
+      <Link>Linked\Preview\PrefabPreviewCatalog.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PreviewRecentList.cs">
+      <Link>Linked\Preview\PreviewRecentList.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PreviewRecentStore.cs">
+      <Link>Linked\Preview\PreviewRecentStore.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\HierarchyPreviewFlags.cs">
+      <Link>Linked\Preview\HierarchyPreviewFlags.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\InspectorPreviewInfo.cs">
+      <Link>Linked\Preview\InspectorPreviewInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Preview\PreviewDeletionPlanner.cs">
+      <Link>Linked\Preview\PreviewDeletionPlanner.cs</Link>
+    </Compile>
+    <!-- 仮想パスの変換（PrefabPreviewCatalog が使う。ProjectPanelLogicTests もリンクしている WPF 非依存のファイル） -->
+    <Compile Include="..\..\src\Assets\AssetUriPath.cs">
+      <Link>Linked\Assets\AssetUriPath.cs</Link>
+    </Compile>
+    <!-- テストランナー（SpriteRigTests と共用） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

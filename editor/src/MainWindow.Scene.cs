@@ -335,10 +335,12 @@ public partial class MainWindow
         // リネーム中（TextBox にフォーカスあり）は削除しない
         if (FocusManager.GetFocusedElement(this) is TextBox) return;
 
-        var ids = PanelHierarchy.GetSelectedNonGroupIds();
+        // 画面プレビューの根は PREVIEW_CLEAR で消し、中は消さない。残り（普通のノード）は
+        // プレビューを消した後の番号で従来どおり消す（MainWindow.ScreenPreview.cs）
+        var (ids, idsBeforeClear) = RouteDeletionAroundPreviews(PanelHierarchy.GetSelectedNonGroupIds());
         if (ids.Count == 0) return;
 
-        if (!PanelHierarchy.AnyHasChildren(ids))
+        if (!PanelHierarchy.AnyHasChildren(idsBeforeClear))
         {
             _runtimeManager!.SendToRuntime($"DELETE:{string.Join(",", ids)}");
             return;
