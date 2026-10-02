@@ -3644,6 +3644,18 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   CanvasTransform に大きさの欄を足すのは形式の変更（`.actor` / `.scene` の欄の追加・レイアウトの測り方の段の追加・インスペクタ）になるので見送った。
   (6) **読み（`ChildCount` 等）はフレームの始めの木**（同じフレームに作った子は数えない）。同じフレームの生成・並べ替えを読みに反映するには、`node_pending` のような保留の表を木の形で持つ必要がある。
   (7) Play 中の `HIERARCHY` は 400 ms ごとにまとめて送るので、エディタのヒエラルキーは並べ替えの途中の順を飛ばして最後の順だけを表示する（既存の間引き。`hierarchy_sync.rs`）。
+  → **(1) は 2026-10-03 に済（lane3。L3-5「スクリプトのインスタンスを引く API」）**: `GameObject.GetScript<T>()` / `GetScripts<T>()` / `GetScripts()` / `HasScript<T>()` /
+  `TryGetScript<T>(out)` / `GetScriptInChildren<T>(includeSelf)` / `GetScriptInParent<T>(includeSelf)`（`SEEDScript` の中は protected の同じ名前の短縮）・
+  `SEEDScript.Instances<T>()` / `FindInstance<T>()`。ランタイムは変えず CLR 側の登録簿（`scripting/src/Api/Scripting/`。`ScriptBridge` の CreateComponent・
+  ResolveReferenceFields / OnStart・OnDestroy の後 / DestroyComponent・読み直しで足し引き）で持つ。`AddScript<T>()` のインスタンスはフレーム末尾にでき、
+  以後 `go.GetScript<T>()` で引ける（OnStart 前でも。docs/scripting_api.md §7「スクリプトを引く」）。残件は下の「スクリプトを引く」の節。
+  **(3) の `RemoveScript<T>()` の設計案（L1 側。まだ作っていない）**: ① C# の `GameObject.RemoveScript<T>(int index = 0)`（同種の中の番号＝`GetScripts<T>()` と同じ数え方。
+  派生型も当たる）と `RemoveScript(SEEDScript instance)` は、外すインスタンスを登録簿で決め、その **GCHandle** をランタイムへ渡す（登録簿は CreateComponent で
+  ハンドルを知っているので記録に持たせる。型の名前でなくハンドルで渡すので、派生型・同じ型の複数・名前空間違いの同名にも正確）。② FFI は `ScriptHostApi` の末尾に
+  `node_remove_script(root_idx, root_gen, handle: isize) -> i32` を足す（`node_component` の i32 の引数ではハンドルを運べない。C# の `ScriptHost.cs` と同じ順で足す）。
+  ③ Rust は `ScriptSceneCommand::RemoveScript { root, handle }` を積み、フレーム末尾にハンドルの一致するスクリプトのスロットを `remove_slot_components` と
+  `actor.remove_slot_at` で外す（エディタの削除と同じ。Drop → OnDestroy → DestroyComponent で登録簿からも外れる）。④ 同じフレームの扱いは `RemoveComponent` と
+  そろえ、受けた時点で登録簿に「外す予約」の印を付けて `GetScript` 系・`Instances` から即座に消す（OnDestroy はフレーム末尾）。OnDestroy の中からは無視（再入ガード）。
 - [x] **PC の 1 倍で小さな文字の横線が欠けて別の字に見える** — 2026-09-30（W3-1 で発見。上の「PC の 1 倍で小さな文字の細い横線が消える・かすれる」の続き）。
   → **2026-10-01 に済**: 原因は text.wgsl が平滑化の幅を距離場の値の微分 fwidth(d) から決めていたこと（線の尾根を 2×2 の画素の組が挟むと fwidth ≒ 0 → しきい値の
   切り捨て）。測定: 17 px の「ー」を 0.1 dp ずつ下げた行で、横画のいちばん濃い alpha が 0.94〜0.98 → +0.5 dp で 0.25 → +0.6 dp で 0.00（消える）。
@@ -4102,4 +4114,35 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   隣のフレームが同じ値になることがあり、その回の区切り（イベントの配信）が次のフレームへずれる（落ちはしない）。目覚ましのアプリは長く動くので、
   エンジンからフレームの番号を渡す（`NativeFrameContext` に足す。runtime の仕事）のが確実。
 - [ ] **【参考】§7.22（Binding）も AI 補完に届かない** — 2026-10-03。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」の範囲
+  （`ScriptApiReference.MaxChars = 12000`）。
+
+## スクリプトを引く（GetScript・Instances）— 2026-10-03 実装時の残件（正典: docs/scripting_api.md §7「スクリプトを引く」）
+
+- [ ] **【中】Play での確かめ（未検証）** — 2026-10-03。確かめたのはビルドと純粋な部分の単体テスト（`editor/tests/ScriptRegistryTests` 30 件。登録簿・
+  問い合わせの口・木のたどり方）と、リポジトリに入れていない一時のハーネスでの通し（`ScriptBridge` の実際の入口〈CreateComponent・
+  ResolveReferenceFields・OnStart・OnDestroy・DestroyComponent・LoadPrecompiledScripts〉を関数ポインタで呼び、偽のホスト API〈スロット・子・親〉を
+  `RegisterHostApi` で差した）まで。Rust 側の実際の順序・`resolve_script_instance` / `node_query` / `parent_of` の応答はコードを読んで合わせただけで、
+  エンジンの上では動かしていない。①同じアクタの後ろのスロットのスクリプトを OnStart で `GetScript` で引ける ②`AddScript<T>()` の次のフレームに `GetScript<T>()` で引ける
+  ③`Destroy()` したフレームの Update では引け、次のフレームには引けない ④ホットリロードの後に `Instances<T>()` が作り直した数だけ返す（旧インスタンスが残らない）
+  ⑤アクタ編集タブで開いたアクタのスクリプトが `Instances` に載らない、をエディタの Play と Android の実機で確かめる。
+- [ ] **【低】OnStart 前の同じ型の 2 つ目を引けない・スロットの順は「生成の順」の近似** — 2026-10-03。ランタイムに「アクタのスクリプトのスロットを並びの順に
+  ハンドルで列挙する」口が無いので、OnStart 前のスクリプトは `TryResolveScriptInstance`（型の名前で先頭の 1 つ）で引いており、1 つのアクタに同じ型の名前が
+  2 つあると、2 つ目は自分の OnStart まで見えない。スロットの順も CLR のインスタンスができた順で数えており、エディタでスロットのスクリプトを差し替えた直後の Play だけ
+  ずれる（ランタイムはスロットを末尾にしか足さないので、ほかの経路では一致する）。`node_query` に「スクリプトのスロットのハンドルの一覧」の op を足せば両方なくなる（L1 側）。
+- [ ] **【低】`Instances` / `FindInstance` は同じフレームの OnStart の順に依存する** — 2026-10-03。登録簿が持ち主を知るのは各スクリプトの OnStart の直前なので、
+  同じフレームに OnStart を迎えるスクリプト同士では、先に OnStart したものから後のものが見えない（手書きの `Fish.All` と同じ）。ランタイムが BeginFrame の頭で
+  「このフレームに OnStart を迎えるスクリプトのハンドルと持ち主」をまとめて渡せば、全員を先に載せられる（L1 側。`script_system.rs` の収集の直後）。
+- [ ] **【低】OnStart の後に非アクティブにしたスクリプトも `Instances` に載る** — 2026-10-03。Unity の `FindObjectsOfType` は既定で非アクティブを除くが、
+  CLR 側は実効アクティブ（`sync_script_owners` の `active`）を知らない。要るなら `ScriptHost` に「スクリプトのスロットが実効アクティブか」の問い合わせを足す。
+- [ ] **【低】インターフェースで引く口が無い** — 2026-10-03。`GetScript<T>() where T : SEEDScript`（指示どおり）なので `GetScript<IDamageable>()` は書けない。
+  登録簿（`ScriptInstanceRegistry`）は基底の型・インターフェースでも引けるので、制約を `where T : class` にした多重定義を足すだけで出せる。
+- [ ] **【低】`SEEDScript` の GetScript 系は protected** — 2026-10-03。`gameObject` / `transform` と同じく自分のアクタを引くための短縮なので、
+  他のスクリプトのインスタンスから `fish.GetScript<T>()` とは呼べない（相手の `GameObject` の public の同じ名前のメソッドを使う）。public へ広げるのは後からでも
+  互換を壊さない（OnStart 前の相手は `gameObject` が未束縛で空振りする点に注意）。
+- [ ] **【低】`GetScriptInParent` は 1 段ごとに木を探す** — 2026-10-03。`ScriptHost.TryGetParent`（`ParentOf`）が呼ぶたびにアクタの木を深さ優先で探す
+  （O(アクタ数)）ので、深い所から呼ぶと 深さ × アクタ数。OnStart で引いて持つ使い方なら問題にならない。`actor_index_lookup` のような親の索引を引く FFI があれば O(深さ)。
+- [ ] **【参考】手書きの登録簿は置き換えていない** — 2026-10-03。`SEED.UI.UiRegistry`（`UiWidget.Of<T>`）・`SEED.Localization.LocalizedRegistry`
+  （`LocalizedBinding.Of<T>`）・わらしべフィッシングの `Fish.All` / `FindFishScript` は `GetScript<T>()` / `Instances<T>()` で置き換えられるが、既存の挙動を変えない
+  ため触っていない。`GetScript` は OnStart 前のものも返すので、置き換えるときは「OnStart 済み（部品の準備ができている）」を前提にしている所に注意する。
+- [ ] **【参考】§7「スクリプトを引く」も AI 補完に届かない** — 2026-10-03。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」の範囲
   （`ScriptApiReference.MaxChars = 12000`）。

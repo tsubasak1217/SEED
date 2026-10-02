@@ -9,8 +9,9 @@ namespace SEEDEditor.Scripting;
 ///
 /// 実行中は <see cref="gameObject"/> / <see cref="transform"/> で、自分がアタッチ
 /// された GameObject とその Transform（位置・回転・スケール）へアクセスできる。
+/// 他のスクリプトのインスタンスを型で引く GetScript / Instances 系は SEEDScript.Scripts.cs（partial）にある。
 /// </summary>
-public abstract class SEEDScript : IScriptComponent
+public abstract partial class SEEDScript : IScriptComponent
 {
     /// <summary>このスクリプトが乗る GameObject の所有エンティティ（毎フレーム束縛される）。</summary>
     private SEED.Entity _entity = SEED.Entity.None;

@@ -8,8 +8,10 @@
 /// スクリプトからは <c>SEEDScript.gameObject</c> / <c>SEEDScript.transform</c> で得る。
 /// <c>GetComponent&lt;T&gt;()</c> は未アタッチなら null を返す（Nullable&lt;T&gt;）ので、
 /// <c>if (go.GetComponent&lt;Camera&gt;() is { } cam) { ... }</c> のように保持判定できる。
+///
+/// スクリプトのインスタンスを型で引く <c>GetScript&lt;T&gt;()</c> 系は GameObject.Scripts.cs（partial）にある。
 /// </summary>
-public readonly struct GameObject
+public readonly partial struct GameObject
 {
     /// <summary>この GameObject を表すエンティティ。</summary>
     private readonly Entity _entity;

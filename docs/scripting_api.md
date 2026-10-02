@@ -1303,7 +1303,7 @@ list.GetChild(2).SetAsFirstSibling();
 | `Create` / `Create2D` / `Create3D` | ルートを予約。`Transform` / `CanvasTransform` の値・`Name`・`Visible`・`AddComponent`・`SetParent`・`SetSiblingIndex` を当てられる（発行した順に効く）| アクタの構築・親の末尾の子へ取り付け・`HIERARCHY` | 親の `ChildCount` / `Children` / 自分の `SiblingIndex` / `Parent` / `LayoutSize` が読める |
 | `AddComponent<T>()` | コンポーネントを World へ入れて**ハンドルを返す**（値を書ける）。`GetComponent<T>()` / `HasComponent` も返す | スロットの目録へ登録（描画・レイアウト・インスペクタに載る） | — |
 | `RemoveComponent<T>(index)` | `GetComponent<T>()` / `HasComponent` から**消える** | エディタの「コンポーネント削除」と同じ後始末（コンポーネントの除去・despawn・目録から外す） | — |
-| `AddScript<T>()` | 受けたかだけ（インスタンスはまだ無い） | スクリプトのスロットを足し、通常の構築経路で CLR のインスタンスを作る | `OnStart`（`gameObject` は足した先のアクタ） |
+| `AddScript<T>()` | 受けたかだけ（インスタンスはまだ無い） | スクリプトのスロットを足し、通常の構築経路で CLR のインスタンスを作る | `OnStart`（`gameObject` は足した先のアクタ）。`go.GetScript<T>()` で引ける（下の「スクリプトを引く」） |
 | `SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling` | 受けたかだけ | 論理の兄弟の順番を変える（レイアウトは毎フレームの描画で木の順から測り直す） | `Children` / `SiblingIndex` に反映 |
 | `ChildCount` / `GetChild` / `Children` / `SiblingIndex` | その場の木（フレームの始めの木）を読む | — | — |
 
@@ -1318,7 +1318,80 @@ list.GetChild(2).SetAsFirstSibling();
 
 > **重要**: `Create` で作ったアクタ・`AddComponent` で足したコンポーネントは、`Instantiate` と同じく**スクリプトが生成したもの**として扱われます（プレハブの Play 中の当て直しで消されず、書き戻しでファイルへ書かれない）。Undo は積まず、Play を止めると消えます（Play の世界は停止で Play 前の写しへ戻る）。OnDestroy の中からは使えません（無視される）。
 
-> **重要**: `AddScript<T>()` のインスタンスは**次のフレーム**にできます（同じフレームに値は渡せない）。足したスクリプトの `OnStart` で `gameObject`（足した先）・親・名前から自分で読んでください。型が見つからないときはフレーム末尾に `[Script] AddScript 失敗` が出ます。
+> **重要**: `AddScript<T>()` のインスタンスは**フレーム末尾**にでき、`OnStart` は**次のフレーム**です（同じフレームには無いので値は渡せない）。足したスクリプトの `OnStart` で `gameObject`（足した先）・親・名前から自分で読むか、次のフレームの `Update` 以降に `go.GetScript<T>()` で引いてメソッドで渡してください（下の「スクリプトを引く」）。型が見つからないときはフレーム末尾に `[Script] AddScript 失敗` が出ます。
+
+### スクリプトを引く（GetScript・GetScriptInChildren / InParent・Instances。2026-10-03）
+
+同じアクタ・子孫・祖先・シーン全体から、**スクリプトのインスタンスを型で**引きます（Unity の `GetComponent<MyScript>()` / `GetComponentInChildren` / `GetComponentInParent` / `FindObjectsOfType<T>()` に当たる）。`T` は `SEEDScript` の派生で、**派生型も当たります**（`GetScript<Enemy>()` は `Boss : Enemy` も返す。抽象の基底で引いてよい）。並びは**スロットの順**（全体の一覧は**生成順**）です。
+
+```csharp
+// ── アクタを指定して引く（GameObject の public メソッド）──
+Health? hp          = go.GetScript<Health>();            // T?: 最初の 1 つ（スロットの順）。無ければ null
+Health[] hps        = go.GetScripts<Health>();           // T[]: 全部（スロットの順・その時点の写し）。無ければ空の配列
+IScriptComponent[] all = go.GetScripts();                // 型を問わず全部（スロットの順・写し）
+bool has            = go.HasScript<Health>();            // 持っているか（GetScript が null でないか）
+if (go.TryGetScript<Health>(out var h)) h.Damage(10);    // 引けたら true
+Weapon? weapon      = go.GetScriptInChildren<Weapon>();  // 自分 → 子孫（行きがけ順の深さ優先。論理の子＝フォルダは透過）
+Weapon? childOnly   = go.GetScriptInChildren<Weapon>(includeSelf: false); // 子孫だけ
+Squad? squad        = go.GetScriptInParent<Squad>();     // 自分 → 親 → 親の親 …
+Squad? ancestorOnly = go.GetScriptInParent<Squad>(includeSelf: false);    // 祖先だけ
+
+// ── スクリプトの中では gameObject を省ける（自分のアクタ。protected の同じ名前のメソッド）──
+Mover? mover = GetScript<Mover>();                       // = gameObject.GetScript<Mover>()（自分自身も対象）
+
+// ── シーン全体から引く（SEEDScript の static）──
+Fish[] fishes   = SEEDScript.Instances<Fish>();          // T[]: 生存中の全インスタンス（生成順・その時点の写し）
+GameManager? gm = SEEDScript.FindInstance<GameManager>(); // T?: 最初の 1 つ（シングルトン的な用途）
+```
+
+```csharp
+// 例: 隣のスクリプトを OnStart で引いてフィールドに持つ（同じアクタの後ろのスロットで、まだ OnStart 前でも引ける）
+public class Shooter : SEEDScript
+{
+    private Ammo? _ammo;
+
+    public override void OnStart()
+    {
+        _ammo = GetScript<Ammo>();                       // 毎フレーム引かず、ここで 1 回
+    }
+
+    public override void Update(ref NativeFrameContext ctx)
+    {
+        if (_ammo is { } ammo && SEED.Input.GetKeyDown(SEED.KeyCode.Space)) ammo.Use();   // Use は Ammo に書いたメソッド
+    }
+}
+
+// 例: 手書きの static な一覧（Fish.All）と「Fish.All をエンティティで突き合わせる」探し方の置き換え
+foreach (var fish in SEEDScript.Instances<Fish>())       // 写しなので、列挙の途中で魚が破棄されても壊れない
+    fish.Scare(origin);                                  // Scare は Fish に書いたメソッド
+Fish? hooked = hookedActor.GetScript<Fish>();            // アクタ（GameObject）に付いている Fish
+```
+
+| 状態 | アクタを指定して引く（`GetScript` 系・`InChildren` / `InParent`） | 全体から引く（`Instances` / `FindInstance`） |
+| --- | --- | --- |
+| `OnStart` を迎えた（`OnStart` の最中を含む） | 引ける | 載る |
+| まだ `OnStart` を迎えていない（同じフレームで後から迎える・`AddScript` / `Instantiate` でできて次のフレームを待つ・非アクティブで一度も動いていない） | 引ける（ランタイムのスロットから型の名前で引く。同じ型が 1 つのアクタに複数あるときは先頭の 1 つだけ） | **載らない** |
+| `Destroy()` 済み（フレーム末尾で消える） | 引ける（`OnDestroy` の後に外れる） | 載る（同左） |
+| `OnDestroy` の後・スロットから外れた後（`OnStart` 前の破棄も） | 引けない | 載らない |
+| スクリプトの読み直し（ホットリロード） | 全部外れ、作り直されたインスタンスがまた上の規則で載る | 同左 |
+
+| `AddScript<T>()` を呼んでから | `go.GetScript<T>()` | `SEEDScript.Instances<T>()` |
+| --- | --- | --- |
+| 同じフレーム（`Update` など。インスタンスはまだ無い） | null | 載らない |
+| フレーム末尾（`Render` の後のシーン操作の適用）でインスタンスができてから、次のフレームのその `OnStart` まで | 引ける（`OnStart` 前） | 載らない |
+| 次のフレームのその `OnStart` の直前から（確実なのは次のフレームの `EarlyUpdate` 以降） | 引ける | 載る |
+
+> **重要**: `OnStart` は「A の OnStart → A の BeginFrame → B の OnStart → …」とスクリプトごとに走ります（§2）。そのため同じフレームに `OnStart` を迎えるスクリプト同士では、**先に `OnStart` したものから後のものは `Instances` / `FindInstance` に見えません**（`OnStart` の順＝ランタイムの走査順は決まっていない）。全員がそろうのは最初のフレームの `BeginFrame` の後（`EarlyUpdate` 以降）です。アクタを指定する `GetScript` 系は `OnStart` 前のものも引けるので、`OnStart` で隣・子・親のスクリプトを引いてフィールドに持つ書き方はそのまま動きます。
+
+> **重要**: `OnStart` 前に引いたスクリプトは、まだ自分の `OnStart` が走っておらず、その中の `gameObject` / `transform` も束縛されていません（参照フィールドの自作スクリプトと同じ）。相手の初期化済みの値を読む・相手のアクタを触るメソッドを呼ぶのは `Update` 以降にしてください。
+
+> **重要**: スロットの順は「インスタンスができた順」で数えます。シーンの読み込み・`Instantiate`・`AddScript`・ホットリロードはスロットの順に作るので一致します（エディタでスロットのスクリプトを差し替えた直後の Play だけ、差し替えたスロットが後ろに数えられる）。`Instances` に載るのは `OnStart` を迎えたものだけなので、**アクタ編集タブで開いているだけのアクタのスクリプトは載りません**（Play 中も走らない）。`OnStart` の後に非アクティブにしたスクリプトは、破棄されるまで載ったままです。
+
+> **重要**: `OnDestroy` の中での `GetScript` 系は保証しません（同じアクタの他のスクリプトが先に外れていることがあり、ランタイムへの問い合わせもできない）。後片付けに要る相手は `OnStart` で引いてフィールドに持ってください。
+
+> **重要**: `Fish.All` のような手書きの static な一覧（`OnStart` で足し `OnDestroy` で外す）は `SEEDScript.Instances<Fish>()` に置き換えられます（破棄で必ず外れる＝`OnStart` 前に消えたものも残らない・生成順）。ただし**毎回配列を作る**（O(n) の写し）ので、毎フレーム大量に呼ぶ用途には向きません（1 フレームに 1 回引いて使い回す）。`GetScript` 系も、まだ `OnStart` を迎えていないスクリプトがシーンにあるとランタイムへ問い合わせ、`GetScriptInChildren` / `InParent` は 1 段ごとに木を引くので、毎フレームではなく `OnStart` で引いてフィールドに持ってください（ホットリロードでは自分も作り直されて `OnStart` が走り直すので、引き直される）。
+
+> **重要**: スクリプトを外す `RemoveScript<T>()` はまだありません（ランタイムのスロットの削除が要る。`RemoveComponent<T>` はスクリプトのスロットを外せない）。外したいときはスクリプト側で自分を止める旗を持つか、アクタごと `Destroy` してください。CLR のメインスレッド専用です（ほかのスクリプトの API と同じ）。
 
 ### Transform（3D 位置・回転・スケール）
 
@@ -2417,6 +2490,7 @@ public class FishingLine : SEEDScript
 | `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー・前のフレームのレイアウトの結果（HasLayout・LayoutSize・LayoutRect。読み取り専用）・指定の大きさ（Size＝CanvasLayoutItem.PreferredSize） |
 | （アクター自身） | `gameObject.ChildCount` / `GetChild(i)` / `Children` / `SiblingIndex` | 論理の子（フォルダは透過）の列挙と兄弟の順番。`SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling` で並べ替え（フレーム末尾） |
 | （アクター自身） | `GameObject.Create` / `Create2D` / `Create3D`・`AddComponent<T>()` / `RemoveComponent<T>()` / `AddScript<T>()` | 空のアクタを作る・コンポーネントとスクリプトの追加と削除（動的ノード API） |
+| （アクター自身） | `gameObject.GetScript<T>()` / `GetScripts<T>()` / `GetScriptInChildren<T>()` / `GetScriptInParent<T>()`・`SEEDScript.Instances<T>()` / `FindInstance<T>()` | スクリプトのインスタンスを型で引く（派生型も当たる。アクタの中はスロットの順・全体は生成順。「スクリプトを引く」） |
 | `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）・レイトレ除外（`RayTracingExcluded`）・描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |
 | `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget）・形と塗り（角丸・楕円・弧・縁・グラデーション・9 スライス・影。W2-4） |
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
@@ -2506,6 +2580,8 @@ public class CameraMove : SEEDScript
     }
 }
 ```
+
+インスペクタで差し込まずにコードで引くなら `gameObject.GetScript<T>()`・`GetScriptInChildren<T>()`・`SEEDScript.Instances<T>()`（上の「スクリプトを引く」。同じ `OnStart` 前の規則で引ける）。
 
 > **重要**: 自作スクリプトへの参照はハンドル構造体ではなく**実インスタンス（class）**なので、`IsValid` は**ありません**。解決できないとき（未設定・アクター不在・そのスクリプトが付いていない・破棄済み）は `T` 宣言でも `T?` 宣言でも **必ず `null`** になるため、**毎回 null チェックが必須**です。参照先スクリプトの `OnStart` が自分より先に走っている保証は**ありません**（初期化済みの値を読むのは `Update` 以降にしてください）。**さらに重要**: 参照先スクリプトの `gameObject` / `transform` は、そのスクリプト自身のライフサイクル呼び出しが 1 度走るまで束縛されません。したがって自分の `OnStart` から相手のメソッドを呼ぶと、相手の中の `gameObject.GetComponent<T>()` や `gameObject.Visible` が**黙って空振り**します（図鑑のカードがこれで真っ白になりました）。相手のアクタを触るメソッドの呼び出しは `Update` 以降に回してください。インスタンスは**ホットリロードのたびに作り直されて再注入**されるので、**別のフィールドへキャッシュしてはいけません**（古いインスタンスを掴み続けます）。同じスクリプトが 1 アクターに複数付いている場合はインスペクタのスロット選択ダイアログで指定できます（未指定なら先頭のスロット）。
 
