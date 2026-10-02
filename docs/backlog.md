@@ -4371,3 +4371,23 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   内容が同じでもカーソルを動かすと選び直す（数 ms）。
 - [ ] **【低】常に入れる節は見出しの文の先頭一致** — 2026-10-03。`docs/scripting_api.md` の §1・§2・§7 の先頭・「利用可能なコンポーネント一覧」の
   見出しを変えると外れる（ログに警告・`InlineCompletionTests` の実 docs のテストが落ちる）。節の番号で指せるようにするかは保留。
+
+## Wake or Pay 側の置き換え（朝以降）— 2026-10-03（L3-8。手引き: docs/wakeorpay_migration_notes.md）
+
+- [ ] **Wake or Pay の回避コードを今夜の SEED API へ置き換える（アプリ側の作業）** — 2026-10-03。項目（M-00〜M-17）・推奨の順序・各項目の手順と注意は
+  [wakeorpay_migration_notes.md](wakeorpay_migration_notes.md)。最初に templates/ui の 7 ファイル（dialog・slider・toast の更新と、popup・dialog_item・progress_spinner・slider_tick の追加）を
+  Wake or Pay の `assets/ui/prefabs` へ写す（M-00。2026-10-03 に改行・空白を無視して比べた限り、ほかの写し 25 個は templates と同じ中身で、アプリ独自の手直しは無い）。
+  置き換え先の API は Wake or Pay の Play・実機ではどれも未確認（SEED の中での確かめの範囲は手引き §0.1）なので、段ごとに Play で確かめ、エンジンの不具合らしいものはこの backlog の該当の節へ書く。
+  ほかの節で「アプリ側は未着手」としている項目（W3-2 (1) の `DismissModals`・W3-3 (5) の `TopSheetFit`・W3-6 (1)(3)(4) の `PrebuiltContent`・`PopupPlane`・`OverlayPrefab` の一時の差し替え・
+  W3-7 (2) の `ModalParking`・lane2 の残件 (1) の `assets/ui` の古い写し・2026-10-02 lane3 の残件 (6)）はこの項目で追う。
+  **要判断の点**（手引きの各項目）: M-00 の写し方（要るファイルだけか取り込み画面か）・M-04 のメニューの並びとアイコン・M-05 の危険の Positive が赤の塗りになること・
+  M-06 を行の中のスピナーにするか進捗の札にするか・M-11 で要らなくなる `ModalParkStage` の段の整理・M-12 の道（画面ごとの作り置きか中身だけか）・M-13 の Domain の扱い
+  （StringTable をインターフェースにして App 側で L10n へ委ねるか、Domain がキーを返すか。DomainTests は SEED を参照しない）。
+- [ ] **【低】手引きを書いたときに見つけたエンジン側の注意（直していない）** — 2026-10-03（L3-8。コードを読んだだけで、Play では確かめていない）。
+  (1) **`Slider` は範囲だけを変えても描き直さない**: `Min`・`Max`・`Step` は欄の代入で、見た目を作り直すのは `SetValue`（値が変わったとき）と `SetTickCount`（数が変わったとき）だけ。
+  値と刻みの数が前と同じで範囲だけが違うと、つまみが古い範囲の位置に残る見込み。案: `SetRange(min, max, step)` のような口を足すか、欄をプロパティにして代入で作り直す（手引き M-01）。
+  (2) **`ModalHost.Park` は積まれている画面にしか回せない**（`ScreenStack.IndexOf(page) < 0` なら警告して false）。「全画面を閉じ始めてから、その下へ覆いを開き直して回す」には、
+  閉じる前に Park する必要がある（Wake or Pay の `AppNavigator.ReturnFrom` の 2 つ目の場合。手引き M-11）。
+  (3) **`PopupOptions` に右上の × の文字の欄が無い**（Wake or Pay は `PopupRequest.CloseLabel` で言語の表から渡していた。popup.actor の `CloseButton/Label` の文字を直接変えるか、欄を足す。手引き M-10）。
+  (4) **「祖先まで表示か」を問う公開の口が無い**（`UiVisibility.IsShownInHierarchy` は internal。公開の `NavigatorRegistry.IsActiveNode` はスタックの段も見るので意味が少し違う。
+  Wake or Pay の `NodeVisibility.IsShown` と同じ意味が要るならアプリに残す。手引き M-09）。
