@@ -475,6 +475,12 @@ public partial class InspectorPanel : UserControl
             // id が取れない応答は従来どおり通す（後方互換）。
             if (incomingId >= 0 && incomingId != _currentActorId) return;
 
+            // ロック中は、ロックした番号の応答がロックしたアクタのものかを確かめてから描く
+            // （同じ名前の兄弟がずれ込んだら外す。InspectorPanel.Lock.cs。2 回目のレビュー #13）
+            if (!AcceptLockedActorComponents(json, incomingId)) return;
+            // ロックしたときの目印の元（表示中のアクタの最新の中身）
+            _lastAppliedActorComponentsJson = json;
+
             try { BuildActorComponentList(json); }
             catch (Exception ex) { EditorLog.Write($"InspectorPanel: ACTOR_COMPONENTS parse error: {ex.Message}"); }
             // 閲覧専用・画面プレビューの中なら編集の UI を押せなくする（InspectorPanel.ReadOnly.cs）

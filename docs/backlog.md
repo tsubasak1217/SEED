@@ -52,7 +52,24 @@
 
 - [ ] **インスペクタのロックはリネームでも解除される** — 2026-09-12。ロック対象の同一性を「DFS ID ＋ ロック時の名前」で見ているため（DFS ID はツリーの位置なので、手前のアクターが増減すると別アクターを指す）、対象をリネームすると一致が崩れて自動解除される。削除と ID ずれを区別できないのが根本原因で、直すならランタイム側にアクターの安定 ID（世代付きハンドル等）が要る。関連: `editor/src/Panels/InspectorPanel.Lock.cs::ValidateInspectorLock`、docs/inspector_features.md §2-2。
 
+- [ ] **（2 回目のレビュー #13 の残り）インスペクタのロックは、名前も中身の構成も同じ兄弟（同じプレハブの行など）のずれ込みを見分けられない** — 2026-10-03（lane2）。#13 の直しで、ヒエラルキーが変わる（ロックした番号までの形か、同じ名前の兄弟の数が変わる）たびにロックした番号の ACTOR_COMPONENTS を取り直し、名前・ルートの種類・プレハブの参照・コンポーネントの構成を照合して、違えばロックを外すようにした（`editor/src/Panels/Inspector/InspectorLockIdentity.cs`・`InspectorLockShape.cs`・`InspectorPanel.Lock.cs`）。構成まで同じ兄弟が入ったときはロックが続き、取り直した値で描き直す（表示と書き先は同じアクタになるので、食い違いは起きない）が、ロックした「個体」が入れ替わったことには気づけない。直すには上の項目と同じくランタイム側の安定 ID が要る。WPF の配線（取り直しの送信と応答の振り分け）は実機未確認。
+
 - [ ] **「画像比率に設定」は TGA / WebP で寸法を取れない** — 2026-09-12。WPF の `BitmapDecoder` に該当コーデックが無い環境では元画像の寸法が読めず、ボタンを押しても何も起きない（ツールチップとログには理由を出す）。テクスチャの参照ダイアログは `.tga` / `.webp` も選べるので、必要になったら簡易ヘッダパーサ（TGA は先頭 18 バイト、WebP は VP8/VP8L/VP8X ヘッダ）を足す。関連: `editor/src/Panels/Inspector/ImageSizeCache.cs`、docs/inspector_features.md §1-4。
+
+## 2 回目のコードレビュー（docs/reviews/2026-10-03_code_review.md）のエディタ側の直し — lane2（L2-9）
+
+- #26 収録: `.cs` のコメントにだけある末尾 `/` のフォルダ参照（`/// 原画は <c>assets://art/</c> に置く`）でフォルダが丸ごと pak・テンプレートのインポートへ入る → 2026-10-03 に済（lane2）。修正前（95723ec7 より前）と同じく何もしない（`AssetCollector.Resolve` の ⓪・`AssetPathUtil.EndsWithSeparator`。`CommentReferenceTests`。docs/packaging.md §2）。
+- #12 ヒエラルキーの目アイコンが作ったときの DFS 番号を握る → 2026-10-03 に済（lane2）。押した時点の行（`TreeViewItem.Tag`）から読む（`HierarchyPanel.EyeToggle.cs`・判定 `Panels/Hierarchy/HierarchyEyeClick.cs`。`HierarchySyncTests` 4 件・本物のパネルのオフスクリーン確認 `editor/tests/HierarchyPanelProbe`〈直す前 3 件失敗 → 0 件〉）。
+- #14 書き戻しの「読み直し」の印がタブを閉じても残り、未保存の編集を確認なしで捨てる → 2026-10-03 に済（lane2）。閉じる・新しく開くで印を消し、未保存なら読み直す前に確かめる（`Reload/StaleActorTabs.cs`。`PrefabPlayReapplyTests` 6 件）。タブを閉じて隣のタブへ移るときも印を見て読み直すようにした。
+- #15 外部変更の監視は起動時に内容を知らない → 2026-10-03 に済（lane2）。監視の開始時と設定をオンにしたときに背景スレッドで既存のハッシュを覚える（`Reload/PrefabKnownHashSeeder.cs`・`PrefabExternalChangeTracker.SeedKnownHash`。`AutoReloadPolicyTests` 9 件）。
+- #16 自動の再展開の「Ctrl+Z で戻せます」がアクタータブ表示中に成り立たない → 2026-10-03 に済（lane2）。停止時は読み直し（`OPEN_ACTOR`）を再展開より先に送り、アクタータブ表示中は自動の再展開をバナーに落とす（`PrefabPlayReapplyQueue.TakeOnReturnToEdit(actorTabShown)`。`PrefabPlayReapplyTests` 4 件）。アクタータブ表示中に再展開が終わったとき（保存に続く自動反映など）のトーストは Ctrl+Z を約束しない文言にした。
+- #13 インスペクタのロック中に同じ名前のアクタがずれ込む → 2026-10-03 に済（lane2。残りは「## エディタ」の項目）。
+
+- [ ] **タブ単位の未保存の印が無い（読み直しの確認を全体の `_isDirty` で代用）** — 2026-10-03（lane2。#14 の残り）。書き戻しで古くなったアクタータブを読み直す前の確認は、未保存の印がシーンとタブで 1 つなので、シーンだけを編集していても出る（読み直してもシーンの編集は消えない。安全側）。Play の後は Play 中の変化で印が立っていることがあり、確認が多めに出る。#6（一括アップグレード）と同じ根。タブごとに「最後の保存からの編集の有無」をランタイムから返す（世界線ごとの SCENE_MODIFIED）のが本筋。関連: `editor/src/MainWindow.Prefab.cs::TryReloadStaleActorTab`、`editor/src/Reload/StaleActorTabs.cs`。
+- [ ] **Undo の履歴が世界線をまたいで 1 本（タブの切り替えで作り直す）** — 2026-10-03（lane2。#16 の根）。`OPEN_ACTOR` / `SET_ACTIVE_WORLD_LINE` が `UndoHistory::new()` するので、アクタータブの表示中に行ったシーンの再展開は、シーンのタブへ移ると Ctrl+Z で戻せない。今は停止時の自動の反映をバナーに落とし、保存に続く自動反映のトーストで Ctrl+Z を約束しないことで「約束と実際の食い違い」だけを消した（保存に続く自動反映そのものは従来どおり行う）。根本は世界線ごとの履歴。関連: `runtime/.../ipc_handler.rs`（OPEN_ACTOR・SET_ACTIVE_WORLD_LINE）、`editor/src/MainWindow.Prefab.cs::OnReturnedToEditForPrefabs`・`OnPrefabReapplyCompleted`。
+- [ ] **プレハブの監視の覚え込みが終わる前のイベントは従来どおり外部の変更になる** — 2026-10-03（lane2。#15 の残り）。覚え込みは背景スレッドで、終わるまで（プレハブが数百本なら数百 ms 程度の見込み。未計測）に届いた書き込みは内容に関わらず外部の変更として扱う。覚え込みの最中に書かれたファイル（読む前後で更新時刻が違う・開始より後）も覚えない。どちらも従来の挙動に戻るだけ。関連: `editor/src/Reload/PrefabAutoReloader.cs::StartSeeding`。
+- [ ] **（未確認）インスペクタの名前の横の目アイコンも、作ったときの番号を握っていないか** — 2026-10-03（lane2。#12 の類似）。ヒエラルキーの行は直したが、`VisibilityToggle` のもう 1 つの使い手（インスペクタ）は ACTOR_COMPONENTS が届くたびに作り直すので同じ形にはならない見込み（読みだけ。未確認）。関連: `editor/src/Panels/InspectorPanel.xaml.cs` の `VisibilityToggle.Create`。
+- [ ] **2 回目のレビューの #34〜#36（低）は lane2 で未着手** — 2026-10-03。#34: 名前にドット＋英数字を含むフォルダの参照（`"assets://models/char.001/"`）が ③ で拡張子とみなされて効かない・閉じない `/*` が `#if false` や `#region` にあると後ろが全部コメント扱い・最近のプレビューの一覧が一時的な IOException で消える（LocalizationTests.csproj の `CSharpCommentSpans.cs` のリンクは lane2 では既にあり、ビルド 0 エラーを確認）。#35: 一括アップグレードの待ち・AI のプレビューの判定・ガードの漏れ。#36: MCP の `seed_template_actor(add)` の成功判定・応答待ちの相関 ID・`seed_batch` の enum に `profile` が無い。
 
 ## 音声辞書（AudioDictionary）の残件（2026-09-11 実装時）
 

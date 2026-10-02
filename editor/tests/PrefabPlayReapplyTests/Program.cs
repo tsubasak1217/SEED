@@ -119,6 +119,46 @@ public static class Program
             Check.Equal(0, again.ReapplyPaths.Count, "消化済み");
         });
 
+        // ── 停止したときにアクタータブを表示中（2 回目のレビュー #16）─────────────
+        // OPEN_ACTOR / SET_ACTIVE_WORLD_LINE が Undo の履歴を作り直すので、アクタータブの表示中に再展開すると
+        // 「Ctrl+Z で戻せます」が成り立たない（シーンのタブへ移った時点で消える）。自動では再展開せずバナーに落とす。
+        h.Add("停止: アクタータブを表示中なら設定オンでも再展開せず、版ずれのバナーに落とす", () =>
+        {
+            var q = new PrefabPlayReapplyQueue();
+            q.Remember(CardPath, PlaybackState.Play);
+            var plan = q.TakeOnReturnToEdit(autoPropagate: true, actorTabShown: true);
+            Check.Equal(0, plan.ReapplyPaths.Count, "Ctrl+Z を約束できない再展開はしない");
+            Check.True(plan.RequestStatus, "バナーで知らせる（更新はシーンのタブで［更新する］から）");
+            Check.True(plan.DeferredByActorTab, "見送った理由をトーストで知らせる印");
+            Check.Equal(1, plan.ChangedPaths.Count, "画面プレビューの作り直し用に変わったパスは返す");
+            Check.Equal(0, q.Count, "空になる");
+        });
+        h.Add("停止: アクタータブを表示中・設定オフは従来どおりバナーだけ（見送りの知らせは出さない）", () =>
+        {
+            var q = new PrefabPlayReapplyQueue();
+            q.Remember(CardPath, PlaybackState.Play);
+            var plan = q.TakeOnReturnToEdit(autoPropagate: false, actorTabShown: true);
+            Check.Equal(0, plan.ReapplyPaths.Count, "再展開しない");
+            Check.True(plan.RequestStatus, "バナーで知らせる");
+            Check.True(!plan.DeferredByActorTab, "設定オフはもともと再展開しないので見送りではない");
+        });
+        h.Add("停止: シーンのタブを表示中・設定オンは従来どおり再展開する", () =>
+        {
+            var q = new PrefabPlayReapplyQueue();
+            q.Remember(CardPath, PlaybackState.Play);
+            var plan = q.TakeOnReturnToEdit(autoPropagate: true, actorTabShown: false);
+            Check.Equal(1, plan.ReapplyPaths.Count, "再展開する（Undo 1 操作で戻せる）");
+            Check.True(!plan.RequestStatus && !plan.DeferredByActorTab, "バナーも見送りの知らせも無し");
+        });
+        h.Add("停止: 何も覚えていなければアクタータブを表示中でも何もしない", () =>
+        {
+            var plan = new PrefabPlayReapplyQueue().TakeOnReturnToEdit(autoPropagate: true, actorTabShown: true);
+            Check.True(plan.ReapplyPaths.Count == 0 && !plan.RequestStatus && !plan.DeferredByActorTab, "何もしない");
+        });
+
+        // ── 書き戻しで古くなったアクタータブの読み直しの印（2 回目のレビュー #14。StaleActorTabTests.cs）──
+        StaleActorTabTests.Register(h);
+
         return h.Run();
     }
 }

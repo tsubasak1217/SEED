@@ -52,6 +52,13 @@ public readonly record struct PrefabChangeOutcome(string Path, PrefabChangeVerdi
 ///   自己書き込みの終了時にもその時点のハッシュを覚えるので、余韻が切れた後に遅れて届いた
 ///   自分の書き込みのイベントも 3 で落ちる。
 ///
+/// 【監視の開始時の覚え込み（2026-10-03 の 2 回目のレビュー #15）】
+///   監視の開始時（と設定をオンにしたとき）に、既存のプレハブの内容のハッシュを背景スレッドで読んで
+///   <see cref="SeedKnownHash"/> で覚える（読み取りは <see cref="PrefabKnownHashSeeder"/>）。以前は「知っている内容」を
+///   埋めるのが 3〜6 の判定と自己書き込みの終了だけで、起動直後の最初の書き込みは内容が同じでも Changed だった。
+///   覚え込みは「覚え込みの開始より後にそのパスへイベント・自己書き込みが無く、判定待ちでもない」ときだけ使う
+///   （覚え込みは開始時点の内容なので、その後に知った内容のほうが新しい）。覚え終わる前に届いたイベントは従来どおり Changed。
+///
 /// パスの同一視は区切り（'/' と '\\'）と大文字小文字の違いを無視する（<see cref="PrefabPlayReapplyQueue"/> と同じ）。
 /// 呼び出し側は絶対パスへ揃えてから渡す（仮想パスの解決はここでしない）。
 /// スレッド安全ではない（呼び出し側が UI スレッドへ集める）。
@@ -129,6 +136,12 @@ public sealed class PrefabExternalChangeTracker
     /// <summary>パスごとの自己書き込みの窓。</summary>
     private readonly Dictionary<string, SelfWriteWindow> _selfWrites = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// パスごとの最後の動き（ファイル監視のイベント・自己書き込みの開始・終了）の時刻。
+    /// 覚え込み（<see cref="SeedKnownHash"/>）が、その開始より後に知った新しい内容を古い内容で上書きしないために使う。
+    /// </summary>
+    private readonly Dictionary<string, DateTime> _lastActivityUtc = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>一括の書き換えの入れ子の深さ（0 より大きい間は全部 Suppressed）。</summary>
     private int _suppressionDepth;
 
@@ -169,6 +182,7 @@ public sealed class PrefabExternalChangeTracker
     {
         if (string.IsNullOrWhiteSpace(absolutePath)) return;
         var key = Key(absolutePath);
+        _lastActivityUtc[key] = nowUtc;
         if (_pendingByKey.TryGetValue(key, out var entry))
         {
             // 書き込みが続いている。静まるまで待ち直す（読み取りの失敗回数も新しいイベントで数え直す）
@@ -226,7 +240,9 @@ public sealed class PrefabExternalChangeTracker
     public void NotifySelfWriteStarted(string absolutePath, DateTime nowUtc)
     {
         if (string.IsNullOrWhiteSpace(absolutePath)) return;
-        var window = WindowFor(Key(absolutePath));
+        var startedKey = Key(absolutePath);
+        _lastActivityUtc[startedKey] = nowUtc;
+        var window = WindowFor(startedKey);
         window.InFlight     = true;
         window.DeadlineUtc  = nowUtc + SelfWriteMaxWait;
         // 終了の知らせが来るまでは上限の時刻まで窓を開けておく
@@ -245,12 +261,37 @@ public sealed class PrefabExternalChangeTracker
     {
         if (string.IsNullOrWhiteSpace(absolutePath)) return;
         var key    = Key(absolutePath);
+        _lastActivityUtc[key] = nowUtc;
         var window = WindowFor(key);
         window.InFlight     = false;
         window.TailUntilUtc = nowUtc + SelfWriteTail;
 
         var hash = _readContentHash(absolutePath);
         if (hash is not null) _knownHashes[key] = hash;
+    }
+
+    /// <summary>
+    /// 監視の開始時（と設定をオンにしたとき）に背景スレッドで読んだ既存のプレハブの内容を「知っている内容」として覚える
+    /// （2026-10-03 の 2 回目のレビュー #15。読み取りは <see cref="PrefabKnownHashSeeder"/>）。
+    ///
+    /// <para>
+    /// 次のときは覚えない（false を返す）: そのパスが判定待ち（覚え込みと前後して書き込みが来た。判定は従来どおり）／
+    /// 覚え込みの開始より後にそのパスのイベント・自己書き込みがあった（その後に知った内容のほうが新しい）／空のパス・ハッシュ。
+    /// それ以外は上書きする（設定をオフにしている間にファイルが変わり、知っている内容が古くなっている場合を置き換えるため）。
+    /// </para>
+    /// </summary>
+    /// <param name="absolutePath">プレハブの絶対パス。</param>
+    /// <param name="hash">覚え込みで読んだ内容のハッシュ。</param>
+    /// <param name="seedStartedUtc">覚え込みを始めた時刻（読み取りはこれより前に書かれたファイルだけを返す）。</param>
+    /// <returns>覚えたら true。</returns>
+    public bool SeedKnownHash(string absolutePath, string hash, DateTime seedStartedUtc)
+    {
+        if (string.IsNullOrWhiteSpace(absolutePath) || string.IsNullOrEmpty(hash)) return false;
+        var key = Key(absolutePath);
+        if (_pendingByKey.ContainsKey(key)) return false;
+        if (_lastActivityUtc.TryGetValue(key, out var lastActivity) && lastActivity >= seedStartedUtc) return false;
+        _knownHashes[key] = hash;
+        return true;
     }
 
     /// <summary>

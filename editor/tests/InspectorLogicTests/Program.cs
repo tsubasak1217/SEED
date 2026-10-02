@@ -53,6 +53,9 @@ public static class Program
         harness.Add("小数桁数はテキストから数える",                 DecimalPlacesFromText);
         harness.Add("整形は不変カルチャの固定小数点",               FormatUsesInvariantCulture);
 
+        // ── インスペクタのロックの照合（2 回目のレビュー #13。InspectorLockIdentityTests.cs）──
+        InspectorLockIdentityTests.Register(harness);
+
         return harness.Run();
     }
 

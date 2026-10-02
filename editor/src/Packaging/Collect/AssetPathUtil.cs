@@ -48,6 +48,21 @@ public static class AssetPathUtil
     }
 
     /// <summary>
+    /// 生の参照文字列（正規化する前。<see cref="AssetReferenceCandidate.Raw"/>）が区切り（'/' か '\'）で終わるかを返す。
+    ///
+    /// <para>
+    /// 末尾の区切りは <see cref="NormalizeRelative"/> が落とすので、正規化した後の候補からは「フォルダを指して書かれたか」が分からない。
+    /// C# のコメントの中にだけ書かれた末尾 '/' のフォルダ参照（説明の文の「置き場」）を展開しないために使う
+    /// （<see cref="AssetCollector"/>。2026-10-03 の 2 回目のレビュー #26）。JSON エスケープした絶対パス（<c>…\/art\/</c>・<c>…\\art\\</c>）も
+    /// 最後の文字が '/' か '\' なので同じく当たる。
+    /// </para>
+    /// </summary>
+    /// <param name="raw">元のテキストに書かれていた参照文字列。</param>
+    /// <returns>最後の文字が '/' か '\' なら true（空文字は false）。</returns>
+    public static bool EndsWithSeparator(string raw)
+        => raw.Length > 0 && (raw[^1] == '/' || raw[^1] == '\\');
+
+    /// <summary>
     /// パス中の ".." / "." セグメントを解決して短い形に畳む。
     /// glTF の uri（"../textures/a.png" など）を扱うために必要。
     /// </summary>

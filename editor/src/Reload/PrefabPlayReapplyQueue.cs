@@ -28,20 +28,25 @@ public enum PrefabSaveAction
 /// Play 中に変わったプレハブのパス（覚えた順）。画面プレビューの作り直し（設定に関わらず行う）にも使う。
 /// </param>
 /// <param name="Reapply">
-/// true なら <see cref="ChangedPaths"/> の全部へ <c>PREFAB_REAPPLY_PATH</c> を送る（設定オン）。
-/// false なら再展開しない（設定オフ。<see cref="RequestStatus"/> を見る）。
+/// true なら <see cref="ChangedPaths"/> の全部へ <c>PREFAB_REAPPLY_PATH</c> を送る（設定オン・シーンのタブを表示中）。
+/// false なら再展開しない（設定オフ、またはアクタータブを表示中。<see cref="RequestStatus"/> を見る）。
 /// </param>
-public sealed record PrefabReturnPlan(IReadOnlyList<string> ChangedPaths, bool Reapply)
+/// <param name="DeferredByActorTab">
+/// 設定オンなのに、アクタータブを表示中なので自動の再展開を見送ったとき true（2026-10-03 の 2 回目のレビュー #16）。
+/// アクタータブの表示中は Undo の履歴がタブの切り替え（<c>OPEN_ACTOR</c> / <c>SET_ACTIVE_WORLD_LINE</c>）で作り直されるので、
+/// 再展開しても「Ctrl+Z で戻せます」を約束できない。版ずれのバナーに落とし、見送った理由をトーストで知らせる。
+/// </param>
+public sealed record PrefabReturnPlan(IReadOnlyList<string> ChangedPaths, bool Reapply, bool DeferredByActorTab = false)
 {
     /// <summary>何もしない計画。</summary>
     public static readonly PrefabReturnPlan Nothing = new(Array.Empty<string>(), false);
 
-    /// <summary>Edit のシーンへ <c>PREFAB_REAPPLY_PATH</c> を送るパス（設定オフなら空）。</summary>
+    /// <summary>Edit のシーンへ <c>PREFAB_REAPPLY_PATH</c> を送るパス（再展開しないなら空）。</summary>
     public IReadOnlyList<string> ReapplyPaths => Reapply ? ChangedPaths : Array.Empty<string>();
 
     /// <summary>
-    /// 設定オフで変わったプレハブがあるとき true。再展開はせず、版ずれの問い合わせ（<c>PREFAB_STATUS</c>）だけ
-    /// 送って「プレハブが更新されています」のバナーで知らせる（シーンには触れない）。
+    /// 再展開せずに変わったプレハブがあるとき true（設定オフ、またはアクタータブを表示中で見送った）。
+    /// 版ずれの問い合わせ（<c>PREFAB_STATUS</c>）だけ送って「プレハブが更新されています」のバナーで知らせる（シーンには触れない）。
     /// </summary>
     public bool RequestStatus => !Reapply && ChangedPaths.Count > 0;
 }
@@ -61,9 +66,11 @@ public sealed record PrefabReturnPlan(IReadOnlyList<string> ChangedPaths, bool R
 ///       Play / Pause → 設定に関わらず LivePatchAndRemember（当て直しは Play の表示だけで、停止で消える）
 ///   - 覚えるのは Play / Pause 中だけ。同じファイルは 1 回だけ（大文字小文字・区切りの違いは同一視）
 ///   - 停止したとき（覚えたものがあれば）
-///       設定オン  → 覚えたパスを全部 PREFAB_REAPPLY_PATH（Undo はパスごとに 1 操作）
-///       設定オフ  → 再展開せず PREFAB_STATUS だけ（版ずれのバナーで知らせる。シーンには触れない）
-///     どちらでも待ち行列は空になる（次の Play へ持ち越さない）
+///       設定オン・シーンのタブを表示中   → 覚えたパスを全部 PREFAB_REAPPLY_PATH（Undo はパスごとに 1 操作）
+///       設定オン・アクタータブを表示中   → 再展開せず PREFAB_STATUS だけ＋見送りの知らせ（2 回目のレビュー #16。
+///                                          タブの切り替えが Undo の履歴を作り直すので Ctrl+Z を約束できない）
+///       設定オフ                         → 再展開せず PREFAB_STATUS だけ（版ずれのバナーで知らせる。シーンには触れない）
+///     どれでも待ち行列は空になる（次の Play へ持ち越さない）
 ///
 /// パスは呼び出し側が絶対パスへ揃えてから渡す（仮想パスと絶対パスの同一視はここでしない）。
 /// WPF・ランタイム非依存（単体テストのため）。
@@ -111,10 +118,15 @@ public sealed class PrefabPlayReapplyQueue
     /// Play が止まって Edit へ戻ったときにすることを決め、待ち行列を空にする。
     /// </summary>
     /// <param name="autoPropagate">その時点の設定「プレハブ保存時にシーンのインスタンスへ自動反映」。</param>
-    public PrefabReturnPlan TakeOnReturnToEdit(bool autoPropagate)
+    /// <param name="actorTabShown">
+    /// 停止した時点でアクタータブ（またはキャンバス編集タブ）を表示しているか。表示中は Undo の履歴がタブの切り替えで
+    /// 作り直されるので、自動では再展開せず版ずれのバナーに落とす（2026-10-03 の 2 回目のレビュー #16）。
+    /// </param>
+    public PrefabReturnPlan TakeOnReturnToEdit(bool autoPropagate, bool actorTabShown = false)
     {
         if (_paths.Count == 0) return PrefabReturnPlan.Nothing;
-        var plan = new PrefabReturnPlan(_paths.ToArray(), autoPropagate);
+        bool deferred = autoPropagate && actorTabShown;
+        var plan = new PrefabReturnPlan(_paths.ToArray(), Reapply: autoPropagate && !actorTabShown, DeferredByActorTab: deferred);
         _paths.Clear();
         _keys.Clear();
         return plan;

@@ -167,7 +167,9 @@ public static class PrefabAutoReloadTests
             Check.Equal(0, t.TakeDue(T0 + JustBeforeDebounce).Count, "書き込みの途中で読まない");
             Check.Equal(T0 + PrefabExternalChangeTracker.Debounce, t.NextDueUtc, "次の満了の時刻");
             var due = t.TakeDue(T0 + PrefabExternalChangeTracker.Debounce);
-            Check.Equal(PrefabChangeVerdict.Changed, VerdictOf(due, CardPath), "静まったら外部変更");
+            // まだ内容を知らない（監視の開始時の覚え込みが済む前・覚え込みに入らなかった）ファイルの最初の書き込みは、
+            // 内容に関わらず外部変更（docs §7.1。覚え込みの後の規則は PrefabHashSeedTests.cs。2 回目のレビュー #15）
+            Check.Equal(PrefabChangeVerdict.Changed, VerdictOf(due, CardPath), "静まったら外部変更（まだ内容を知らないファイル）");
             Check.Equal(0, t.PendingCount, "取り出したら待ちは空");
         });
 

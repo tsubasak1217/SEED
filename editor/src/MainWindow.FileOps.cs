@@ -127,6 +127,8 @@ public partial class MainWindow
             var name = System.IO.Path.GetFileNameWithoutExtension(path);
             // actor_kind を読み取って 2D アクターか判定する
             var is2D = DetectActorIs2D(path);
+            // 新しいタブはファイルから読むので、前に同じファイルのタブへ付いた「読み直し」の印は要らない（2 回目のレビュー #14。MainWindow.Prefab.cs）
+            ForgetStaleActorTab(path);
             _actorTabs.Add(new ActorTab(path, name, wl, is2D));
             // チーム内へ「このアクター（プレハブ）を編集中」と知らせる。
             // タブを閉じるまで保持し、閉じたときに自動で外す（CloseActorTab）。
@@ -260,6 +262,10 @@ public partial class MainWindow
 
         _actorTabs.RemoveAt(idx);
 
+        // 閉じたタブの「読み直し」の印を消す。残すと、後で開き直して編集したタブを次に表示したとき、
+        // 確認なしで読み直して編集と Undo を消す（2 回目のレビュー #14。MainWindow.Prefab.cs）。
+        ForgetStaleActorTab(closingTab.Path);
+
         // 「編集中」の記録を外す（自動で取ったロックだけが外れる）。
         // キャンバス編集タブはファイルを持たないのでここへは来ない（上で return 済み）。
         SEEDEditor.VersionControl.Locking.LockGatekeeper.ReleaseTrackedDocument(closingTab.Path);
@@ -271,10 +277,11 @@ public partial class MainWindow
         {
             if (_actorTabs.Count > 0)
             {
-                // 隣のタブに切り替え
+                // 隣のタブに切り替え（書き戻しで古くなったタブなら読み直して表示する。MainWindow.Prefab.cs）
                 var next = _actorTabs[Math.Min(idx, _actorTabs.Count - 1)];
                 _activeActorPath = next.Path;
-                SendNavCommand($"SET_ACTIVE_WORLD_LINE:{next.WorldLine}");
+                if (!TryReloadStaleActorTab(next.Path))
+                    SendNavCommand($"SET_ACTIVE_WORLD_LINE:{next.WorldLine}");
             }
             else
             {

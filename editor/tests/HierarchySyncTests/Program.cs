@@ -14,13 +14,19 @@ namespace HierarchySyncTests;
 /// ランタイムから届いたヒエラルキー 1 ノードの代役。
 /// 実体（HierarchyPanel.ActorNode）と同じく「安定キー」と「DFS ID」を持つ。
 /// </summary>
-public sealed class FakeNode : IHierarchySyncNode
+public sealed class FakeNode : IHierarchySyncNode, IHierarchyEyeTarget
 {
     /// <summary>表示名。安定キーの素になる。</summary>
     public string Name { get; }
 
     /// <summary>DFS 通し番号。アクターが増減するとズレる値（＝キーに使えない値）。</summary>
     public int Id { get; }
+
+    /// <summary>自分の表示フラグ（目アイコンの判定 HierarchyEyeClick のテスト用。既定は表示）。</summary>
+    public bool SelfVisible { get; init; } = true;
+
+    /// <summary>画面プレビューの行か（目アイコンの判定のテスト用。既定は false）。</summary>
+    public bool IsPreview { get; init; }
 
     /// <summary>子ノード。</summary>
     public List<FakeNode> Children { get; } = new();
@@ -175,6 +181,8 @@ public static class Program
         harness.Add("子階層も再帰的に整合する", NestedLevelsStayConsistent);
         harness.Add("末尾の余りを削除しても、生き残る項目は正しい対応を保つ", TrimKeepsMapping);
         harness.Add("別シーンへの全面差し替えでも位置とノードが 1:1 で対応する", WholeTreeReplacement);
+        // 行の目アイコンの判定（2 回目のレビュー #12。HierarchyEyeClickTests.cs）
+        HierarchyEyeClickTests.Register(harness);
 
         Console.WriteLine("=== ヒエラルキー差分更新テスト ===");
         return harness.Run();

@@ -23,7 +23,7 @@ namespace SEEDEditor.Panels;
 /// ParseHierarchy で変換して保持し、アイコン色分け・ドラッグ&amp;ドロップ可否判定・選択種別判定に使う。
 /// 画面プレビューの印（PreviewFlags）は HierarchyPanel.Preview.cs の部分クラスにある。
 /// </summary>
-public partial class ActorNode : IHierarchySyncNode
+public partial class ActorNode : IHierarchySyncNode, IHierarchyEyeTarget
 {
     public int             Id       { get; set; }
     public string          Name     { get; set; } = "";
@@ -846,8 +846,10 @@ public partial class HierarchyPanel : UserControl
                 node.Visible,
                 // アイコンの見た目は「実効表示」、送る値は「自身のフラグの反転」。
                 // コールバック引数（実効値の反転）はここでは使わない。
-                _ => _runtime?.SendToRuntime(
-                    SEEDEditor.Controls.VisibilityToggle.BuildCommand(node.Id, !node.SelfVisible)),
+                // 送る先と値は押した時点の行（TreeViewItem.Tag）のノードから読む。ここで node を握ると、差分更新が行を
+                // 使い回した後（見出しは作り直さない）に古い DFS 番号を送り、別のアクタを切り替える（2 回目のレビュー #12。
+                // HierarchyPanel.EyeToggle.cs）。
+                _ => OnRowEyeClicked(tb),
                 NodeIconSize))
         {
             BaselineAlignment = BaselineAlignment.Center,

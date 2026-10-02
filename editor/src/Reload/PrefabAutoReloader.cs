@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Threading;
 
 namespace SEEDEditor.Reload;
@@ -22,6 +24,11 @@ namespace SEEDEditor.Reload;
 ///
 /// 【依存の持ち方】RuntimeManager・MainWindow を知らない。「有効か」「外部の変更を受け取る」
 /// 「ログ」をコールバックで受け取る。
+///
+/// 【開始時の覚え込み（2026-10-03 の 2 回目のレビュー #15）】監視を始めたとき（設定がオンなら）と、設定をオンにしたとき
+/// （<see cref="Reseed"/>）に、既存の .actor / .actor2d の内容のハッシュを背景スレッドで読み（<see cref="PrefabKnownHashSeeder"/>）、
+/// UI スレッドで追跡器へ覚えさせる。これで起動直後の「同じ内容の書き込み・touch」も規則 3 どおり Unchanged になる。
+/// 覚え終わる前に届いたイベントは従来どおり Changed。
 /// </summary>
 public sealed class PrefabAutoReloader : IDisposable
 {
@@ -58,6 +65,12 @@ public sealed class PrefabAutoReloader : IDisposable
     /// <summary>ファイル監視（起動に失敗したら null＝この機能だけ無効）。</summary>
     private readonly FileSystemWatcher? _watcher;
 
+    /// <summary>UI スレッドの Dispatcher（覚え込みの結果を追跡器へ渡す先）。</summary>
+    private readonly Dispatcher _dispatcher;
+
+    /// <summary>走っている覚え込みの取り消し（覚え直し・終了で取り消す。走っていなければ null）。UI スレッドからのみ触る。</summary>
+    private CancellationTokenSource? _seedCancel;
+
     /// <summary>
     /// 自動再読込が実際に機能しているか（監視の起動に成功し、かつ設定がオン）。
     /// </summary>
@@ -79,6 +92,7 @@ public sealed class PrefabAutoReloader : IDisposable
         _isEnabled        = isEnabled;
         _onExternalChange = onExternalChange;
         _log              = log;
+        _dispatcher       = dispatcher;
 
         _timer = new DispatcherTimer(DispatcherPriority.Background, dispatcher);
         _timer.Tick += (_, _) => OnTimerTick();
@@ -112,6 +126,56 @@ public sealed class PrefabAutoReloader : IDisposable
             _watcher = null;
             _log($"{LogPrefix} 監視を開始できませんでした: {ex.Message}");
         }
+
+        // 既存のプレハブの内容を覚える（監視を張った後に始める。張る前の書き込みは覚え込みに含まれ、後の書き込みはイベントで届く）。
+        // 設定がオフなら覚えない（オンにしたとき Reseed で覚える）
+        if (IsEnabled) StartSeeding();
+    }
+
+    // ── 開始時の覚え込み（2 回目のレビュー #15）─────────────────────
+
+    /// <summary>
+    /// 既存のプレハブの内容を覚え直す（設定「プレハブを自動再読込」をオンにしたときに呼ぶ。UI スレッドから）。
+    /// オフの間はイベントを捨てているので、知っている内容が古くなっている。走っている覚え込みがあれば取り消してやり直す。
+    /// </summary>
+    public void Reseed()
+    {
+        if (!IsEnabled) return;
+        StartSeeding();
+    }
+
+    /// <summary>
+    /// 覚え込みを背景スレッドで始める（列挙とハッシュの読み取りは背景、追跡器へ渡すのは UI スレッド。数が多くても UI を止めない）。
+    /// </summary>
+    private void StartSeeding()
+    {
+        _seedCancel?.Cancel();
+        var cancel = new CancellationTokenSource();
+        _seedCancel = cancel;
+        var seedStartedUtc = DateTime.UtcNow;
+        var root = _assetsRoot;
+
+        Task.Run(() =>
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var files = PrefabKnownHashSeeder.EnumeratePrefabFiles(root);
+            var seeds = PrefabKnownHashSeeder.Collect(
+                files, seedStartedUtc, PrefabKnownHashSeeder.TryGetLastWriteUtc, FileContentHash.TryCompute, cancel.Token);
+            watch.Stop();
+            if (cancel.IsCancellationRequested) return;
+
+            _dispatcher.InvokeAsync(() =>
+            {
+                // 取り消された（覚え直し・終了）結果は捨てる。新しい覚え込みの結果だけを使う
+                if (cancel.IsCancellationRequested || !ReferenceEquals(_seedCancel, cancel)) return;
+                int seeded = 0;
+                foreach (var seed in seeds)
+                    if (_tracker.SeedKnownHash(Normalize(seed.Path), seed.Hash, seedStartedUtc)) seeded++;
+                _seedCancel = null;
+                cancel.Dispose();
+                _log($"{LogPrefix} 既存のプレハブの内容を覚えました: {seeded} / {files.Count} 件（{watch.ElapsedMilliseconds} ms）");
+            });
+        }, cancel.Token);
     }
 
     // ── エディタ自身の書き込み・一括の書き換え（UI スレッドから呼ぶ）──────
@@ -205,6 +269,9 @@ public sealed class PrefabAutoReloader : IDisposable
     public void Dispose()
     {
         _timer.Stop();
+        // 走っている覚え込みを止める（結果は UI スレッドで捨てられる）
+        _seedCancel?.Cancel();
+        _seedCancel = null;
         if (_watcher is null) return;
         _watcher.EnableRaisingEvents = false;
         _watcher.Dispose();

@@ -12,10 +12,16 @@
 //  変えるのは警告だけ: C# のコメント（// ・ /// ・ /* */）の中にだけ書かれ、実体の無い参照は、欠落の一覧から外して
 //  別の一覧（IgnoredCommentReferences）に残す。同じ文字列がコードの中にも書かれていれば従来どおり警告する。
 //
+//  【例外: コメントの中にだけある末尾 '/' のフォルダ参照は展開しない（2026-10-03 の 2 回目のレビュー #26）】
+//  末尾 '/' のフォルダ参照を拾う直し（95723ec7。NormalizeRelative の TrimEnd）の前は、末尾 '/' の参照は照合に外れて
+//  何も入らなかった。直しの後は、`/// 原画は <c>assets://art/</c> に置く` のような説明の文だけで、art/ の配下が丸ごと
+//  （除外ルールに当たる .psd・Thumbs.db や .cs も）pak に入るようになっていた。「従来どおり」を守るため、
+//  コメントの中にだけある末尾 '/' の参照はフォルダを展開しない（コードにも書かれていれば展開する）。
+//
 //  【検証範囲】
 //   - CSharpCommentSpans: // ・ /// ・ /* */ を拾い、文字列（普通・逐語的・補間・生）と文字のリテラルの中の // を数えない
 //   - AssetReferenceScanner: コメントの中にだけある assets:// に印を付け、コードの中にもあれば付けない
-//   - AssetCollector / AssetPakBuilder: 警告から外し、収録は変えない
+//   - AssetCollector / AssetPakBuilder: 警告から外し、収録は変えない（末尾 '/' のフォルダ参照だけは修正前と同じく展開しない）
 // ============================================================
 
 using System;
@@ -42,6 +48,7 @@ public static class CommentReferenceTests
         h.Add("コメント: 走査はコメントの中にだけある assets:// に印を付け、コードの中にもあれば付けない", ScannerMarksCommentOnlyReferences);
         h.Add("コメント: Wake or Pay と同じ形の文書コメントの例は「参照先が見つからない」に出ず、別の一覧に残る", CollectorIgnoresCommentOnlyMissing);
         h.Add("コメント: コメントの中の参照でも実在するファイル・フォルダは従来どおり収録する（収録は保守的）", CommentReferencesStillIncluded);
+        h.Add("コメント: コメントの中にだけある末尾 / のフォルダ参照は展開しない（修正前と同じ。コードにもあれば展開する）", CommentOnlyTrailingSlashFolderNotExpanded);
         h.Add("コメント: 同じ欠落の参照がコードにもあれば警告する・.cs 以外（JSON）は従来どおり", CodeReferenceStillWarns);
         h.Add("コメント: 共通の報告は警告の行に出さず、対象外の件数だけを 1 行で知らせる", ReportShowsIgnoredCountOnly);
     }
@@ -160,7 +167,7 @@ public static class CommentReferenceTests
         Check.True(result.MissingReferences.Any(m => m.ReferencePath == "scenes/no_such_texture.png"), "本物の欠落まで消えた");
     }
 
-    /// <summary>コメントの中でも実在すれば入る。</summary>
+    /// <summary>コメントの中でも実在すれば入る（末尾 '/' の無いフォルダ参照も従来どおり）。</summary>
     private static void CommentReferencesStillIncluded()
     {
         using var fx = new AssetFixture();
@@ -168,7 +175,7 @@ public static class CommentReferenceTests
         /// <summary>テーマは assets://themes/doc_theme.json と同じ形で書く（コメントにだけ書いたファイル）。</summary>
         public static class Docs
         {
-            /* 置き場のフォルダ: "assets://doc_folder/" （コメントにだけ書いたフォルダ） */
+            /* 置き場のフォルダ: "assets://doc_folder" （コメントにだけ書いた、末尾 / の無いフォルダ） */
         }
         """);
         fx.WriteText("themes/doc_theme.json", "{ }");
@@ -177,9 +184,59 @@ public static class CommentReferenceTests
         var included = new AssetCollector(fx.Root, new AssetPackagingSettings()).Collect()
             .Included.Select(a => a.RelPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         Check.True(included.Contains("themes/doc_theme.json"), "コメントの中の実在するファイルを収録から外した（保守的でない）");
-        Check.True(included.Contains("doc_folder/a.json"), "コメントの中の実在するフォルダを収録から外した（保守的でない）");
+        Check.True(included.Contains("doc_folder/a.json"), "コメントの中の末尾 / の無いフォルダ参照を収録から外した（95723ec7 より前から入っていた）");
         // 既存のフィクスチャのコメント中の参照（"assets://notes/memo.png）から読む。"）も従来どおり入る
         Check.True(included.Contains("notes/memo.png"), "既存のコメント中の参照が入らなくなった");
+    }
+
+    /// <summary>
+    /// コメントの中にだけある末尾 '/' のフォルダ参照（説明の文の「置き場」）は、修正前（95723ec7 より前）と同じくフォルダを展開しない。
+    /// 2 回目のレビュー #26: 展開すると除外ルールに当たる .psd・Thumbs.db や .cs まで丸ごと pak に入り、
+    /// テンプレートのインポート（CollectFrom）ではライブラリのフォルダが丸ごとプロジェクトへコピーされる。
+    /// </summary>
+    private static void CommentOnlyTrailingSlashFolderNotExpanded()
+    {
+        using var fx = new AssetFixture();
+        // 説明の文だけに書いた置き場（assets:// と、アセットルートの絶対パス \ 区切り の 2 系統）
+        fx.WriteText("scripts/ArtDoc.cs", $$"""
+        /// <summary>原画は <c>assets://art/</c> に置く。</summary>
+        public static class ArtDoc
+        {
+            // 下書きの置き場: {{fx.Root}}\sketch\
+        }
+        """);
+        fx.WriteBinary("art/hero.png", 8);
+        fx.WriteBinary("art/hero.psd", 8);
+        fx.WriteBinary("art/Thumbs.db", 8);
+        fx.WriteText("art/Tool.cs", "public static class Tool { }");
+        fx.WriteBinary("sketch/rough.png", 8);
+
+        // コメントにもコードにも書いた末尾 / のフォルダ（コードの参照なので 95723ec7 の直しどおり展開する）
+        fx.WriteText("scripts/Both.cs", """
+        public static class Both
+        {
+            // 例: assets://both_folder/ の中を全部読む
+            public const string Folder = "assets://both_folder/";
+        }
+        """);
+        fx.WriteText("both_folder/a.json", "{ }");
+
+        var result = new AssetCollector(fx.Root, new AssetPackagingSettings()).Collect();
+        var included = result.Included.Select(a => a.RelPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var leaked = included.Where(p => p.StartsWith("art/", StringComparison.OrdinalIgnoreCase) ||
+                                         p.StartsWith("sketch/", StringComparison.OrdinalIgnoreCase)).ToList();
+        Check.Equal(0, leaked.Count, "コメントにだけ書いた末尾 / のフォルダを展開した: " + string.Join(", ", leaked));
+        Check.True(included.Contains("both_folder/a.json"), "コードにも書いた末尾 / のフォルダを展開しなかった（95723ec7 の直しが戻った）");
+        Check.True(!result.MissingReferences.Any(m => m.ReferencePath.StartsWith("art", StringComparison.OrdinalIgnoreCase) ||
+                                                      m.ReferencePath.StartsWith("sketch", StringComparison.OrdinalIgnoreCase)),
+            "展開しないフォルダ参照を欠落として警告した: " + string.Join(", ", result.MissingReferences.Select(m => m.ReferencePath)));
+
+        // テンプレートのインポートの入口（CollectFrom）でも同じ（スクリプトを起点にしてもフォルダを持ち込まない）
+        var fromScript = new AssetCollector(fx.Root, new AssetPackagingSettings()).CollectFrom(["scripts/ArtDoc.cs"]);
+        var imported = fromScript.Included.Select(a => a.RelPath).ToList();
+        Check.True(!imported.Any(p => p.StartsWith("art/", StringComparison.OrdinalIgnoreCase) ||
+                                      p.StartsWith("sketch/", StringComparison.OrdinalIgnoreCase)),
+            "CollectFrom でコメントの中のフォルダを持ち込んだ: " + string.Join(", ", imported));
     }
 
     /// <summary>コードにもあれば警告する・.cs 以外は従来どおり。</summary>

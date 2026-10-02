@@ -33,6 +33,13 @@
     <Compile Include="..\..\src\Panels\Inspector\ScaleLinkCalculator.cs">
       <Link>Linked\Panels\Inspector\ScaleLinkCalculator.cs</Link>
     </Compile>
+    <!-- インスペクタのロックが同じアクタを指し続けているかの照合（2 回目のレビュー #13） -->
+    <Compile Include="..\..\src\Panels\Inspector\InspectorLockIdentity.cs">
+      <Link>Linked\Panels\Inspector\InspectorLockIdentity.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\Inspector\InspectorLockShape.cs">
+      <Link>Linked\Panels\Inspector\InspectorLockShape.cs</Link>
+    </Compile>
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

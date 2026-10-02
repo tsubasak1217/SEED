@@ -32,6 +32,10 @@
     <Compile Include="..\..\src\Reload\AutoReloadPolicy.cs">
       <Link>Linked\Reload\AutoReloadPolicy.cs</Link>
     </Compile>
+    <!-- 書き戻しで古くなったアクタータブの読み直しの印（2 回目のレビュー #14。StaleActorTabTests.cs） -->
+    <Compile Include="..\..\src\Reload\StaleActorTabs.cs">
+      <Link>Linked\Reload\StaleActorTabs.cs</Link>
+    </Compile>
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

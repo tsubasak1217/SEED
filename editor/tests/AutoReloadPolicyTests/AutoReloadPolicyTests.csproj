@@ -41,6 +41,14 @@
     <Compile Include="..\..\src\Reload\PrefabExternalChangeTracker.cs">
       <Link>Linked\Reload\PrefabExternalChangeTracker.cs</Link>
     </Compile>
+    <!-- 監視の開始時の覚え込み（覚えてよいファイルの選び方。読み取りの関数を差し替えて試す。2 回目のレビュー #15） -->
+    <Compile Include="..\..\src\Reload\PrefabKnownHashSeeder.cs">
+      <Link>Linked\Reload\PrefabKnownHashSeeder.cs</Link>
+    </Compile>
+    <!-- 覚え込みが使う内容のハッシュ（監視の判定と同じ関数。本物のフォルダで読み取りを通すテストに使う） -->
+    <Compile Include="..\..\src\Reload\FileContentHash.cs">
+      <Link>Linked\Reload\FileContentHash.cs</Link>
+    </Compile>
     <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

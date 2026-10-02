@@ -150,5 +150,8 @@ public partial class MainWindow
         EditorPreferences.Instance.AutoReloadPrefabs = on;
         EditorPreferences.Save();
         EditorLog.Write($"AutoReloadPrefabs = {on}");
+        // オフの間はイベントを捨てていたので、オンにしたら既存のプレハブの内容を覚え直す（背景スレッド。2 回目のレビュー #15）。
+        // 覚え直さないと、オフの間に変わったファイルへの同じ内容の書き込み・touch を外部変更と取り違える
+        if (on) _prefabAutoReloader?.Reseed();
     }
 }
