@@ -4085,7 +4085,12 @@ button.IsPressed     // bool（押下の見た目の間）
 button.Busy          // bool（get/set。処理中は押せない＝二重押しの防止）
 button.SetText("保存")
 button.Haptic        // bool（タップで端末を震わせる。Android だけ。既定 true）
-button.LabelSize     // string（文字の大きさのトークン。既定 "text.label"。空ならプレハブのまま）
+button.LabelSize     // string（文字の大きさ。トークンの名前か数〈"18"。2026-10-02〉。既定 "text.label"。空ならプレハブのまま）
+// 2026-10-02 の拡充
+button.Tone          // ButtonTone（Primary=0〈既定〉/ Danger=1 =「削除」などの危険の操作。color.error・color.on_error で塗る・書く）
+button.SetTone(ButtonTone.Danger)   // 見た目もすぐ変える（Filled = エラーの塗り・Outlined = エラーの枠と文字・Text = エラーの文字・Tonal は Filled と同じ）
+button.FitLabel      // bool（既定 true）: ボタンのレイアウトの大きさが変わるたびに文字の枠をボタンの大きさへ合わせる
+                     //（プレハブの「文字の枠 − ボタンの大きさ」の差を保つ。幅いっぱいに伸ばしたボタンでも文字が真ん中に来る。伸ばしていなければ従来と同じ）
 ```
 
 ### Toggle・Checkbox（スイッチ・チェックボックス）
@@ -4103,6 +4108,8 @@ checkbox.IsChecked / checkbox.SetChecked(true) / checkbox.Changed   // event Act
 slider.Min / slider.Max / slider.Step / slider.Value   // float（Step 0 = 連続。max も止まれる位置）
 slider.SetValue(30f)                  // 範囲・段階へ寄せる（同じ値なら知らせない）
 slider.ValueChanged                   // event Action<Slider, float>
+slider.TrackLength                    // float（溝の長さ。2026-10-02: 溝はレイアウトの幅に追従する＝コンテナの fill_width・Stretch・flex で伸ばすと
+                                      // 「幅 − プレハブの左右の余白」になり、画面の幅が変わるたびに置き直す。伸ばしていなければプレハブの長さのまま）
 number.Min / number.Max / number.Step / number.Value / number.Format / number.Suffix   // 例 Format "0"・Suffix "分"
 number.SetValue(15f); number.StepBy(+1)
 number.TrySetText("42")               // bool: 数でない入力は捨てる・範囲の外は収める
@@ -4121,13 +4128,26 @@ group.SelectionChanged     // event Action<SelectionGroup>
 group.InitialSelection     // int[]（最初に選ぶ項目の Index）
 chips.Multiple             // bool（ChipGroup。true = 複数〈既定〉/ false = 1 つ〈もう一度押すと外れる〉）
 item.Disabled              // bool（SelectItem。選べない項目＝灰色）
+group.LabelSize            // string（2026-10-02。項目の文字の大きさ: トークンの名前か数〈"18"〉。既定 "text.label"。空ならプレハブのまま）
+group.SetLabelSize("app.text.chip")   // 見た目もすぐ変える（チップ・ラジオ・セグメントごとに文字の大きさを変えられる）
 ```
 
-### ProgressBar・ProgressRing（進捗）
+### ProgressBar・ProgressRing・ProgressSpinner（進捗）
 
 ```csharp
 bar.SetValue(0.35f)        // 0..1。塗りの幅が motion.medium 秒で伸び縮み（Animate = false ならすぐ）
 ring.SetValue(0.7f)        // 弧の角度 = 値 × 360（真上から時計回り・端は丸い）。形と塗りの弧で描く
+ring.Thickness             // float（2026-10-02。輪の太さ。0 以下 = テーマの size.ring_thickness）。ring.SetThickness(3f) / ring.ResolvedThickness
+
+// 不定の進捗（終わりの分からない待ち。2026-10-02。プレハブ templates/ui/prefabs/progress_spinner.actor = Sprite〈弧〉＋ SEED.UI.ProgressSpinner）
+// 弧が伸び縮みしながら回る（Flutter の CircularProgressIndicator の不定の動き。色 color.primary）。回っている間（Spinning・押せる・
+// 自分と祖先が表示・画面と重なる）だけ描き続けを頼むので、隠す・止めると on_demand の描画は止まる
+var spinner = UiWidget.Of<ProgressSpinner>(gameObject.FindChild("Spinner"))!;
+spinner.Size = 48f;        // 大きさ（弧の外側の直径。0 以下 = テーマの size.spinner 36）。SetSize(48f)
+spinner.Thickness = 5f;    // 弧の太さ（0 以下 = size.spinner_thickness 4）。SetThickness(5f)
+spinner.SetSpinning(false);// 止める（今の姿のまま）。true で回す（既定）
+float d = spinner.ResolvedSize, t = spinner.ResolvedThickness;
+SpinnerArc arc = SpinnerMotion.At(seconds, 1.333f, 2.222f);   // 時刻の弧（StartDegrees・SweepDegrees。純粋な計算）
 ```
 
 ### UiTheme・UiTokens（テーマ：読み込み・継承・明暗・切り替え。W2-4・W2-9）
@@ -4205,6 +4225,7 @@ UiTokenCatalog.Match(token, out UiTokenKind kind)   // Known / AppDefined / Unkn
 
 ```csharp
 UiTextStyle.Apply(text, UiTheme.Current, UiTokens.TextBody)   // 自作の部品の文字へ大きさ・書体・太さを当てる（同じ値は書かない）
+UiTextStyle.Apply(text, UiTheme.Current, "18")                // 2026-10-02: 大きさは数でも書ける（UiTextSize.TryResolve の規則: 空・読めない指定は変えない）
 ```
 
 ## 7.17 UI 部品（SEED.UI：ホイール・時刻ホイール。W2-5）
@@ -4300,7 +4321,9 @@ wheel.RowPrefab                        // string（行のプレハブ。子に L
 
 1 つのシーンに画面をプレハブとして出し入れするための部品です（正典は docs/ui_navigation.md）。見本は `templates/ui/scenes/ui_navigation.scene`
 （テンプレートライブラリの「UI 部品」から取り込むと `assets/ui/...`）。部品のプレハブ: `screen_stack.actor`・`screen_frame.actor`・`tab_host.actor`・
-`modal_host.actor`・`dialog.actor`・`bottom_sheet.actor`・`top_sheet.actor`・`toast_host.actor`・`toast.actor`。
+`modal_host.actor`・`dialog.actor`・`dialog_item.actor`（選択肢の一覧の行。2026-10-02）・`bottom_sheet.actor`・`top_sheet.actor`・`toast_host.actor`・`toast.actor`。
+2026-10-02 の拡充（危険のボタン・選択肢の一覧・ボタンの縦積み・進捗の札・長い本文のスクロール・アイコンつきのトースト）の見本は `templates/ui/scenes/ui_gallery.scene` の
+「画面の組み立て」の段の 2 行目のボタン。
 
 ```csharp
 using SEED.UI;
@@ -4360,6 +4383,23 @@ DialogResult r = await d!.ResultAsync;          // Positive / Negative / Neutral
 int lines = DialogLayout.EstimateLines("寝坊で失う最大金額が 3,000 円になります。", 16f, 264f);   // 1（エンジンの折り返しの規則・組み込みの書体の送り幅）
 float h = DialogLayout.EstimateHeight(text, 16f, 264f);   // 行の数 × 16 × DialogLayout.LineHeightEm（1.4）。枠 DialogLayout.NoWrapWidth（0）は折り返さない
 float w = DialogLayout.EstimateWidth("やめる", 14f);       // 1 行の幅（改行を含むなら最も広い行）= 30.1
+// ── 2026-10-02 の拡充（新しい区画は templates/ui の dialog.actor〈2026-10-02 版〉と dialog_item.actor で使える）──
+// 危険のボタン（「削除」「破棄して戻る」）: 種類 Danger で color.error（Positive は塗り、ほかは文字の色）
+Dialog.Show(new DialogOptions { Title = "アラームを削除しますか？", PositiveText = "削除", PositiveKind = DialogButtonKind.Danger, NegativeText = "やめる" });
+// 選択肢の一覧（Material の SimpleDialog。長押しのメニュー）: 題の下に項目（アイコン欄＋文字）を縦に並べ、押した項目で閉じる
+var menu = Dialog.ShowMenu("7:30 のアラーム",
+    new DialogMenuItem("編集する", UiIcon.Circle()),                                  // アイコン: UiIcon.Image("assets://…png", 色?)・Circle・Ring・Square
+    new DialogMenuItem("共有する") { Enabled = false },                               // 選べない（灰色・押せない）
+    new DialogMenuItem("削除する", UiIcon.Ring(), DialogButtonKind.Danger));          // 危険（color.error）
+menu!.Completed += r => { if (r == DialogResult.Selected) Edit(menu.SelectedIndex); };   // Selected・SelectedIndex（DialogOptions.Items の添字。それ以外は -1）
+// DialogOptions.Menu(題, 項目…) で作り、NegativeText などを足せば一覧の下にボタンも出る。行のプレハブは DialogOptions.ItemPrefab で替えられる
+// 進捗の札（ボタンなし・幕のタップと戻るでは閉じない）: 本文を変える・外から閉じる
+var busy = Dialog.ShowProgress("購入の手続きをしています…", "購入");                  // スピナー（ProgressSpinner）＋本文
+busy!.SetMessage("もう少しで終わります");                                            // 本文を変える（札の高さも合わせ直す。開く前に呼んでもよい）
+busy.Close(DialogResult.Positive);                                                    // 外から結果つきで閉じる（Dismiss() は Dismissed）
+// ボタンの行: 文字の幅の和 ＋ 間隔が札の中の幅に入らなければ縦に積む（右寄せ・上から中立・いいえ・はい。間 size.dialog_actions_overflow_gap = 0）
+// 本文・選択肢が札に入りきらない（画面の高さ − 安全領域 − size.dialog_margin × 2 を超える）ときは、選択肢 → 本文の窓を縮めてスクロール（題とボタンは見えたまま）
+// HideButtons = true でボタンの行を出さない（文字を指定していても）
 ModalHandle? s = BottomSheet.Show(new SheetOptions { ContentPrefab = "assets://…/sound_list.actor", Args = …,
                                                      HalfDetent = true, StartHalf = true, HeightFraction = 0.9f });
 ModalHandle? o = TopSheet.Show(new OverlayOptions { ContentPrefab = "assets://…/profile.actor" });
@@ -4369,6 +4409,9 @@ ModalHost.Current!.Count(ModalKind.Dialog)      // 開いている数
 // ── トースト（シーンに ToastHost〈toast_host.actor〉を置く）──
 Toast.Show("保存しました");                       // ToastLength.Short（motion.toast_short）/ Long
 ToastHost.Current!.Show("…", 5f);               // 秒を指定。同時に count.toast_visible 個まで・あふれた分は待つ・横へ払うと消える
+Toast.Show("保存しました", UiIcon.Ring());        // 2026-10-02: 先頭のアイコン（図形か画像。大きさ size.icon・文字との間 size.icon_gap。toast.actor の Icon の子）
+Toast.Show("通信に失敗しました", UiIcon.Circle(UiTheme.Color(UiTokens.ColorError)), ToastLength.Long);
+ToastHost.Current!.Show("…", UiIcon.Image("assets://ui/icons/check.png"), 3f);   // 画像は色を指定しなければ画像の色のまま（白を掛ける）
 
 // ── 戻るの段（Android の戻る・PC の Esc。部品が毎フレーム読むので、スクリプトは何もしなくてよい）──
 BackDispatcher.Dispatch();                        // 画面の「戻る」ボタンから戻るを配る
@@ -4421,6 +4464,14 @@ Escape で確定すると縮んだ姿勢から閉じる・下ろす（閉じな�
 題と本文の `Text.LineSpacing` を `DialogLayout.LineHeightEm`（1.4）にして描く行送りと一致させます（テーマの `font.family` でほかの書体を当てると合いません）。
 出入りの動きの札の大きさ（`ratio.dialog_scale_from` 0.9 ↔ 1）は `CanvasLayoutItem.VisualScale`（札の矩形の中心の周りに背景・文字・ボタンが一体で縮む）に
 「開き具合の倍率 × 予測型の戻るのプレビューの倍率」（`DialogMetrics.CardScale`）を書きます。戻るを確定した後は、縮めた姿勢のまま閉じます。
+
+**2026-10-02 の区画（正典は docs/ui_navigation.md §3.2）**: 札は上から 題・進捗（スピナーと本文の行）・本文（切り抜く窓の中）・選択肢の一覧（窓の中）・
+1 行の入力欄・ボタンの行（`DialogMetrics.Sections(DialogContentHeights, DialogSpacing)`。区画の番号 `TitleSection`〜`ButtonsSection`）。
+選択肢の一覧の上下の空きと、一覧が札の端に来るときの札の余白は `size.dialog_items_inset`（12）、行の高さ `size.dialog_item_height`（48）、行は札の幅いっぱい
+（札の左右の余白を 0 にして、ほかの区画は中の幅で真ん中に置く）。札の高さが上限（`DialogMetrics.MaxCardHeight` = 画面 − 安全領域 − `size.dialog_margin` × 2）を
+超えると `DialogMetrics.Fit` が選択肢 → 本文の窓を 1 行まで縮め、その窓をスクロールにします（縮めない窓はスクロールも切り抜きも止める＝従来の見た目）。
+ボタンの横並び・縦積みは `DialogActionsLayout.Arrange`、選択肢の行の見た目は `DialogItemLooks`。**古いプレハブ**（2026-10-02 より前の dialog.actor）でも動きますが、
+本文はスクロールせず、進捗の札のスピナーは出ず（本文だけ）、選択肢の一覧は出せません（警告）。プレハブを取り込み直してください。
 
 **重なりと入力**: 画面のスタックの段 i は `LayerBias = i × LayerStep`（既定 `layer.stack_step` = 10,000。タブの中のスタックは 1,000）、
 覆い・シート・ダイアログ・トーストは帯（`layer.overlay`・`sheet`・`dialog`・`toast` = 100 万・200 万・300 万・400 万）。
@@ -4544,6 +4595,11 @@ field.SelectAllOnFocus = false;                // フォーカスを得たら全
 field.UnfocusOnDone = true;                    // 完了（Done）でフォーカスを外す（キーボードも隠れる）
 field.AvoidKeyboard = true;                    // キーボードを避ける（祖先の縦の CanvasScroll の末尾の余白と送り・ダイアログの持ち上げ）
 field.SetError(true);                          // エラーの見た目（枠とカーソルが color.error）
+// 2026-10-02 の拡充
+field.SetPadding(8f);                          // 欄ごとの左右の内側の余白（Padding。負 = テーマの size.field_padding〈既定〉・0 は余白なし。幅の狭い数値の欄）
+field.SetAllowSelection(false);                // 選択を許さない（AllowSelection。Flutter の enableInteractiveSelection: false）: 長押しは全選択にせず
+                                               // カーソルを置くだけ・SelectAllOnFocus と SelectAll() も選ばない・キーボードや IME の選択はカーソルへ畳む
+// 欄は自分のレイアウトの大きさの変化を見て中身を置き直す（コンテナが幅を伸ばした・ダイアログが入力の枠の幅〈札の中の幅〉に合わせた）
 
 string text = field.Text;                      // 本文（フォーカスの間はエンジンの本文に追従する）
 field.SetText("30");                           // 本文を置く（フォーカスの間は入力中の本文も差し替える。notify: true で TextChanged も出す）
@@ -4593,7 +4649,7 @@ scroll.EndInset = new Vector2(0f, 300f);
 | 操作 | 振る舞い |
 |---|---|
 | 欄のタップ | フォーカス（タップの位置へカーソル）。フォーカスの間のタップはカーソルを移し、閉じられていたキーボードを出し直す |
-| 欄の長押し | すべてを選ぶ |
+| 欄の長押し | すべてを選ぶ（選択を許さない欄〈AllowSelection = false〉はタップと同じ。2026-10-02） |
 | 欄の外のタップ（押して動かさずに離す） | フォーカスを外す（キーボードが隠れる）。スクロールのドラッグでは外さない。別の欄・ボタンのタップはそちらが先に受ける。OS に取り消された指（`TouchPhase.Canceled`。Android の戻るのジェスチャーが端の指を奪ったときなど）はタップと数えない |
 | 戻る（Android の戻る・PC の Esc） | 戻るの段（BackDispatcher）の Focus の層: 必ずフォーカスを外す。キーボードが出ていれば（PC は常に）受ける。Android でキーボードを閉じた後の戻る（1 回目は IME が閉じるので 2 回目）は、後ろに戻るを受ける層（ダイアログ・シート・覆い・画面のスタック）があればそこへ回し（ダイアログが閉じる）、無い根の画面では受ける（アプリは背面へ回らない。3 回目で背面へ） |
 | PC のキー | 文字（IME の変換・確定を含む）・Backspace・Delete・←→（Shift で選択）・Home・End・Enter（アクション）・Ctrl+A・Ctrl+C/X/V（禁止の欄では止める）。変換中のキーは IME が受ける |

@@ -29,8 +29,27 @@ public sealed class ProgressRing : UiWidget
     [SerializeField(Label = "動かす")]
     public bool Animate = true;
 
+    /// <summary>
+    /// 輪の太さ（キャンバスの単位。0 以下 = テーマの size.ring_thickness。2026-10-02）。以前はテーマのトークンだけで決まり、
+    /// 部品ごとに変えられなかった（Wake or Pay の W3-2 (5)。起床確認の輪と同じトークンを共有していた）。
+    /// </summary>
+    [SerializeField(Label = "太さ")]
+    public float Thickness;
+
     /// <summary>表示している値の動き。</summary>
     private UiTween _shown;
+
+    /// <summary>輪の太さを変える（0 以下 = テーマの size.ring_thickness。見た目も変える）。</summary>
+    /// <param name="thickness">太さ（キャンバスの単位）。</param>
+    public void SetThickness(float thickness)
+    {
+        if (Thickness == thickness) return;
+        Thickness = thickness;
+        Refresh();
+    }
+
+    /// <summary>今の輪の太さ（部品の指定か、テーマの size.ring_thickness）。</summary>
+    public float ResolvedThickness => UiSizeOverride.Resolve(Thickness, Theme.Number(UiTokens.SizeRingThickness));
 
     /// <summary>値を変える（0..1 へ収める）。</summary>
     public void SetValue(float value)
@@ -70,7 +89,8 @@ public sealed class ProgressRing : UiWidget
     protected override void ApplyLook()
     {
         float fade = IsEnabled ? 1f : Theme.Number(UiTokens.OpacityDisabled);
-        float thickness = Theme.Number(UiTokens.SizeRingThickness);
+        // 太さは部品の指定（0 以下ならテーマの size.ring_thickness。2026-10-02）
+        float thickness = ResolvedThickness;
         if (SpriteOf() is { } track)
         {
             track.Shape = SpriteShapeKind.Arc;

@@ -41,14 +41,17 @@ public sealed class ToastItem
     public bool Held { get; internal set; }
     /// <summary>スワイプで消した（出ていく向きを部品が決める）。</summary>
     public bool Swiped { get; internal set; }
+    /// <summary>先頭のアイコン（図形か画像。null = 出さない。2026-10-02）。</summary>
+    public UiIcon? Icon { get; }
 
-    internal ToastItem(int id, string message, float duration)
+    internal ToastItem(int id, string message, float duration, UiIcon? icon = null)
     {
         Id = id;
         Message = message;
         Duration = duration;
         Remaining = duration;
         Phase = ToastPhase.Pending;
+        Icon = icon;
     }
 }
 
@@ -91,9 +94,10 @@ public sealed class ToastQueue
     /// </summary>
     /// <param name="message">文字。</param>
     /// <param name="duration">見せておく時間（秒。0 以下は 0）。</param>
-    public ToastItem Enqueue(string message, float duration)
+    /// <param name="icon">先頭のアイコン（null = 出さない。2026-10-02）。</param>
+    public ToastItem Enqueue(string message, float duration, UiIcon? icon = null)
     {
-        var item = new ToastItem(_nextId++, message ?? string.Empty, Math.Max(0f, float.IsFinite(duration) ? duration : 0f));
+        var item = new ToastItem(_nextId++, message ?? string.Empty, Math.Max(0f, float.IsFinite(duration) ? duration : 0f), icon);
         if (_active.Count < _maxVisible) Show(item);
         else _pending.Enqueue(item);
         return item;

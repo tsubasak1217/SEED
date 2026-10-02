@@ -18,15 +18,13 @@ public static class UiTextStyle
     /// </summary>
     /// <param name="text">当てる文字。</param>
     /// <param name="theme">テーマ。</param>
-    /// <param name="sizeToken">大きさのトークン（空なら大きさは変えない）。</param>
+    /// <param name="sizeToken">
+    /// 大きさの指定（トークンの名前か数〈"18"〉。2026-10-02 から数も書ける。空・読めない指定なら大きさは変えない。読み方は UiTextSize）。
+    /// </param>
     /// <param name="weightToken">太さのトークン（既定は font.weight。見出しは font.weight_title）。</param>
     public static void Apply(Text text, UiThemeData theme, string sizeToken, string weightToken = UiTokens.FontWeight)
     {
-        if (sizeToken.Length > 0)
-        {
-            float size = theme.Number(sizeToken, text.FontSize);
-            if (text.FontSize != size) text.FontSize = size;
-        }
+        if (UiTextSize.TryResolve(theme, sizeToken, out float size) && text.FontSize != size) text.FontSize = size;
         ApplyFont(text, theme, weightToken);
     }
 

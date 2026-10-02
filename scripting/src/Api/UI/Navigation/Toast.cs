@@ -7,7 +7,11 @@ namespace SEED.UI;
 //
 //  【プレハブ】templates/ui/prefabs/toast.actor（ToastHost がここの子として作る）:
 //      Toast（Canvas・Sprite〈明るい面・角丸〉・CanvasGesture〈横のドラッグ・フリック〉・CanvasLayoutItem〈高さ〉・このスクリプト）
+//      ├─ Icon（Sprite。並べない・既定は隠す。先頭のアイコン〈図形か画像〉。2026-10-02）
 //      └─ Label（Text。並べない・左の中央）
+//  【先頭のアイコン（2026-10-02）】Toast.Show(文字, UiIcon) で、Label の左端（プレハブの位置 = 左の余白）にアイコン（size.icon・
+//  縦の真ん中）を置き、文字をアイコン ＋ size.icon_gap の右へずらす。図形の既定の色は文字の色（color.on_inverse_surface）。
+//  Icon の子が無い古いプレハブでは、アイコンを出さず文字だけ（落ちない）。
 //  入る: 自分の高さだけ下から上がる（TranslateFraction.y 1 → 0。motion.toast・motion.toast_curve）。
 //  出る: 時間が来た・スクリプトで消した → 下へ、スワイプで消した → その向きへ横に出る。出終わったら自分を消す。
 //  スワイプ: 横のドラッグで Translate.x を動かし、離したとき DragDismissMath（size.drag_dismiss・speed.fling_dismiss）で決める。
@@ -20,6 +24,10 @@ public sealed class Toast : UiWidget
 {
     /// <summary>子の文字の名前。</summary>
     private const string LabelChild = "Label";
+    /// <summary>子のアイコンの名前（2026-10-02）。</summary>
+    private const string IconChild = "Icon";
+    /// <summary>半分（アイコンを縦の真ん中に置く）。</summary>
+    private const float Half = 0.5f;
     /// <summary>出ていくときに動く量（自分の大きさに対する割合。画面の外へ出切る）。</summary>
     private const float ExitDistance = 1.2f;
     /// <summary>入るときの最初の位置（自分の高さに対する割合。下から）。</summary>
@@ -45,13 +53,23 @@ public sealed class Toast : UiWidget
     private bool _dragging;
     /// <summary>動きの 1 フレームの進め（入る動きを始めたフレームは数えない・上限。遷移の時計の直し）。</summary>
     private MotionStep _step;
+    /// <summary>プレハブの文字の左端（Label の位置 = 左の余白。アイコンを置くと右へずらすので開始時に覚える）。</summary>
+    private Vector2 _labelBase;
 
     /// <summary>
     /// シーンの ToastHost へトーストを出す（ToastHost が無ければ null・警告）。
     /// </summary>
-    public static ToastItem? Show(string message, ToastLength length = ToastLength.Short)
+    public static ToastItem? Show(string message, ToastLength length = ToastLength.Short) => Show(message, null, length);
+
+    /// <summary>
+    /// シーンの ToastHost へ先頭のアイコンつきのトーストを出す（2026-10-02。ToastHost が無ければ null・警告）。
+    /// </summary>
+    /// <param name="message">文字。</param>
+    /// <param name="icon">先頭のアイコン（図形か画像。null なら文字だけ）。</param>
+    /// <param name="length">見せる長さ。</param>
+    public static ToastItem? Show(string message, UiIcon? icon, ToastLength length = ToastLength.Short)
     {
-        if (ToastHost.Current is { } host) return host.Show(message, length);
+        if (ToastHost.Current is { } host) return host.Show(message, icon, length);
         Debug.LogWarning("[UI] toast: ToastHost がシーンにありません");
         return null;
     }
@@ -67,8 +85,11 @@ public sealed class Toast : UiWidget
             return;
         }
         if (TextOf(LabelChild) is { } label) label.Content = _item.Message;
+        if (TransformOf(LabelChild) is { } labelCt) _labelBase = labelCt.Position;
         if (gameObject.GetComponent<CanvasLayoutItem>() is { } item)
             item.PreferredSize = new Vector2(0f, Theme.Number(NavTokens.SizeToastHeight));
+        // 先頭のアイコン（無ければ Icon の子を隠し、文字はプレハブの位置のまま）
+        ApplyIcon();
         ApplyPose();
         NavNode.SetVisible(Owner, true);
         _enter.Retarget(1f, Theme.Number(NavTokens.MotionToast));
@@ -178,6 +199,28 @@ public sealed class Toast : UiWidget
         {
             label.Color = Theme.Color(NavTokens.ColorOnInverseSurface);
             UiTextStyle.Apply(label, Theme, UiTokens.TextBody);
+        }
+        // テーマの差し替えでアイコンの既定の色・大きさも追従する（項目を受け取った後だけ）
+        if (_item is not null) ApplyIcon();
+    }
+
+    /// <summary>
+    /// 先頭のアイコンを当て、文字をアイコンの右へずらす（2026-10-02。アイコンが無い・Icon の子が無い古いプレハブでは文字をプレハブの位置へ）。
+    /// アイコンは文字の左端（プレハブの Label の位置 = 左の余白）に、トーストの高さ（size.toast_height）の縦の真ん中に置く。
+    /// </summary>
+    private void ApplyIcon()
+    {
+        var iconNode = gameObject.FindChild(IconChild);
+        var look = iconNode.IsValid
+            ? UiIconLooks.Resolve(_item?.Icon, Theme, Theme.Color(NavTokens.ColorOnInverseSurface))
+            : UiIconLook.Hidden;
+        float height = Theme.Number(NavTokens.SizeToastHeight);
+        UiIconView.Apply(iconNode, look, new Vector2(_labelBase.x, (height - look.Size) * Half));
+        float labelX = UiIconLooks.TextStart(look, _labelBase.x, Theme.Number(UiTokens.SizeIconGap));
+        if (TransformOf(LabelChild) is { } labelCt)
+        {
+            var position = new Vector2(labelX, _labelBase.y);
+            if (labelCt.Position != position) labelCt.Position = position;
         }
     }
 }

@@ -6,6 +6,7 @@
   "_w2_9": "W2-9（テーマ）で足したもの: brightness（dark）、書体（font.family = 部品の文字の書体・空は組み込み、font.weight・font.weight_title = SEED.Text.Weight の太さ。0 = 書体そのまま）、テーマの切り替えの色の補間の時間と曲線（motion.theme 0.3 秒・motion.theme_curve = fastOutSlowIn）、明るい方の配色（light の節。暗い方と同じ種の色 #6C4BFF を主の色にし、面・文字は Material 3 の明るい配色の段を目安に選んだ。押下の重ね色は黒・濃さ 0.1〈Material 3 の pressed〉）。",
   "_w2_fix2": "W2 の手直し P2 で足したもの: ダイアログの区画の間隔（size.dialog_title_gap 16 = 題 → 本文、size.dialog_actions_gap 24 = 本文〈本文が無ければ題〉→ ボタンの行。Flutter master の AlertDialog〈Material 3〉の contentPadding の上 16・下 24。2026-09-29 に packages/flutter/lib/src/material/dialog.dart を取得して確かめた）。行のフルスワイプ（P2-3。SwipeActions）: ratio.swipe_full 0.6・ratio.swipe_full_cancel 0.55（構える・解くずらし量の行の幅に対する割合）、motion.swipe_full 0.15（「削除」の文字の置き場の補間）・motion.swipe_dismiss 0.2（確定で行を外へ流し切る）・motion.swipe_collapse 0.2（一覧が消した行を畳む）は docs/backlog.md の案（iOS の値は公開されていないので決めた値）。color.on_error（削除の面 color.error の上の文字。白。主の色の上の文字と同じく 3:1 以上）。グラフの日付線のハンドル（P2-4。LineChart）: size.chart_handle 18（丸の直径。利用者の要望の案〈docs/backlog.md: 見た目 16〜20 dp〉の中ほどで、スライダのつまみ size.slider_thumb 20 より一回り小さくし面の下の線と点を隠しすぎない。当たりはプレハブの min_hit_size_dp 48）・size.chart_handle_border 2（縁の太さ。折れ線の太さ size.chart_line 2 と同じ。縁の色は面の color.surface・塗りは選んだ系列の色）。",
   "_w2_6": "W2-6b（入力欄 SEED.UI.TextField）で足したもの: color.selection（選択の背景。主の色の 40%）、size.field_height 52（Material 3 の Outlined text field の 56 を目安に、Wake or Pay の数値の欄〈約 51 dp〉に合わせた）・size.field_padding 16（左右の内側の余白。Material 3 と同じ）・size.field_focus_border 2（フォーカス・エラーの枠。Material 3 と同じ）・size.caret 2（カーソルの太さ。Flutter の cursorWidth 2）・size.composition_underline 2（変換中の下線）・size.keyboard_gap 16（キーボードを避けるときの余白）、text.field 16（Material 3 の bodyLarge）・text.field_number 24（数値の欄の大きめの数字）、motion.caret_blink 0.5（Flutter の EditableText の点滅の半周期 500ms）。正典は docs/ui_text_input.md §9。",
+  "_ui_extend": "2026-10-02 の部品の拡充（Wake or Pay の W3 で見つかった制限の解消）で足したもの: アイコン（size.icon 24 = Material のアイコンの標準、size.icon_gap 12 = Material 3 のメニューの項目の先頭のアイコンと文字の間。記憶による）、不定の進捗 ProgressSpinner（size.spinner 36・size.spinner_thickness 4 = Flutter の CircularProgressIndicator の既定の大きさ 36×36 と strokeWidth 4、motion.spinner_cycle 1.333・motion.spinner_rotation 2.222 = 同じく弧の伸び縮みの 1333 ms と 1 回転の 2222 ms。2026-10-02 に flutter/flutter master の progress_indicator.dart で確かめた）、ダイアログ（size.dialog_margin 24 = Flutter の Dialog の insetPadding の縦 24、size.dialog_actions_overflow_gap 0 = AlertDialog の OverflowBar の overflowSpacing の既定 0、size.dialog_item_height 48 = 選択肢の一覧の 1 行〈押せる大きさ 48〉、size.dialog_items_inset 12 = SimpleDialog の contentPadding の上 12。dialog.dart は 2026-09-29 に取得したもので確かめた）。正典は docs/ui_components.md・docs/ui_navigation.md §3.2。",
   "name": "default",
   "brightness": "dark",
   "color": {
@@ -82,6 +83,10 @@
     "shadow_offset": 2,
     "wheel_item": 32,
     "wheel_band_inset": 9,
+    "icon": 24,
+    "icon_gap": 12,
+    "spinner": 36,
+    "spinner_thickness": 4,
     "tab_bar": 64,
     "tab_indicator_width": 56,
     "tab_indicator_height": 28,
@@ -90,6 +95,10 @@
     "dialog_title_gap": 16,
     "dialog_actions_gap": 24,
     "dialog_button_height": 40,
+    "dialog_margin": 24,
+    "dialog_actions_overflow_gap": 0,
+    "dialog_item_height": 48,
+    "dialog_items_inset": 12,
     "handle_width": 32,
     "handle_height": 4,
     "handle_area": 24,
@@ -169,7 +178,9 @@
     "swipe_full": 0.15,
     "swipe_dismiss": 0.2,
     "swipe_collapse": 0.2,
-    "caret_blink": 0.5
+    "caret_blink": 0.5,
+    "spinner_cycle": 1.333,
+    "spinner_rotation": 2.222
   },
   "opacity": {
     "pressed": 0.16,

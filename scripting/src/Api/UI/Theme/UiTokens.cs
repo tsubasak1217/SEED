@@ -114,6 +114,20 @@ public static class UiTokens
     public const string SizeWheelItem = "size.wheel_item";
     /// <summary>ホイールの中央の帯の左右の余白（W2-5。Flutter の選択の帯の余白 9）。</summary>
     public const string SizeWheelBandInset = "size.wheel_band_inset";
+    /// <summary>
+    /// アイコンの大きさ（2026-10-02 の部品の拡充。トーストの先頭のアイコン・ダイアログの選択肢の一覧の項目のアイコンの既定。
+    /// Material のアイコンの標準の 24）。<c>UiIcon.Size</c> が 0 のときに使う。
+    /// </summary>
+    public const string SizeIcon = "size.icon";
+    /// <summary>アイコンと文字の間（同上。Material 3 のメニューの項目の先頭のアイコンと文字の間 12 dp。値は記憶による）。</summary>
+    public const string SizeIconGap = "size.icon_gap";
+    /// <summary>
+    /// 不定の進捗（<c>ProgressSpinner</c>）の大きさ（弧の外側の直径。部品の Size が 0 のとき。2026-10-02。
+    /// Flutter の CircularProgressIndicator の既定の 36×36〈year2023 の Material 3〉）。
+    /// </summary>
+    public const string SizeSpinner = "size.spinner";
+    /// <summary>不定の進捗の弧の太さ（部品の Thickness が 0 のとき。Flutter の strokeWidth 4）。</summary>
+    public const string SizeSpinnerThickness = "size.spinner_thickness";
 
     // ── 文字の大きさ ────────────────────────────────────────
     /// <summary>見出し。</summary>
@@ -163,6 +177,13 @@ public static class UiTokens
     public const string MotionSwipeDismiss = "motion.swipe_dismiss";
     /// <summary>消した行の高さを畳む時間（部品は読まない。一覧の持ち主〈見本の UiGallerySections〉が使う。W2 の手直し P2-3。既定 0.2 秒は backlog の案）。</summary>
     public const string MotionSwipeCollapse = "motion.swipe_collapse";
+    /// <summary>
+    /// 不定の進捗（ProgressSpinner）の弧が伸びて縮む 1 周期（秒。2026-10-02。Flutter の CircularProgressIndicator の 1333 ms。
+    /// 2026-10-02 に flutter/flutter master の progress_indicator.dart で確かめた）。
+    /// </summary>
+    public const string MotionSpinnerCycle = "motion.spinner_cycle";
+    /// <summary>不定の進捗の全体が 1 回転する時間（秒。同じく Flutter の 2222 ms）。</summary>
+    public const string MotionSpinnerRotation = "motion.spinner_rotation";
 
     // ── 濃さ（0..1）──────────────────────────────────────────
     /// <summary>押下の重ね色の濃さ。</summary>
@@ -197,13 +218,14 @@ public static class UiTokens
         SizeTouchMin, SizeBorder, SizeCheckBorder, SizeToggleKnob, SizeToggleKnobOff, SizeToggleInset,
         SizeSliderTrack, SizeSliderThumb, SizeSliderThumbPressed, SizeProgressBar, SizeRingThickness,
         SizeRadioDot, SizeShadowBlur, SizeShadowOffset, SizeWheelItem, SizeWheelBandInset,
+        SizeIcon, SizeIconGap, SizeSpinner, SizeSpinnerThickness,
         TextTitle, TextBody, TextLabel, TextCaption, TextWheel,
         FontFamily, FontWeight, FontWeightTitle,
         MotionShort, MotionMedium, MotionRepeatInterval, MotionRepeatMinInterval, MotionRepeatAccel,
         MotionWheel, MotionWheelCorrect, MotionTheme,
         MotionThemeCurve + UiCurve.SuffixX1, MotionThemeCurve + UiCurve.SuffixY1,
         MotionThemeCurve + UiCurve.SuffixX2, MotionThemeCurve + UiCurve.SuffixY2,
-        MotionSwipeFull, MotionSwipeDismiss, MotionSwipeCollapse,
+        MotionSwipeFull, MotionSwipeDismiss, MotionSwipeCollapse, MotionSpinnerCycle, MotionSpinnerRotation,
         OpacityPressed, OpacityDisabled, OpacityShadow, OpacityWheelDim,
         RatioSwipeFull, RatioSwipeFullCancel,
     };

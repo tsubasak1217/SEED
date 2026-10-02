@@ -1,29 +1,37 @@
 using System;
-using System.Linq;
+using System.Collections.Generic;
 
 namespace SEED.UI;
 
 // ============================================================
-//  Dialog.cs — ダイアログ（確認。題・本文・ボタン 1〜3・幕。W2-7。docs/ui_navigation.md §3.2）
+//  Dialog.cs — ダイアログ（確認・選択肢の一覧・進捗の札。題・本文・ボタン 0〜3・幕。W2-7。docs/ui_navigation.md §3.2）
 //
-//  【プレハブ】templates/ui/prefabs/dialog.actor（ModalHost が Dialogs の帯の下に作る）:
+//  【プレハブ】templates/ui/prefabs/dialog.actor（ModalHost が Dialogs の帯の下に作る。2026-10-02 の形）:
 //      Dialog（Canvas・親に合わせる・CanvasStack〈縦・中央・中央〉・このスクリプト）
 //      ├─ Scrim（Sprite = 幕・親に合わせる〈並べない〉・CanvasGesture〈タップ〉・GestureRelay）
 //      └─ Card（Canvas・Sprite〈面・角丸〉・受けるジェスチャーの無い CanvasGesture〈遮る板〉・CanvasStack〈縦・余白・間隔 0〉・大きさの指定）
-//         ├─ Title（Text）・Message（Text〈折り返し〉）
-//         └─ Buttons（CanvasStack〈横・右寄せ〉）└─ Neutral・Negative・Positive（SEED.UI.Button）
+//         ├─ Title（Text）
+//         ├─ Progress（Canvas・縦の Stack）└─ Row（Canvas・横の Stack〈縦の真ん中〉）├─ Spinner（ProgressSpinner）└─ Label（Text）
+//         ├─ Body（Canvas・縦の Stack）└─ Viewport（Canvas・CanvasClip・CanvasScroll〈縦〉・縦の Stack）└─ Message（Text〈折り返し〉）
+//         ├─ Items（Canvas・縦の Stack）└─ Viewport（Canvas・CanvasClip・CanvasScroll〈縦〉・縦の Stack〈Stretch〉）└─ 行（dialog_item.actor）
+//         ├─ Input（入力欄の枠）
+//         └─ Buttons（CanvasStack〈横・右寄せ。入らなければ縦〉）└─ Neutral・Negative・Positive（SEED.UI.Button）
 //  Card は Scrim の兄弟（Scrim の子にすると Card の上のタップが幕のタップになる。W2-2 の遮り R3 は祖先を遮らない）。
+//  区画（Progress・Body・Items）は「区画の枠（中身 ＋ 下の間隔。縦の Stack で上へ詰める）→ 中身のノード（ちょうどの高さ）」の 2 段。
+//  切り抜く窓（Viewport）に下の間隔を入れない（スクロールした本文が間隔の所に見えない）ため。
+//  【古いプレハブ】2026-10-02 より前の dialog.actor（Card/Message が直接の Text。Progress・Body・Items が無い）でも動く:
+//  本文はスクロールしない・進捗の札のスピナーは出ない（本文だけ）・選択肢の一覧は出せない（警告）。新しい機能はプレハブを取り込み直して使う。
 //  【開き方】ModalHost.Current.ShowDialog(new DialogOptions { … }) → DialogHandle（ResultAsync / Completed）。
-//  【大きさ】（Layout。W2 の手直し P2-1）札の幅は size.dialog_width。題・本文の行の数は見積もり（DialogLayout。Text.Measure は W2-6c）で、
-//    題・本文の Text の行間を DialogLayout.LineHeightEm にして、描く行送りと見積もりの行の高さを一致させる。
-//    札の高さ = 余白 ＋ 題 ＋ 間隔 ＋ 本文 ＋ 間隔 ＋ ボタンの行 ＋ 余白（DialogMetrics。出さない区画とその間隔は数えない）を、
-//    札の CanvasLayoutItem と背景の Sprite の両方へ書く（札は親の CanvasStack が矩形を割り当てるので、札の CanvasStack の fit_height では
-//    背景のスプライトが伸びない）。間隔は区画ごとに違う（size.dialog_title_gap・size.dialog_actions_gap）ので札の CanvasStack の間隔は 0 にし、
-//    間隔は上の区画の枠（CanvasLayoutItem の高さ = 中身 ＋ 下の間隔）の下の空きにする（Text は枠の上端に置かれる）。
+//    Dialog.Show(options)・Dialog.ShowMenu(題, 項目…)・Dialog.ShowProgress(本文) は、シーンの ModalHost で開く近道。
+//  【大きさ】（Layout。Dialog.Layout.cs。W2 の手直し P2-1・2026-10-02）札の幅は size.dialog_width。題・本文の行の数は見積もり（DialogLayout。
+//    Text.Measure は W2-6c）で、題・本文の Text の行間を DialogLayout.LineHeightEm にして、描く行送りと見積もりの行の高さを一致させる。
+//    札の高さ = 余白 ＋ 区画の枠の和 ＋ 余白（DialogMetrics。出さない区画とその間隔は数えない）を、札の CanvasLayoutItem と背景の Sprite の
+//    両方へ書く。札が画面より高くなるなら、選択肢の一覧・本文の窓を縮めてスクロールにする（DialogMetrics.Fit）。ボタンが札の中の幅に
+//    入らなければ縦に積む（DialogActionsLayout）。
 //  【動き】幕の濃さ 0 → opacity.dialog_scrim、札の大きさ ratio.dialog_scale_from → 1（motion.dialog・motion.dialog_curve）。出るときは逆。
 //    札の大きさは実行中の見た目の倍率（CanvasLayoutItem.VisualScale。札の矩形の中心の周りに、背景・題・本文・ボタンが一体で縮む）へ
-//    「開き具合の倍率 × 予測型の戻るのプレビューの倍率」を書く（W2 の手直し P2-1。以前の保存される CanvasTransform.Scale では、
-//    入れ子のキャンバスの子が札の左上へ寄って縮んだ）。部分木の透明度が無いので札そのものはフェードしない（docs/backlog.md）。
+//    「開き具合の倍率 × 予測型の戻るのプレビューの倍率」を書く（W2 の手直し P2-1）。部分木の透明度が無いので札そのものはフェードしない。
+//    選択肢の一覧は行（プレハブ）ができあがって行のスクリプトが始まるまで見せずに待ち（上限 ContentSettleGate.MaxWaitFrames）、その後に入る。
 // ============================================================
 
 /// <summary>ダイアログ。</summary>
@@ -32,30 +40,20 @@ namespace SEED.UI;
 /// （templates/ui/prefabs/text_field.actor）を作って本文とボタンの行の間に並べ、開いたらフォーカスを当てる（キーボードが出る）。
 /// Positive を選ぶと入力欄の文字（TrimResult なら前後の空白を落とす）を DialogHandle.InputText へ置いてから閉じる。
 /// キーボードの完了（SubmitOnDone）でも Positive。キーボードが札に重なるときは札を持ち上げる（IKeyboardInsetTarget。
-/// 札の上端は安全領域の上端 ＋ size.keyboard_gap より上へは行かない）。
+/// 札の上端は安全領域の上端 ＋ size.keyboard_gap より上へは行かない）。入力欄の幅は札の中の幅に合わせる（2026-10-02。Dialog.Input.cs）。
 /// </remarks>
-public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
+public sealed partial class Dialog : ModalPlane, IKeyboardInsetTarget
 {
     /// <summary>子の名前。</summary>
     private const string ScrimChild = "Scrim";
     private const string CardChild = "Card";
     private const string TitleChild = "Card/Title";
-    private const string MessageChild = "Card/Message";
-    private const string InputChild = "Card/Input";
     private const string ButtonsChild = "Card/Buttons";
-    /// <summary>入力欄のプレハブ（W2-6b）。</summary>
-    private const string TextFieldPrefab = "assets://ui/prefabs/text_field.actor";
     private const string NeutralChild = "Card/Buttons/Neutral";
     private const string NegativeChild = "Card/Buttons/Negative";
     private const string PositiveChild = "Card/Buttons/Positive";
     /// <summary>ボタンの文字の子の名前。</summary>
     private const string ButtonLabelChild = "Label";
-    /// <summary>ボタンの文字の左右の余白（ボタンの幅 = 文字の幅 + 余白）。</summary>
-    private const float ButtonTextPaddingEm = 1.5f;
-    /// <summary>ボタンの文字の左右（余白を掛ける数）。</summary>
-    private const float ButtonTextPaddingSides = 2f;
-    /// <summary>札の CanvasStack の等間隔の間隔（区画ごとの間隔は上の区画の枠が持つので使わない）。</summary>
-    private const float CardStackSpacing = 0f;
     /// <summary>倍率なし（開いた・プレビューなし）。</summary>
     private const float NoScale = 1f;
 
@@ -76,18 +74,36 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
         return null;
     }
 
+    /// <summary>
+    /// 選択肢の一覧のダイアログを開く（2026-10-02。Material の SimpleDialog 相当。長押しのメニュー）。押した項目で閉じ、結果は
+    /// <see cref="DialogResult.Selected"/> と <see cref="DialogHandle.SelectedIndex"/>。幕のタップ・戻るは Dismissed。
+    /// </summary>
+    /// <param name="title">題（空なら出さない）。</param>
+    /// <param name="items">項目（上から）。</param>
+    public static DialogHandle? ShowMenu(string title, params DialogMenuItem[] items) => Show(DialogOptions.Menu(title, items));
+
+    /// <summary>
+    /// 進捗の札を開く（2026-10-02。スピナーと本文・ボタンなし・幕のタップと戻るでは閉じない）。終わったら手札の Close / Dismiss で閉じる。
+    /// 本文は <see cref="DialogHandle.SetMessage"/> で変えられる。
+    /// </summary>
+    /// <param name="message">本文（スピナーの右）。</param>
+    /// <param name="title">題（空なら出さない）。</param>
+    public static DialogHandle? ShowProgress(string message, string title = "") => Show(DialogOptions.ProgressCard(message, title));
+
     /// <summary>決め方の中身。</summary>
     private DialogOptions _options = new();
+    /// <summary>今の本文（開いた後に DialogHandle.SetMessage で変わる）。</summary>
+    private string _message = string.Empty;
     /// <summary>結果を 1 回だけ受ける留め金。</summary>
     private readonly DialogResultLatch _latch = new();
     /// <summary>幕・札のノード。</summary>
     private GameObject _scrim, _card;
-    /// <summary>つないだ部品（幕のタップ・ボタン）の登録簿の版。</summary>
+    /// <summary>つないだ部品（幕のタップ・ボタン・入力欄・選択肢の行）の登録簿の版。</summary>
     private int _registryVersion = -1;
     /// <summary>つないだ幕のタップ。</summary>
     private GestureRelay? _scrimRelay;
     /// <summary>つないだボタン（結果 → ボタン）。</summary>
-    private readonly System.Collections.Generic.Dictionary<DialogResult, Button> _buttons = new();
+    private readonly Dictionary<DialogResult, Button> _buttons = new();
     /// <summary>出入りの動き（0 = 閉じた・1 = 開いた）。</summary>
     private UiTween _open = UiTween.At(0f);
     /// <summary>出入りの動きの 1 フレームの進め（入る動きを始めたフレームは数えない・上限。遷移の時計の直し）。</summary>
@@ -96,12 +112,8 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
     private float _openScale = NoScale;
     /// <summary>予測型の戻るのプレビューの倍率（W2 の手直し 3b。1 = プレビューなし）。確定した後も出終わるまで保つ。</summary>
     private float _previewScale = NoScale;
-    /// <summary>入力欄のノード（W2-6b。入力が無ければ無効）。</summary>
-    private GameObject _inputNode = new(Entity.None);
-    /// <summary>つないだ入力欄（部品の OnStart の後に登録簿から引く）。</summary>
-    private TextField? _input;
-    /// <summary>札の持ち上げ（キャンバスの単位。キーボードを避ける。0 = 持ち上げない）。</summary>
-    private float _liftUnits;
+    /// <summary>準備（選択肢の行を待つ）で数えたフレーム（ContentSettleGate.MaxWaitFrames で待つのをやめる）。</summary>
+    private int _prepareFrames;
 
     /// <summary>キーボードを避ける入れ物の根（ダイアログの根）。</summary>
     public GameObject InsetOwner => Owner;
@@ -110,150 +122,53 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
     protected override void OnPlaneStart()
     {
         _options = Options as DialogOptions ?? new DialogOptions();
+        // 本文: 開く前に手札の SetMessage で変えていればそれ（進捗の札を開いてすぐ進みを書いたとき）、無ければ DialogOptions.Message
+        _message = (Handle as DialogHandle)?.TakePendingMessage() ?? _options.Message ?? string.Empty;
         _scrim = gameObject.FindChild(ScrimChild);
         _card = gameObject.FindChild(CardChild);
+        ResolveSections();
         CreateInput();
+        CreateItems();
         KeyboardInsets.Register(this);
-        Layout();
         ApplyOpen(0f);
-        NavNode.SetVisible(Owner, true);
-        BeginEnter();
-        _open.Retarget(1f, Theme.Number(NavTokens.MotionDialog));
+        // 選択肢の行（プレハブ）を作ったときは、行ができあがってスクリプトが始まるまで見せずに待つ（OnPlaneUpdate の PrepareRows）
+        if (_rows.Count > 0) return;
+        StartEnter();
         // 入る動きを始めたフレーム（OnStart と同じフレームの Update で最初に進める）の経過は数えない。そこには前のフレームの
         // ダイアログの組み立ての時間が入っている（docs/ui_navigation.md §2「出入りの時計」）
         _step.SkipNext();
     }
 
-    /// <summary>
-    /// 題・本文・ボタンを当て、札の縦の割り付け（区画の枠の高さ・札の高さ。DialogMetrics）を決めて書く。
-    /// </summary>
-    private void Layout()
+    /// <summary>札を割り付け、見せて、入る動きを始める。</summary>
+    private void StartEnter()
     {
-        float width = Theme.Number(NavTokens.SizeDialogWidth);
-        float padding = Theme.Number(NavTokens.SizeDialogPadding);
-        float inner = DialogMetrics.InnerWidth(width, padding);
-
-        // 題（折り返さない。改行があればその行の数）と本文（中の幅で折り返す）の高さの見積もり、ボタンの行
-        float titleHeight = SetText(TitleChild, _options.Title, UiTokens.TextTitle, inner, wrap: false);
-        float messageHeight = SetText(MessageChild, _options.Message, UiTokens.TextBody, inner, wrap: true);
-        float buttonHeight = Theme.Number(NavTokens.SizeDialogButtonHeight);
-        LayoutButtons(buttonHeight);
-        // 1 行の入力欄（W2-6b）: 欄の高さは size.field_height、幅は札の中の幅（入力が無ければ 0＝出さない）
-        float inputHeight = _inputNode.IsValid ? Theme.Number(TextFieldTokens.SizeFieldHeight) : 0f;
-        if (_inputNode.IsValid && _inputNode.GetComponent<Sprite>() is { } inputBackground)
-            inputBackground.Size = new Vector2(inner, inputHeight);
-
-        // 縦の割り付け: 区画の枠 = 中身 ＋ 下の間隔（次に見える区画の上の間隔）、札の高さ = 余白 × 2 ＋ 枠の和
-        var layout = DialogMetrics.Arrange(padding, DialogMetrics.Sections(
-            titleHeight, messageHeight, buttonHeight,
-            Theme.Number(NavTokens.SizeDialogTitleGap), Theme.Number(NavTokens.SizeDialogActionsGap), inputHeight));
-        SetSlot(TitleChild, inner, layout.SlotHeights[DialogMetrics.TitleSection]);
-        SetSlot(MessageChild, inner, layout.SlotHeights[DialogMetrics.MessageSection]);
-        SetSlot(InputChild, inner, layout.SlotHeights[DialogMetrics.InputSection]);
-        SetSlot(ButtonsChild, inner, layout.SlotHeights[DialogMetrics.ButtonsSection]);
-
-        // 札: 並べ方（余白・等間隔の間隔 0）と大きさ。背景のスプライトも同じ大きさにする
-        // （ボタンの背景と同じ。コンテナが伸ばさない軸はスプライトの大きさのまま描かれる）
-        if (_card.GetComponent<CanvasStack>() is { } stack)
-        {
-            stack.Padding = CanvasPadding.All(padding);
-            stack.Spacing = CardStackSpacing;
-        }
-        var cardSize = new Vector2(width, layout.CardHeight);
-        if (_card.GetComponent<CanvasLayoutItem>() is { } cardItem) cardItem.PreferredSize = cardSize;
-        if (_card.GetComponent<Sprite>() is { } cardBackground) cardBackground.Size = cardSize;
+        Layout();
+        ApplyOpen(0f);
+        NavNode.SetVisible(Owner, true);
+        BeginEnter();
+        _open.Retarget(1f, Theme.Number(NavTokens.MotionDialog));
     }
 
     /// <summary>
-    /// 文字の子へ中身・大きさ・行間・枠を当てる（空なら隠す）。戻り値は中身の高さ（行の数の見積もり × 行の高さ。隠したら 0）。
+    /// 本文を変える（2026-10-02。進捗の札の「ダウンロード中 40%」など。開いた後は札を割り付け直す）。DialogHandle.SetMessage から。
     /// </summary>
-    /// <param name="path">子の道。</param>
-    /// <param name="content">文字。</param>
-    /// <param name="sizeToken">大きさのトークン。</param>
-    /// <param name="boxWidth">枠の幅（札の中の幅）。</param>
-    /// <param name="wrap">枠の幅で折り返すか（題は折り返さない）。</param>
-    private float SetText(string path, string content, string sizeToken, float boxWidth, bool wrap)
+    /// <param name="message">本文。</param>
+    internal void SetMessage(string message)
     {
-        var node = gameObject.FindChild(path);
-        var text = node.GetComponent<Text>();
-        bool visible = content.Length > 0 && text is not null;
-        node.Visible = visible;
-        if (!visible || text is not { } shown) return 0f;
-        float size = Theme.Number(sizeToken, shown.FontSize);
-        float height = DialogLayout.EstimateHeight(content, size, wrap ? boxWidth : DialogLayout.NoWrapWidth);
-        shown.Content = content;
-        shown.FontSize = size;
-        // 描く行送り（大きさ × 行間）を見積もりの行の高さにそろえる（行送りの余白は行の上下へ半分ずつ）
-        shown.LineSpacing = DialogLayout.LineHeightEm;
-        shown.BoxWidth = boxWidth;
-        shown.BoxHeight = height;
-        shown.Wrap = wrap;
-        return height;
+        message ??= string.Empty;
+        if (_message == message) return;
+        _message = message;
+        if (Phase is ModalPhase.Entering or ModalPhase.Open or ModalPhase.Exiting) Layout();
+        Redraw.Request();
     }
 
-    /// <summary>区画の枠（CanvasLayoutItem の大きさ = 中の幅 × 〈中身 ＋ 下の間隔〉）を当てる（出さない区画〈0〉は書かない）。</summary>
-    private void SetSlot(string path, float width, float height)
-    {
-        if (!(height > 0f)) return;
-        if (gameObject.FindChild(path).GetComponent<CanvasLayoutItem>() is { } item) item.PreferredSize = new Vector2(width, height);
-    }
-
-    /// <summary>出すボタンへ文字と大きさ（幅 = 文字の幅の見積もり ＋ 左右の余白。高さより狭くしない）を当て、出さないボタンを隠す。</summary>
-    private void LayoutButtons(float height)
-    {
-        var shown = DialogModel.Buttons(_options);
-        float labelSize = Theme.Number(UiTokens.TextLabel);
-        foreach (var (result, path) in ButtonPaths)
-        {
-            var node = gameObject.FindChild(path);
-            bool visible = shown.Contains(result);
-            node.Visible = visible;
-            if (!visible) continue;
-            string text = DialogModel.ButtonText(_options, result);
-            if (node.FindChild(ButtonLabelChild).GetComponent<Text>() is { } label) label.Content = text;
-            float w = Math.Max(DialogLayout.EstimateWidth(text, labelSize) + ButtonTextPaddingEm * ButtonTextPaddingSides * labelSize, height);
-            if (node.GetComponent<CanvasLayoutItem>() is { } item) item.PreferredSize = new Vector2(w, height);
-            // ボタンの背景は指定の大きさで描かれる（コンテナが伸ばさない軸はスプライトの大きさのまま）ので合わせる
-            if (node.GetComponent<Sprite>() is { } bg) bg.Size = new Vector2(w, height);
-        }
-    }
-
-    /// <summary>入力があれば入力欄を札の Input の枠に作る（W2-6b。枠を見せる。中身は部品の OnStart の後に Bind で当てる）。</summary>
-    private void CreateInput()
-    {
-        var slot = gameObject.FindChild(InputChild);
-        bool wanted = _options.Input is not null && slot.IsValid;
-        if (slot.IsValid) NavNode.SetVisible(slot, wanted);
-        if (!wanted) return;
-        _inputNode = GameObject.Instantiate(TextFieldPrefab, slot);
-        if (!_inputNode.IsValid) Debug.LogWarning($"{LogPrefix} 入力欄のプレハブを作れませんでした（{TextFieldPrefab}）");
-    }
-
-    /// <summary>入力欄をつなぐ（中身を当て、完了で Positive、開いたらフォーカス）。</summary>
-    private void BindInput()
-    {
-        if (_input is not null || !_inputNode.IsValid || _options.Input is not { } spec) return;
-        if (Of<TextField>(_inputNode) is not { } field) return;
-        _input = field;
-        field.Placeholder = spec.Placeholder;
-        field.Kind = spec.Kind;
-        field.MaxLength = spec.MaxLength;
-        field.AllowPaste = spec.AllowPaste;
-        field.UnfocusOnDone = false;
-        field.SetText(spec.Text);
-        field.Submitted += (_, action) =>
-        {
-            if (spec.SubmitOnDone && action == TextInputAction.Done) Choose(DialogResult.Positive);
-        };
-        field.Focus();
-    }
-
-    /// <summary>幕のタップ・ボタンをつなぐ（部品の OnStart の順は決まっていないので、登録簿が変わるたびに引き直す）。</summary>
+    /// <summary>幕のタップ・ボタン・入力欄・選択肢の行をつなぐ（部品の OnStart の順は決まっていないので、登録簿が変わるたびに引き直す）。</summary>
     private void Bind()
     {
         if (_registryVersion == UiRegistry.Version) return;
         _registryVersion = UiRegistry.Version;
         BindInput();
+        BindItems();
         if (_scrimRelay is null && Of<GestureRelay>(_scrim) is { } relay)
         {
             _scrimRelay = relay;
@@ -263,52 +178,30 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
         {
             if (_buttons.ContainsKey(result) || Of<Button>(gameObject.FindChild(path)) is not { } button) continue;
             _buttons[result] = button;
+            // 危険のボタン（2026-10-02）: 種類を色の役割へ（Positive は塗り、ほかは文字のボタンのまま色だけ color.error）
+            button.SetTone(DialogModel.ToneOf(DialogModel.ButtonKind(_options, result)));
             button.Clicked += _ => Choose(result);
         }
     }
 
-    /// <summary>ボタン・幕・戻るで結果を決めて閉じる（1 回だけ）。Positive なら入力欄の文字を手札へ置いてから閉じる（W2-6b）。</summary>
-    private void Choose(DialogResult result)
+    /// <summary>ボタン・幕・戻る・選択肢で結果を決めて閉じる（1 回だけ）。Positive なら入力欄の文字を手札へ置いてから閉じる（W2-6b）。</summary>
+    /// <param name="result">結果。</param>
+    /// <param name="selectedIndex">選んだ項目の番号（Selected のときだけ）。</param>
+    private void Choose(DialogResult result, int selectedIndex = DialogModel.NoSelection)
     {
         if (Phase is ModalPhase.Exiting or ModalPhase.Closed) return;
-        if (!_latch.TryComplete(result)) return;
+        if (!_latch.TryComplete(result, selectedIndex)) return;
+        if (Handle is DialogHandle handle && result == DialogResult.Selected) handle.SetSelectedIndex(_latch.SelectedIndex);
         if (_input is { } field)
         {
             // フォーカスを外して変換中の文字を確定扱いにし、キーボードを隠してから文字を読む
             field.Unfocus();
-            if (result == DialogResult.Positive && _options.Input is { } spec && Handle is DialogHandle handle)
-                handle.SetInputText(spec.Finish(field.Text));
+            if (result == DialogResult.Positive && _options.Input is { } spec && Handle is DialogHandle inputHandle)
+                inputHandle.SetInputText(spec.Finish(field.Text));
         }
         ClearKeyboardLift();
         KeyboardInsets.Unregister(this);
         RequestClose(result);
-    }
-
-    /// <inheritdoc />
-    /// <remarks>
-    /// 札の下端 ＋ 余白がキーボードの上端を越えた分だけ札を上へずらす（CanvasLayoutItem.Translate。持ち上げる前の矩形で測る）。
-    /// 札の上端は安全領域の上端 ＋ 余白より上へは行かない（KeyboardInsetMath.LiftPx）。
-    /// </remarks>
-    public void ApplyKeyboardLift(float keyboardTopPx, float gapPx)
-    {
-        if (!_card.IsValid || _card.GetComponent<CanvasTransform>() is not { } t || !t.HasLayout) return;
-        var rect = t.LayoutRect;
-        float pxPerUnit = KeyboardInsetMath.PxPerUnit(rect.height, t.LayoutSize.y);
-        // 今の持ち上げを戻した矩形（画面の画素）で測る（持ち上げた矩形で測ると、持ち上げの分だけ少なく見える）
-        var resting = new Rect(rect.x, rect.y + _liftUnits * pxPerUnit, rect.width, rect.height);
-        float lift = KeyboardInsetMath.LiftPx(resting, keyboardTopPx, gapPx, Screen.SafeArea.y + gapPx);
-        _liftUnits = KeyboardInsetMath.PxToUnits(lift, pxPerUnit);
-        NavNode.SetTranslate(_card, new Vector2(0f, -_liftUnits));
-        Redraw.Request();
-    }
-
-    /// <inheritdoc />
-    public void ClearKeyboardLift()
-    {
-        if (_liftUnits == 0f) return;
-        _liftUnits = 0f;
-        if (_card.IsValid) NavNode.SetTranslate(_card, Vector2.Zero);
-        Redraw.Request();
     }
 
     /// <summary>幕のタップ。</summary>
@@ -348,6 +241,13 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
     protected override void OnPlaneUpdate(float dt)
     {
         Bind();
+        if (Phase == ModalPhase.Preparing)
+        {
+            PrepareRows();
+            return;
+        }
+        // 覆う領域の高さ・安全領域が変わったら（回転・窓の大きさ）札を割り付け直す（高さの上限が変わる）
+        if (Phase is ModalPhase.Entering or ModalPhase.Open) WatchArea();
         if (!_open.IsRunning) return;
         // 1 フレームで進める時間は上限まで（重いフレームで出入りが飛ばない。入る動きの始めのフレームは 0）
         ApplyOpen(_open.Advance(_step.Next(dt)));
@@ -355,6 +255,19 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
         if (_open.IsRunning) return;
         if (Phase == ModalPhase.Entering) EndEnter();
         else if (Phase == ModalPhase.Exiting) FinishClose();
+    }
+
+    /// <summary>
+    /// 準備: 選択肢の行ができあがって行のスクリプトが始まったら（待つ上限 ContentSettleGate.MaxWaitFrames の後も）見せて入る。
+    /// 入る動きは次のフレームから進める（TopSheet と同じ。このフレームの経過は数えない）。
+    /// </summary>
+    private void PrepareRows()
+    {
+        Redraw.Request();
+        if (!RowsReady() && ++_prepareFrames <= ContentSettleGate.MaxWaitFrames) return;
+        if (!RowsReady()) Debug.LogWarning($"{LogPrefix} 選択肢の行のスクリプトが始まりません（{ItemPrefabPath}）。そのまま開きます");
+        BindItems();
+        StartEnter();
     }
 
     /// <inheritdoc />
@@ -399,10 +312,16 @@ public sealed class Dialog : ModalPlane, IKeyboardInsetTarget
             // 書体と見出しの太さ（W2-9。大きさは Layout が文字の量と一緒に決める）
             UiTextStyle.ApplyFont(title, Theme, UiTokens.FontWeightTitle);
         }
-        if (gameObject.FindChild(MessageChild).GetComponent<Text>() is { } message)
+        if (_messageText.GetComponent<Text>() is { } message)
         {
             message.Color = Theme.Color(UiTokens.ColorOnSurfaceMuted);
             UiTextStyle.ApplyFont(message, Theme);
+        }
+        // 進捗の札の文字（スピナーの右。面の上の文字の色）
+        if (gameObject.FindChild(ProgressLabelChild).GetComponent<Text>() is { } progress)
+        {
+            progress.Color = Theme.Color(UiTokens.ColorOnSurface);
+            UiTextStyle.ApplyFont(progress, Theme);
         }
     }
 }

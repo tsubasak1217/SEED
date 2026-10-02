@@ -101,6 +101,18 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
     /// <summary>エラーの見た目（利用者の入力の誤りを見せる。スクリプトが立てる）。</summary>
     [SerializeField(Label = "エラー")]
     public bool HasError;
+    /// <summary>
+    /// 左右の内側の余白（キャンバスの単位。負 = テーマの size.field_padding。2026-10-02）。幅の狭い数値の欄で余白を詰める
+    /// （以前はテーマ全体で 1 つで、幅 112 の欄に 7 桁が入らなかった。Wake or Pay の W3-2b (5)）。
+    /// </summary>
+    [SerializeField(Label = "左右の余白")]
+    public float Padding = TextFieldLayout.ThemePadding;
+    /// <summary>
+    /// 選択を許すか（2026-10-02。既定 true。false で長押しの全選択・フォーカスで全選択・キーボードや IME の選択をさせない。
+    /// Flutter の enableInteractiveSelection: false。Wake or Pay の W3-2b (6)。決め方は TextFieldSelectionPolicy）。
+    /// </summary>
+    [SerializeField(Label = "選択を許す")]
+    public bool AllowSelection = true;
 
     // ── 知らせ ──
 
@@ -143,6 +155,8 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
     private KeyboardAvoider? _avoider;
     /// <summary>取り出した出来事の入れ物（毎フレーム使い回す）。</summary>
     private readonly List<TextInputEvent> _events = new();
+    /// <summary>欄の大きさ（レイアウトの大きさ）の見張り（変わったら中身を置き直す。2026-10-02）。</summary>
+    private LayoutSizeWatch _fieldSize;
 
     /// <summary>フォーカスがあるか（文字入力の場を持っている）。</summary>
     public bool IsFocused => _session != 0;
@@ -217,13 +231,31 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
         Refresh();
     }
 
-    /// <summary>すべてを選ぶ（フォーカスの間だけ）。</summary>
+    /// <summary>すべてを選ぶ（フォーカスの間だけ。選択を許さない欄〈AllowSelection = false〉では何もしない）。</summary>
     public void SelectAll()
     {
-        if (!IsFocused) return;
+        if (!IsFocused || !AllowSelection) return;
         TextInput.SetSelection(_session, 0, _state.Text.Length);
         ReadState();
         Refresh();
+    }
+
+    /// <summary>左右の内側の余白を変える（2026-10-02。負 = テーマの size.field_padding。見た目も変える）。</summary>
+    /// <param name="padding">余白（キャンバスの単位）。</param>
+    public void SetPadding(float padding)
+    {
+        if (Padding == padding) return;
+        Padding = padding;
+        Refresh();
+    }
+
+    /// <summary>選択を許すかを変える（2026-10-02。false にすると今の選択も畳む）。</summary>
+    /// <param name="allow">選択を許すか。</param>
+    public void SetAllowSelection(bool allow)
+    {
+        if (AllowSelection == allow) return;
+        AllowSelection = allow;
+        if (CollapseDisallowedSelection()) Refresh();
     }
 
     // ── 部品の土台 ──
@@ -294,16 +326,22 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
         if (!IsEnabled) return;
         if (IsFocused)
         {
-            SelectAll();
+            // 選択を許さない欄の長押しは何もしない（カーソルはタップで動かす。2026-10-02）
+            if (TextFieldSelectionPolicy.LongPressSelectsAll(AllowSelection)) SelectAll();
             return;
         }
-        _pendingSelectAll = true;
+        // 選択を許さない欄は、長押しでもタップと同じ（押した位置へカーソルを置いてフォーカス）
+        if (TextFieldSelectionPolicy.LongPressSelectsAll(AllowSelection)) _pendingSelectAll = true;
+        else _pendingCaret = CaretIndexAtLocal(e.LocalPosition.x);
         Focus();
     }
 
     /// <inheritdoc />
     protected override void OnWidgetUpdate(float dt)
     {
+        // 欄の大きさ（レイアウトの大きさ。前のフレームの描画の値）が変わったら中身を置き直す（2026-10-02。コンテナが幅を伸ばした・
+        // ダイアログが入力の枠の幅に合わせた。以前は次に描き直す出来事まで古い幅のままだった）
+        WatchFieldSize();
         if (!IsFocused) return;
         if (!TextInput.IsActive(_session))
         {
@@ -336,7 +374,8 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
             Kind = Kind, Action = Action, MaxLength = MaxLength, AllowPaste = AllowPaste, AllowCopy = AllowCopy,
         };
         int start = TextInput.EndOfText, end = TextInput.EndOfText;
-        if (SelectAllOnFocus || _pendingSelectAll)
+        // 全選択は選択を許す欄だけ（TextFieldSelectionPolicy。2026-10-02）
+        if (TextFieldSelectionPolicy.SelectAllOnFocus(AllowSelection, SelectAllOnFocus, _pendingSelectAll))
         {
             start = 0;
             end = Text.Length;
@@ -390,6 +429,24 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
         if (TextInput.TryGetState(_session, out var state)) _state = state;
     }
 
+    /// <summary>
+    /// 選択を許さない欄に選択があれば、カーソルの位置（選択の動いた端）へ畳む（2026-10-02。TextFieldSelectionPolicy）。畳んだら true。
+    /// </summary>
+    private bool CollapseDisallowedSelection()
+    {
+        if (!IsFocused || TextFieldSelectionPolicy.CollapseTo(AllowSelection, _state) is not int caret) return false;
+        TextInput.SetSelection(_session, caret, caret);
+        ReadState();
+        return true;
+    }
+
+    /// <summary>欄の大きさ（レイアウトの大きさ）が変わったら見た目を作り直す（2026-10-02）。</summary>
+    private void WatchFieldSize()
+    {
+        if (gameObject.GetComponent<CanvasTransform>() is not { HasLayout: true } t) return;
+        if (_fieldSize.Update(t.LayoutSize)) Refresh();
+    }
+
     /// <summary>出来事を取り出して、本文・アクション・貼り付けの禁止を知らせる。</summary>
     private void PumpEvents()
     {
@@ -415,6 +472,8 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
         if (changed)
         {
             ReadState();
+            // 選択を許さない欄: キーボード・IME が作った選択はカーソルの位置へ畳む（2026-10-02）
+            CollapseDisallowedSelection();
             ResetBlink();
             Refresh();
             if (_state.Text != Text)
@@ -531,7 +590,8 @@ public sealed class TextField : UiWidget, IFocusable, IBackConsumer
             bg.BorderColor = look.Border;
         }
         var size = FieldSize();
-        _padding = Theme.Number(TextFieldTokens.SizeFieldPadding);
+        // 左右の余白: 欄ごとの指定（Padding が 0 以上）か、テーマの size.field_padding（2026-10-02）
+        _padding = TextFieldLayout.ResolvePadding(Padding, Theme.Number(TextFieldTokens.SizeFieldPadding));
         float inner = Math.Max(0f, size.x - 2f * _padding);
         if (TransformOf(ViewportChild) is { } viewport) viewport.Position = new Vector2(_padding, 0f);
         if (SpriteOf(ViewportChild) is { } viewportSprite) viewportSprite.Size = new Vector2(inner, size.y);

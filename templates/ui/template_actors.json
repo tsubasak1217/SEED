@@ -125,9 +125,17 @@
     {
       "path": "prefabs/progress_ring.actor",
       "name": "進捗の輪",
-      "description": "円く回る進み具合の輪（SEED.UI.ProgressRing）。値の表示にも、待ちの回転にも使える。",
+      "description": "進み具合（0〜1）を弧の長さで見せる輪（SEED.UI.ProgressRing）。太さは Thickness（0 ならテーマの size.ring_thickness）。終わりの分からない待ちには「不定の進捗（スピナー）」を使う。",
       "category": "UI/表示",
-      "tags": ["progress ring", "spinner", "loading", "進捗", "輪", "円", "くるくる", "読み込み"],
+      "tags": ["progress ring", "progress", "進捗", "輪", "円", "割合", "値"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/progress_spinner.actor",
+      "name": "不定の進捗（スピナー）",
+      "description": "終わりの分からない待ちに出す、伸び縮みしながら回る弧（SEED.UI.ProgressSpinner。Flutter の CircularProgressIndicator と同じ動き）。大きさ・太さは Size・Thickness（0 ならテーマの size.spinner・size.spinner_thickness）。見えている間だけ描き続ける。",
+      "category": "UI/表示",
+      "tags": ["spinner", "progress", "loading", "indeterminate", "activity indicator", "スピナー", "くるくる", "読み込み", "待ち", "通信中"],
       "thumbnail": ""
     },
     {
@@ -167,11 +175,11 @@
     {
       "path": "prefabs/modal_host.actor",
       "name": "ダイアログ・シートの受け皿",
-      "description": "ダイアログ・下からのシート・上からの覆いを開く所（SEED.UI.ModalHost。シーンに 1 つ）。スクリプトから開くと、ui/prefabs の dialog・bottom_sheet・top_sheet（とダイアログの入力欄 text_field）を使う。それらがコピーされる。",
+      "description": "ダイアログ・下からのシート・上からの覆いを開く所（SEED.UI.ModalHost。シーンに 1 つ）。スクリプトから開くと、ui/prefabs の dialog・bottom_sheet・top_sheet（とダイアログの入力欄 text_field・選択肢の一覧の行 dialog_item）を使う。それらがコピーされる。",
       "category": "UI/ナビゲーション",
-      "tags": ["modal", "modal host", "dialog", "sheet", "bottom sheet", "overlay", "ダイアログ", "シート", "モーダル", "ポップアップ", "popup"],
+      "tags": ["modal", "modal host", "dialog", "sheet", "bottom sheet", "overlay", "menu", "ダイアログ", "シート", "モーダル", "ポップアップ", "popup", "メニュー"],
       "thumbnail": "",
-      "requires": ["prefabs/dialog.actor", "prefabs/bottom_sheet.actor", "prefabs/top_sheet.actor", "prefabs/text_field.actor"]
+      "requires": ["prefabs/dialog.actor", "prefabs/bottom_sheet.actor", "prefabs/top_sheet.actor", "prefabs/text_field.actor", "prefabs/dialog_item.actor"]
     },
     {
       "path": "prefabs/toast_host.actor",
@@ -185,9 +193,17 @@
     {
       "path": "prefabs/dialog.actor",
       "name": "ダイアログ（見た目を作る用）",
-      "description": "ダイアログの面そのもの（SEED.UI.Dialog）。普段は受け皿が実行中に作るので、シーンに置いたままだと Play で消える。見た目を調整したらアクタファイル化し、ModalHost の DialogPrefab に指定する。",
+      "description": "ダイアログの面そのもの（SEED.UI.Dialog。確認・選択肢の一覧・進捗の札）。普段は受け皿が実行中に作るので、シーンに置いたままだと Play で消える。見た目を調整したらアクタファイル化し、ModalHost の DialogPrefab に指定する。",
       "category": "UI/重ねる面の見た目",
-      "tags": ["dialog", "alert", "ダイアログ", "確認", "ポップアップ", "popup", "見た目"],
+      "tags": ["dialog", "alert", "simple dialog", "menu", "progress", "ダイアログ", "確認", "メニュー", "進捗", "ポップアップ", "popup", "見た目"],
+      "thumbnail": ""
+    },
+    {
+      "path": "prefabs/dialog_item.actor",
+      "name": "ダイアログの選択肢の行（見た目を作る用）",
+      "description": "選択肢の一覧のダイアログ（Dialog.ShowMenu）の 1 行（SEED.UI.DialogItem。先頭のアイコン Icon と文字 Label）。ダイアログが項目の数だけ作る。見た目を変えるならアクタファイル化し、DialogOptions.ItemPrefab に指定する。",
+      "category": "UI/重ねる面の見た目",
+      "tags": ["dialog item", "menu item", "simple dialog option", "選択肢", "メニュー", "項目", "見た目"],
       "thumbnail": ""
     },
     {

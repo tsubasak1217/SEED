@@ -3416,6 +3416,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   親の倍率 0.9・0.899 で縮めた行が欠けないことを PC の確かめ用のシーンで確かめた〈手ぶりそのものは動かしていない〉）。
   (2) **本文が長いと札が画面より高くなる**（Material 3 は本文をスクロールする）・**ボタンが中の幅に入りきらなくても縦に積まない**（Flutter の AlertDialog は
   OverflowBar で縦に積む）。今は `DialogMetrics` が中身の高さをそのまま足す。
+  → **(2) は 2026-10-02 の UI 部品の拡充（lane2）で済**: 札が画面の高さ − 安全領域 − `size.dialog_margin` × 2 を超えたら本文の窓を縮めてスクロール（`DialogMetrics.Fit`）、
+  ボタンが中の幅に入らなければ縦に積む（`DialogActionsLayout`。Flutter の OverflowBar）。docs/ui_navigation.md §3.2。古いプレハブ（Body の無い dialog.actor）の本文はスクロールしない。
   (3) **開いている間にテーマを替えても札の大きさ・間隔・文字の大きさは作り直さない**（`Dialog.Layout` は開くときの 1 回。色・角丸・書体は `ApplyLook` で追従）。
   (4) **Flutter の AlertDialog（Material 3）と違う 2 か所を決める**: 本文の無いときの題 → ボタンは Flutter が 20（titlePadding の下）・SEED は
   `size.dialog_actions_gap` の 24、題の無いときの本文の上は Flutter が 16（contentPadding の上）・SEED は余白の 24。合わせるならトークンを足す。
@@ -3566,6 +3568,10 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (7) **音の再生の終わりを知る手段が無い**（鳴り終わりの知らせも長さの問い合わせも無い。サウンドの試し聴きの ■ を自動で ▶ に戻せない）。
   (8) **`TimeWheel` の選択の帯の色を部品ごとに変えられない**（`surface_variant` 固定）。
   (9) **書体に絵文字が無い**（覚悟ゲージの 💀・鳴動画面の 💸 👨 📳 など。Wake or Pay は絵文字を落として語だけ出す `PictographText` で代用。色つきの絵文字の書体か、絵の差し込みが要る）。
+  → **(1)(2)(3) は 2026-10-02 の UI 部品の拡充（lane2）で済**（docs/ui_components.md §13・docs/ui_navigation.md §3.2）: (1) `Slider` の溝がレイアウトの幅に追従（`SliderGeometry`。`TrackLength`）、
+  (2) `ChipGroup`・`RadioGroup`・`SegmentedControl` の `LabelSize`（トークンの名前か数）、(3) `DialogButtonKind.Danger`（`ButtonTone.Danger`）と選択肢の一覧のダイアログ
+  （`Dialog.ShowMenu`・`DialogMenuItem`・`DialogResult.Selected`・`SelectedIndex`）。Wake or Pay の `FullWidthSlider` の刻みの点（divisions）は SEED の Slider に無い（下の別項目）。
+  (4)〜(9) は残り。
 - [x] **PC の 1 倍で小さな文字の横線が欠けて別の字に見える** — 2026-09-30（W3-1 で発見。上の「PC の 1 倍で小さな文字の細い横線が消える・かすれる」の続き）。
   → **2026-10-01 に済**: 原因は text.wgsl が平滑化の幅を距離場の値の微分 fwidth(d) から決めていたこと（線の尾根を 2×2 の画素の組が挟むと fwidth ≒ 0 → しきい値の
   切り捨て）。測定: 17 px の「ー」を 0.1 dp ずつ下げた行で、横画のいちばん濃い alpha が 0.94〜0.98 → +0.5 dp で 0.25 → +0.6 dp で 0.00（消える）。
@@ -3589,7 +3595,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   IPC かデバッグの命令で模擬の通知の操作と起動理由を注入できるとよい）。
   (4) **画面のスタックの置き換えで、新しい画面の入りが古い画面の出より先に来て、古い画面は閉じる動きの間も Update が回る**（画面を点けたまま・描き続けの
   依頼を古い画面の後片付けが誤って下ろした。Wake or Pay は数え上げ〈`KeepScreenOnLease`・`ContinuousRedrawLease`〉で回避）。この順序を docs/ui_navigation.md に仕様として書く。
-  (5) **`ProgressRing` の太さがテーマのトークンだけで決まる**（部品ごとに変えられない）。
+  (5) **`ProgressRing` の太さがテーマのトークンだけで決まる**（部品ごとに変えられない）。→ **2026-10-02 の UI 部品の拡充（lane2）で済**（`ProgressRing.Thickness`。0 以下 = size.ring_thickness）。
   (6) **PC の 1 倍で「−」（U+2212）が消える**（「スヌーズ（−50 コイン）」が「（ 50 コイン）」に見える。書体に字形はある）。上の「PC の 1 倍で小さな文字の横線が欠けて別の字に見える」と同じ見立て。
   → **2026-10-01 に済**（同じ直し。docs/ui_components.md §12。鳴動画面の「スヌーズ（−50 コイン）」で「−」が見えることを確かめた）。
   (7) **SeedPak の「参照先が見つからないパス」が説明のコメントの中の例の文字列を拾う**（Wake or Pay で 2 件の誤検出。W3-0 から）。
@@ -3624,6 +3630,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   フォーカスの層を飛ばして戻る手段か、docs/ui_text_input.md §8 に書く。
   (5) **欄ごとに余白を決められない**（`size.field_padding` はテーマ全体。余白 16 では幅 112 に「250000」の最後の桁が欠けた〈確認済み〉。12 でも 7 桁は欠ける見込み〈推定〉）。
   (6) **選択を禁止する設定が無い**（Flutter の `enableInteractiveSelection: false` に当たるもの。コピーは止まるので実害は小さい）。
+  → **(5)(6) は 2026-10-02 の UI 部品の拡充（lane2）で済**（docs/ui_text_input.md §8）: (5) `TextField.Padding`（`SetPadding`。負 = テーマの size.field_padding）、(6) `TextField.AllowSelection`
+  （`SetAllowSelection`。長押し・フォーカスの全選択をせず、キーボード・IME の選択はカーソルへ畳む。`TextFieldSelectionPolicy`）。(1)〜(4) は残り。
 - [ ] **Wake or Pay の実機確認（2026-09-30 11:40〜15:00、Pixel 6a）で見つかった SEED 側の課題**（記録: `D:\SEED_projects\WakeOrPay\docs\device_checks\2026-09-30_w3_device.md`）。
   (1) **大きな文字が粗く見える**（利用者の指摘。鳴動画面の時刻など 150 px 超）。原因: SDF の字形を `SDF_EM_PX = 64` の固定解像度で、二値化したビットマップから
   距離場を焼いて拡大しているため、輪郭が 64 px の格子に丸められ、2.5 倍以上の拡大で角が丸まり曲線が波打つ（`runtime/src/engine/core/font/sdf.rs`・`rasterizer.rs`。コードで確認）。
@@ -3675,6 +3683,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **縦軸の文字の間隔の既定 32 だと、高さ 160 の折れ線で 30 分おきの目盛りが 60 分おきに間引かれる**（Wake or Pay はトークン `size.chart_y_label_spacing` を 24 に）。既定値の見直し。
   (5) **TopSheet に「高さいっぱい」の指定が無い**（中身の側で高さを計算〈`TopSheetFit`〉）。
   (6) `Text.Measure`（W2-6c）が無いので幅は見積もり（既出）。
+  → **(1)(2) は 2026-10-02 の UI 部品の拡充（lane2）で済**: (1) ダイアログの入力欄を札の中の幅（264）にそろえる（入力欄のスクリプトが始まったときに当てる。入力欄は自分の大きさの変化で置き直す。
+  PC の撮影で枠が 138〜418 → 138〜402）、(2) `Button.FitLabel`（既定 true。ボタンのレイアウトの大きさが変わるたびに文字の枠を合わせる。`ButtonLabelFit`）。(3)〜(6) は残り。
 - [ ] **W3-4（ショップ・オプション）で見つかった UI 部品の制限** — 2026-10-01（Wake or Pay の W3-4 で発見。プロジェクト側で回避済み）。
   (1) **Dialog にボタンの無い札（進捗用）と、ボタンの縦並び（OverflowBar 相当）が無い**（長い文字のボタン 3 つが幅 312 に入らない。Wake or Pay は「鳴らないときは」を全画面にした）。既出の P2-1 (2) と同じ根。
   (2) **不定の進捗（回る輪・スピナー）の部品が無い**（`ProgressRing` は値の輪で、太さのトークンが起床確認と共有）。
@@ -3682,6 +3692,9 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **端末のメーカーを知る API と、電池の最適化の設定画面を直接開く API が無い**（`App.OpenAppSettings` だけ）。省電力の案内をメーカーごとに出し分けられない。
   (5) `App.OpenUrl` は PC の模擬でも本物のブラウザを開く（`SEED_PLATFORM_SIM_NO_OPEN=1` が要る。文書どおりだが、自動の確かめで踏みやすい）。
   (6) 明るいテーマで小さな文字（17）の描画が粗い（既知の SDF の件と同じ見込み）。
+  → **(1)(2) と (3) のトーストの分は 2026-10-02 の UI 部品の拡充（lane2）で済**（docs/ui_navigation.md §3.2・§3.5・docs/ui_components.md §13）: (1) 進捗の札（`Dialog.ShowProgress`・
+  `DialogOptions.ProgressCard`・`HideButtons`・`DialogHandle.SetMessage`・`Close(DialogResult)`）とボタンの縦積み、(2) `ProgressSpinner`（不定の進捗）、
+  (3) トーストの先頭のアイコン（`Toast.Show(文字, UiIcon)`）。(3) の文字の中の絵（インライン画像）・(4)(5)(6) は残り。
 - [ ] **W4（庭）で見つかったエンジンの制限** — 2026-10-01（Wake or Pay の W4 で発見。プロジェクト側で回避済み）。
   (1) **`NavigatorRegistry.IsActiveNode` がスクリプトから使えない（internal）**。また、シェルが全画面に覆われても、タブの中の画面には `OnScreenHidden` が届かない
   （祖先の `Visible` をたどって回避）。「自分の画面が見えているか」を問う公開の API か、覆われたときの知らせが要る。
@@ -3766,6 +3779,16 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   隠れている間は測り直さない（前回の値を保つ）か、非表示の子も数える。
   (2) **ScreenStack・ModalHost に「覆いを全画面の下に残す」口が無い**（オプションのサブ画面の間、覆いを閉じずに下に置くのに、レイヤーの付け替え・戻るの層・フォーカスの後ろ回しを
   アプリ側で組んだ〈`ModalParking`〉）。`StackPreview`（予測型の戻るのプレビュー）と `NavigatorRegistry` の戻るの口が internal で使えない。
+
+- [ ] **2026-10-02 の UI 部品の拡充（lane2）で残したもの** — 2026-10-02（docs/ui_components.md §13.7・docs/ui_navigation.md §13）。
+  (1) **Wake or Pay の `assets/ui` の写しは古いプレハブのまま**（dialog.actor に Body・Progress・Items が無く、dialog_item.actor・progress_spinner.actor が無い。toast.actor に Icon が無い）。
+  新しい DLL で落ちはしないが、選択肢の一覧・本文のスクロール・進捗の札のスピナー・トーストのアイコンは出ない。templates/ui を取り込み直してから回避のコード
+  （`FullWidthSlider`〈刻みの点を除く〉・`WrappedText.FitWidth`〈ボタンの文字〉・`DialogInputFit`・長押しのメニューのボタンのダイアログ・手作りの回転・`ProgressRing` の太さの共有）を外す。
+  (2) **`Slider` に刻みの点（Flutter の divisions）が無い**（`FullWidthSlider` の `TickCount`。値の段階 `Step` はある）。
+  (3) **`ProgressSpinner` は親の切り抜きで見えないだけの所でも回り続ける**（祖先の Visible と画面との重なりだけを見る）。
+  (4) ダイアログの札の幅は `size.dialog_width` で一定（Flutter の insetPadding の横 40 のような狭い画面での縮めが無い）・中の幅より長いボタンの文字は折り返さない・
+  選択肢の一覧の行は開いた後に増減できない・`ButtonVariant.Tonal` の危険は Filled と同じ（errorContainer のトークンが無い）。
+  (5) 実機（Pixel 6a）では未確認（PC の Play の撮影と単体テストまで。選択肢の行のタップ・スクロールの指の手触り・スピナーの滑らかさ）。
 
 ## 描画の構成（render.profile）と GPU メモリの計測 — 2026-10-02 実装時の残件（正典: docs/rendering_profiles.md）
 

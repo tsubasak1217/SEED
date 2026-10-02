@@ -136,9 +136,9 @@ UiNavigation（Canvas・単位 dp）
 
 | 項目 | 規則 |
 |---|---|
-| 作り | `Scrim`（幕・タップ）と `Card`（面・角丸 `radius.dialog`・遮る板・縦の CanvasStack〈余白・間隔 0〉に Title・Message・Buttons）は兄弟（札の上のタップが幕に届かない） |
-| ボタン | 1〜3 つ。左から中立・いいえ・はい（Material 3 の並び）。文字が空のボタンは出さない。どれも空なら「OK」の Positive だけ。幅 = 文字の幅の見積もり ＋ 左右 1.5 em（高さより狭くしない）、ボタンの間 8（プレハブ） |
-| 結果 | `Positive` / `Negative` / `Neutral` / `Dismissed`（幕のタップ・戻る・`Dismiss()`）。1 回だけ（連打・閉じる途中の戻るで 2 度出さない） |
+| 作り | `Scrim`（幕・タップ）と `Card`（面・角丸 `radius.dialog`・遮る板・縦の CanvasStack〈余白・間隔 0〉に Title・Progress・Body・Items・Input・Buttons。2026-10-02 の形は下の「区画」）は兄弟（札の上のタップが幕に届かない） |
+| ボタン | 0〜3 つ。左から中立・いいえ・はい（Material 3 の並び）。文字が空のボタンは出さない。どれも空なら「OK」の Positive だけ（選択肢の一覧・進捗の札は出さない。`HideButtons` は文字があっても出さない。2026-10-02）。幅 = 文字の幅の見積もり ＋ 左右 1.5 em（高さより狭くしない）、ボタンの間 8（プレハブ）。中の幅に入らなければ縦に積む（下の「ボタンの縦積み」）。種類 `PositiveKind`・`NegativeKind`・`NeutralKind` = `DialogButtonKind.Danger` で color.error（Positive は塗り、ほかは文字。`ButtonTone.Danger`。2026-10-02） |
+| 結果 | `Positive` / `Negative` / `Neutral` / `Dismissed`（幕のタップ・戻る・`Dismiss()`）/ `Selected`（選択肢の一覧の項目。番号は `DialogHandle.SelectedIndex`。2026-10-02）。1 回だけ（連打・閉じる途中の戻るで 2 度出さない）。外から結果つきで閉じる `DialogHandle.Close(DialogResult)` |
 | 幕のタップ | `DismissOnScrimTap`（既定 true）なら Dismissed。false なら何もしない |
 | 戻る | `CancelableByBack`（既定 true）なら Dismissed。false でも**戻るは受ける**（後ろの画面へ回さない＝必ず答えさせる） |
 | 動き | 幕の濃さ 0 → `opacity.dialog_scrim`（0.32）、札の大きさ `ratio.dialog_scale_from`（0.9）→ 1（`motion.dialog` 0.2 秒・`motion.dialog_curve`）。出るときは逆。札の大きさは実行中の見た目の倍率（`CanvasLayoutItem.VisualScale`。札の矩形の中心の周りに背景・題・本文・ボタンが一体で縮む。§6）に「開き具合の倍率 × 予測型の戻るのプレビューの倍率（§5.1）」を書く（W2 の手直し P2-1。`DialogMetrics.CardScale`）。戻るを確定した後は、プレビューの倍率を保ったまま出る（縮めた姿勢から閉じる）。1 フレームで進める時間は上限つきで、入る動きの始めのフレームは数えない（§2 の「出入りの時計」） |
@@ -171,6 +171,41 @@ UiNavigation（Canvas・単位 dp）
   （行が足りなくなって本文がボタンに重なるより、1 行余る方がよい）。行の高さ = 大きさ × `DialogLayout.LineHeightEm`（1.4。M3 の本文 20 / 14 ≒ 1.43）で、
   題と本文の Text の `LineSpacing` もこの値にして、描く行送り（枠ありの Text は大きさ × 行間。行送りの余白は行の上下へ半分ずつ）と見積もりを一致させる。
   以前（全角 1 em・半角 0.55 em の 2 種類）は「寝坊で失う最大金額が 3,000 円になります。」（幅 232.8）を 2 行と見積もっていた。
+
+**2026-10-02 の拡充（Wake or Pay の W3-1 (3)・W3-3 (1)・W3-4 (1)・P2-1 の残り (2)）**: 札の区画（`DialogMetrics.Sections(DialogContentHeights, DialogSpacing)`。上から）:
+
+```
+Card（縦の CanvasStack。余白 size.dialog_padding・間隔 0）
+├─ Title（Text）
+├─ Progress（区画の枠: 縦の Stack）└─ Row（横の Stack・縦の真ん中・間 size.icon_gap）├─ Spinner（ProgressSpinner。size.spinner）└─ Label（Text）
+├─ Body（区画の枠）└─ Viewport（CanvasClip・CanvasScroll〈縦〉・縦の Stack）└─ Message（Text〈折り返し〉）
+├─ Items（区画の枠）└─ Viewport（CanvasClip・CanvasScroll〈縦〉・縦の Stack〈Stretch〉）└─ 行 × 項目の数（dialog_item.actor・SEED.UI.DialogItem）
+├─ Input（入力欄の枠）
+└─ Buttons（横の Stack〈右寄せ〉。入らなければ縦）
+```
+
+区画の枠（中身 ＋ 下の間隔）と中身のノード（ちょうどの高さ）を 2 段にしたのは、切り抜く窓（Viewport）に下の間隔を入れないため（スクロールした本文が
+ボタンとの間隔の所に見えない）。窓のスクロールと切り抜きは、窓を縮めたとき（下の「長い本文」）だけ有効にする（縮めない窓は指を取らず、行末の句読点のぶら下げも従来どおり余白へ出る）。
+
+| 機能 | 規則 |
+|---|---|
+| 危険のボタン | `DialogButtonKind.Danger` → ボタンの `ButtonTone.Danger`（[ui_components.md](ui_components.md) §13.3）。Positive（塗り）は color.error の塗り・color.on_error の文字、Negative・Neutral（文字）は color.error の文字 |
+| 選択肢の一覧（Material の SimpleDialog） | `Dialog.ShowMenu(題, DialogMenuItem…)`・`DialogOptions.Menu`・`Items`。項目 = 文字・先頭のアイコン（`UiIcon`。一覧のどれかにあればアイコン欄 size.icon ＋ size.icon_gap を全部の行で取り、文字の左端をそろえる）・種類（危険は color.error）・`Enabled`（false は color.on_disabled で押せない）。行は `size.dialog_item_height`（48）で**札の幅いっぱい**（押した重ね色が札の端まで。札の左右の余白を 0 にして、ほかの区画は中の幅で真ん中に置く＝`CanvasLayoutItem.AlignSelf`）、中身は左右に size.dialog_padding。一覧の上の間隔・下の間隔・一覧が札の端に来るときの札の余白は `size.dialog_items_inset`（12。Flutter の SimpleDialog の contentPadding の上 12〈SimpleDialogOption の上下 8 と合わせて字面の上下に約 24〉。2026-09-29 に取得した dialog.dart で確かめた）。行は作った次のフレームにできあがるので、行のスクリプトが始まるまでダイアログを見せずに待つ（上限 `ContentSettleGate.MaxWaitFrames` 10 フレーム）。押した行で `Selected`・`SelectedIndex`。ボタンの文字を指定しなければボタンは出さない。行のプレハブは `DialogOptions.ItemPrefab`（既定 dialog_item.actor）。文字の色は color.on_surface・大きさ text.body、アイコンの既定の色は color.on_surface_muted |
+| ボタンの縦積み（Flutter の OverflowBar） | ボタンの幅の和 ＋ 間隔（プレハブの Buttons の spacing 8）×（数 − 1）が札の中の幅を超えたら、縦に積んで右へ寄せる（上から中立・いいえ・はい ＝ Flutter の overflowDirection down・overflowAlignment end）。積んだボタンの間 `size.dialog_actions_overflow_gap`（0 = Flutter の overflowSpacing の既定）。ボタンの行の高さ = 数 × 高さ ＋ 間 ×（数 − 1）。1 つのボタンが中の幅より広ければ中の幅で切る（`DialogActionsLayout`） |
+| 進捗の札 | `Dialog.ShowProgress(本文, 題)`・`DialogOptions.ProgressCard`（`Progress = true`・ボタンなし・`DismissOnScrimTap = false`・`CancelableByBack = false`）。本文は Progress の行（スピナーの右・中の幅 − size.spinner − size.icon_gap で折り返す。行の高さ = max(スピナー, 本文)・題との間 size.dialog_title_gap）。`DialogHandle.SetMessage(本文)` で開いた後も変えられ（札を割り付け直す。面ができる前に呼べばできたときに当てる）、`DialogHandle.Close(DialogResult)`・`Dismiss()` で外から閉じる |
+| 長い本文・長い一覧のスクロール | 札の高さの上限 = 覆う領域（ダイアログの帯）の高さ − 上下の安全領域 − `size.dialog_margin`（24 = Flutter の Dialog の insetPadding の縦）× 2（`DialogMetrics.MaxCardHeight`）。超えたら選択肢の一覧 → 本文の順に窓を 1 行（行の高さ・本文 1 行）まで縮め、その窓をスクロールにする（`DialogMetrics.Fit`。題・入力欄・ボタンは縮めない）。覆う領域の高さ・安全領域が変わったら（回転・窓の大きさ）割り付け直す |
+| 入力欄の幅（直し） | 入力欄（text_field.actor の 280）を札の中の幅（264）にそろえる。以前は札を割り付けるときに作ったばかりの（まだできあがっていない）入力欄へ書いていたので効かず、右へ 16 はみ出した（W3-3 (1)。Wake or Pay は `DialogInputFit` で回避）。今は入力欄のスクリプトが始まったときと割り付けのたびに当て、入力欄は自分の大きさの変化を見て中身を置き直す（[ui_text_input.md](ui_text_input.md) §8） |
+
+| 中身（既定のテーマ） | 札の高さ（dp） | 内訳 |
+|---|---|---|
+| 題 ＋ 選択肢 4 行（ボタンなし） | 268 | 24 ＋ 28 ＋ 12 ＋ 48 × 4 ＋ 12 |
+| 選択肢 3 行だけ | 168 | 12 ＋ 48 × 3 ＋ 12 |
+| 題 ＋ 進捗の行（本文 1 行） | 128 | 24 ＋ 28 ＋ 16 ＋ 36 ＋ 24 |
+| 題 ＋ 本文 1 行 ＋ 縦に積んだボタン 3 つ | 258.4 | 24 ＋ 28 ＋ 16 ＋ 22.4 ＋ 24 ＋ 40 × 3 ＋ 24 |
+
+**古いプレハブ**（2026-10-02 より前の dialog.actor。Wake or Pay の `assets/ui/prefabs/dialog.actor` もこの形）: Card/Message が札の直接の子の Text で、Progress・Body・Items が無い。
+新しい `Dialog` はこれでも動く（本文はスクロールしない・進捗の札はスピナーなしの本文・選択肢の一覧は出せない〈警告〉）。危険のボタン・縦積みは古いプレハブでも効く。
+新しい区画を使うには templates/ui の dialog.actor と dialog_item.actor を取り込み直す。
 
 ### 3.3 下からのシート（`BottomSheet`）
 
@@ -209,6 +244,10 @@ BottomSheet（Canvas・親に合わせる）
 - 入る: 自分の高さだけ下から上がる。出る: 時間切れ・`Dismiss` は下へ、横へ払った（`size.drag_dismiss` 以上か `speed.fling_dismiss` 以上）はその向きへ。
   入る・出る動きは 1 フレームで進める時間が上限つきで、入る動きの始めのフレームは数えない（§2 の「出入りの時計」）。
 - 下の余白 = `space.l` + 下の安全領域 + `BottomOffset`（タブのバーの上に出すときはバーの高さ）。**戻るは受けない**。
+- **先頭のアイコン**（2026-10-02。W3-4 (3) のトーストの分）: `Toast.Show(文字, UiIcon, 長さ)`・`ToastHost.Show(文字, UiIcon, 秒)`。toast.actor の `Icon`（Sprite・並べない・
+  既定は隠す）を Label の左端（プレハブの位置 = 左の余白 16）・縦の真ん中に置き、文字をアイコン ＋ `size.icon_gap` の右へずらす。大きさは `size.icon`、図形の既定の色は
+  文字の色（color.on_inverse_surface）。アイコンは待たされても項目（`ToastItem.Icon`）が持って渡る。`Icon` の子の無い古いプレハブでは文字だけ（落ちない）。
+  画像・図形の決め方は [ui_components.md](ui_components.md) §13.5。
 
 ## 4. 下のタブ（`TabHost`・`TabBar`・`TabItem`）
 
@@ -415,6 +454,20 @@ contentPadding の上 16・下 24（2026-09-29 にソースで確かめた。§3
   ホイールの行が無い枚もあった）。見本（`ui_navigation.scene`）で積む・下ろす・ダイアログの開閉・シートの開閉・覆いの開閉・覆う画面・フェード・トーストを
   それぞれ 7 枚の連続の撮影で撮り、どれも途中の姿が段階的に見えた（シートは時計を変えていない。ログにエラーなし）。
 
+- **2026-10-02 の拡充（PC。作業フォルダ `tmp/lane2/`）**: `UiComponentsTests` 168/168（ダイアログとトーストの 8 件: ボタンの出し方〈選択肢・進捗・隠す〉・危険の種類と
+  選べる項目と留め金の番号・横並びと縦積み〈ちょうど 264 は横・360 は縦・1 つが広いときは切る・間 0 と 8〉・区画と札の端の余白〈表の 4 つの高さ〉・高さの上限と縮め
+  〈本文 40 行を上限 600 へ・選択肢 → 本文の順・1 行で止まる・収まれば縮めない〉・選択肢の行の見た目と置き場・トーストのアイコンが待ちの後も渡る・プレハブの区画の作り）。
+  Play（主の作業ツリーの SEED.exe を読むだけで使い、作業ディレクトリを作業ツリーの `runtime/` にして作業ツリーの DLL を読ませた。ギャラリーの「画面の組み立て」の
+  2 行目のボタンと IPC の操作。540×1200・on_demand）: 危険のボタン（「削除」が error の塗り）・縦積み（「あとで確かめる」「通知の設定を開く」「電池の最適化を開く」が
+  右寄せで上から）・進捗の札（Esc と幕のタップでは閉じず、1.2 秒で本文が 2 行に変わって札が伸び、2.5 秒で外から `Positive`）・長い本文（30 条＝60 行が上限 1152 を
+  超え、本文の窓だけがスクロールして題とボタンは見えたまま。ドラッグで 9〜30 条まで送れた）・選択肢の一覧（窓 114,530 から 312×192 = 4 行 × 48。選べない 3 行目の
+  タップは閉じず、2 行目のタップで `Selected`・`SelectedIndex = 1`）・アイコンのトースト（輪と error の円）。入力の見本（ui_text_input.scene）の名前の変更のダイアログで、
+  入力欄の枠が直す前は x 138〜418（右の余白 8）、直した後は 138〜402（左右とも 24）。
+  **既定の見た目**: 変更前（主の作業ツリーの DLL と templates/ui）と比べ、ふつうのダイアログ（題 ＋ 本文 ＋ 2 ボタン）は札の上下の端が同じ（511〜688）で札の中の差は
+  194 画素・最大 3/255（文字の縁。字形の焼く順の違いの見込み）、文字だけのトーストは差 0 画素。**古いプレハブ**（主の作業ツリーの templates/ui）を新しい DLL で動かすと、
+  ふつうのダイアログは変更前との差 151 画素・最大 3/255、トーストは差 0、危険・縦積み・進捗の札（スピナーなし）・本文の差し替えは動き、選択肢の一覧は警告を出して題だけ・
+  アイコンのトーストは文字だけ（落ちない）。
+
 ## 12. 実機での確かめ方（Pixel 6a。W2-7 の時点で未実施）
 
 利用者と一緒に行う（戻るキー・ジェスチャーの手触りは実機でしか分からない）。見本のプロジェクト（§10 を `assets/ui` へ取り込み、`start_scene` を
@@ -460,8 +513,10 @@ logcat を `[UI] back` と 3a の Java のログ（[android.md](android.md) §25
 - **画面の中の表示のレイヤーは段の値（10,000・タブの中は 1,000）より小さく**: 大きなレイヤーの表示を持つ画面を積むと前後が崩れる
 - **ダイアログの本文の高さは見積もり**（W2 の手直し P2-1 でエンジンの折り返しの規則と組み込みの書体の送り幅の表に合わせた。§3.2）。`Text.Measure`（W2-6c）が
   できたら測った値へ替える。テーマの `font.family` でほかの書体を当てると送り幅が違うので合わない。本文の中の埋め込みの記法（`[icon:…]` など）は文字のまま数える
-  （大きめになる）。本文が長くても札はスクロールしない（札が画面より高くなる）・ボタンが中の幅に入りきらなくても Material 3 のように縦に積まない。
-  開いている間にテーマを替えても札の大きさ・間隔は作り直さない（色・角丸・書体は追従）
+  （大きめになる）。開いている間にテーマを替えても札の大きさ・間隔は作り直さない（色・角丸・書体は追従）。
+  → 長い本文のスクロール・ボタンの縦積みは **2026-10-02 に済**（§3.2）。残り: 古いプレハブ（Body の無い dialog.actor）の本文はスクロールしない。
+  札の幅は `size.dialog_width` で一定（Flutter の insetPadding の横 40 のような「画面が狭いときに札を縮める」は無い）。縦に積むかは文字の幅の見積もりで決める
+  （ほかの書体では合わない）。中の幅より長い 1 つのボタンの文字は折り返さずにはみ出す。選択肢の一覧の行は開いた後に増減できない（開き直す）
 - **シートの「先に広げる」が無い**: 半分の段で中身の一覧を上へ引くと一覧が先に動く（Android の BottomSheetBehavior・Flutter の DraggableScrollableSheet はシートが先）。
   W2-3 の入れ子は「内側が先・端の残りを外側へ」だけ。開く・閉じる曲線は ScrollTo の easeInOut 固定
 - **上からの覆いの作りは最小**: Flutter 版の「固定の頭＋スクロールする中身＋一覧の外の閉じる」・左右の余白・四隅の角丸は W3 のプレハブで作る
