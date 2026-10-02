@@ -1,0 +1,8 @@
+{
+  "_about": "言語の一覧（SEED.Localization の L10n が最初に読む。正典 docs/localization.md §2.1）。プロジェクトへ取り込むと assets://locale/index.json になる。言語を足すときは languages に 1 行と <code>.json を足す。",
+  "default": "ja",
+  "languages": [
+    { "code": "ja", "name": "日本語", "fallback": null, "culture": "ja-JP" },
+    { "code": "en", "name": "English", "fallback": "ja", "culture": "en-US" }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "_about": "日本語の文字列の表（正典 docs/localization.md）。入れ子は . でつないだキーになる（ui.dialog.ok）。{名前} は差し込み、_ で始まる鍵は説明。",
+  "ui": {
+    "_about": "SEED.UI の部品が持つ固定の文字列と、画面でよく使う言葉。部品は L10n を読まないので、アプリが部品へ渡すときに使う（対応表は docs/localization.md §10）。",
+    "dialog": {
+      "ok": "OK",
+      "cancel": "キャンセル",
+      "yes": "はい",
+      "no": "いいえ",
+      "close": "閉じる",
+      "later": "あとで",
+      "quit": "やめる",
+      "delete": "削除",
+      "progress": "処理しています…"
+    },
+    "nav": {
+      "back": "戻る"
+    },
+    "list_row": {
+      "delete": "削除"
+    },
+    "time_wheel": {
+      "am": "午前",
+      "pm": "午後"
+    },
+    "chart": {
+      "empty": "まだ記録はありません"
+    },
+    "weekday_short": ["日", "月", "火", "水", "木", "金", "土"],
+    "locale": {
+      "language": "言語",
+      "follow_system": "端末の言語に合わせる"
+    }
+  },
+  "format": {
+    "_about": "日付と時刻の書式（L10n.FormatDate / FormatTime へ渡す .NET の書式）。数字だけの書式は Android（文化を引けない環境）でも同じに出る。",
+    "date": "M月d日",
+    "date_long": "yyyy年M月d日",
+    "time": "H:mm"
+  },
+  "sample": {
+    "_about": "書き方の見本（使わなければ消してよい）。",
+    "greeting": "こんにちは、{name} さん",
+    "score": "スコア {0}",
+    "money": "所持金 {amount:N0} 円",
+    "coins": "コイン {n} 枚",
+    "items": {
+      "zero": "アイテムはありません",
+      "other": "アイテム {n} 個"
+    }
+  }
+}

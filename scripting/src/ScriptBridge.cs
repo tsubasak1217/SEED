@@ -453,6 +453,8 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
+            SEED.Localization.L10n.ResetForReload();
             var root = Encoding.UTF8.GetString(rootPtr, rootLen);
             return ScriptAssemblyManager.CompileAndLoad(root);
         }
@@ -489,6 +491,8 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
+            SEED.Localization.L10n.ResetForReload();
             var path = Encoding.UTF8.GetString(pathPtr, pathLen);
             return ScriptAssemblyManager.LoadPrecompiled(path);
         }
@@ -525,6 +529,8 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
+            SEED.Localization.L10n.ResetForReload();
             // Rust 側のバッファは呼び出しの間だけ有効なので、ここで配列へ写してから渡す。
             var bytes = new ReadOnlySpan<byte>(dataPtr, dataLen).ToArray();
             var name  = Encoding.UTF8.GetString(namePtr, nameLen);

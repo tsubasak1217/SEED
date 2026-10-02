@@ -238,6 +238,7 @@
     <a href="#sec-ui-wheel">UI 部品（時刻ホイール）</a>
     <a href="#sec-ui-charts">UI 部品（グラフ）</a>
     <a href="#sec-ui-textinput">UI 部品（文字入力）</a>
+    <a href="#sec-localization">Localization（多言語）</a>
     <a href="#sec-libs">ライブラリ</a>
     <a href="#sec-shading">シェーディング (WGSL)</a>
   </nav>
@@ -2986,6 +2987,56 @@ field.Submitted += (tf, action) =&gt; { <span class="c">/* Done など */</span>
 <span class="k">var</span> handle = <span class="t">Dialog</span>.Show(<span class="k">new</span> <span class="t">DialogOptions</span> { Title = <span class="s">"名前の変更"</span>, PositiveText = <span class="s">"変更"</span>, NegativeText = <span class="s">"やめる"</span>,
     Input = <span class="k">new</span> <span class="t">DialogInputOptions</span> { Text = current, Placeholder = <span class="s">"例：田中太郎"</span> } });</pre>
   <div class="warn"><b>重要</b>: 入力欄にフォーカスがある間も、キーの状態（Input.GetKey など）は従来どおり届く。ゲームのショートカットを打鍵で動かしたくない画面は <code>SEED.TextInput.ActiveSession != 0</code> の間は止める。戻る（Android の戻る・PC の Esc）は BackDispatcher の Focus の層: 必ずフォーカスを外し、キーボードが出ていれば（PC は常に）受ける。Android でキーボードを閉じた後の戻るは、後ろに戻るを受ける層（ダイアログ・シート・覆い・画面のスタック）があればそこへ回し、無い根の画面では受ける（アプリは背面へ回らない。3 回目で背面へ）。欄の外のタップは OS に取り消された指（TouchPhase.Canceled。戻るのジェスチャーが端の指を奪ったときなど）を数えない。</div>
+</section>
+
+
+<section id="sec-localization" data-keywords="Localization ローカライズ ローカライゼーション 多言語 翻訳 言語 言語の切り替え i18n l10n L10n SEED.Localization Get Format Plural 複数形 plural zero one two few many other CLDR Has TryGet SetLanguage FollowSystemLanguage IsFollowingSystem Language CurrentLanguage Languages DefaultLanguage SystemLanguage 端末の言語 CurrentUICulture Changed l10n.changed Configure Root PollChanges Reload ホットリロード MissingPolicy MissingKeyPolicy MissingKeys 欠け 欠けたキー FallbackChain fallback 既定の言語 FormatNumber FormatDate FormatTime Culture CultureInfo Invariant 不変文化 Android ICU LocaleLanguage LocalizedText LocalizedLabel LocalizedBinding LocalizedArg LocalizationReloader ILocalizedTarget LocalizedRequest LocalizedTargetTable TextLabelTarget ButtonLabelTarget ChildLabelTarget SelectionLabelTarget LocaleCatalog index.json ja.json en.json assets://locale templates/locale 差し込み プレースホルダ {name} {0} 文字列の表 SaveData l10n.language">
+  <h2>7.21 Localization（多言語：文字列の表・言語の切り替え・UI への結び付け。SEED.Localization）</h2>
+  <p>ゲーム・アプリの文字列を言語ごとに差し替える。データは <code>assets://locale/index.json</code>（言語の一覧）と <code>assets://locale/&lt;言語&gt;.json</code>（キー → 文。入れ子は <code>.</code> でつないだキー）。見本は <code>templates/locale</code>（テンプレートの取り込みで <code>assets/locale</code> へ入る）。起動の言語は 保存した値（SaveData の <code>l10n.language</code>）→ 端末の言語 → index の <code>default</code> の順で決まる。正典は docs/localization.md。</p>
+  <div class="api"><code class="sig">L10n.Get(key) / L10n.Get(key, ("name", value), …)</code><span class="desc">今の言語 → fallback → 既定の言語 の順に探して <code>{name}</code> を差し込む。無いキーは欠けの方針どおり（開発中 "[key]"・配布用 "key"）でキーごとに 1 回だけ警告</span></div>
+  <div class="api"><code class="sig">L10n.Format(key, a, b, …)</code><span class="desc"><code>{0}</code>・<code>{1}</code> の差し込み（params object?[]。名前つきの組は Get へ渡す）。<code>{name:N0}</code> は今の言語の文化で書く</span></div>
+  <div class="api"><code class="sig">L10n.Plural(key, n, ("name", value), …)</code><span class="desc">複数形（0 は zero を先に → 言語の規則の形 → other → 普通のキー。数は <code>{n}</code>。ほかの言語へ落ちたらその言語の規則）</span></div>
+  <div class="api"><code class="sig">L10n.Has(key) / L10n.TryGet(key, out text)</code><span class="desc">あるか・無ければ false（どちらも警告しない）</span></div>
+  <div class="api"><code class="sig">L10n.Language / CurrentLanguage / Languages / DefaultLanguage / FallbackChain</code><span class="desc">今の言語のコード・今の言語（LocaleLanguage: Code・Name・Fallback・CultureName）・言語の一覧（index.json の順）・既定の言語・探す順</span></div>
+  <div class="api"><code class="sig">L10n.SetLanguage(code, save = true) / FollowSystemLanguage() / IsFollowingSystem</code><span class="desc">切り替え（表を読み替えて Changed。save なら SaveData の "l10n.language" へ保存。一覧に無ければ false）・保存を消して端末の言語へ・保存していないか</span></div>
+  <div class="api"><code class="sig">L10n.SystemLanguage</code><span class="desc">端末の言語（CultureInfo.CurrentUICulture の名前 "ja-JP"）。Android（Invariant）・取れない環境では null</span></div>
+  <div class="api"><code class="sig">L10n.Changed（"l10n.changed"）</code><span class="desc">言語が替わった・表を読み直したときに SEED.Events へ string（今の言語のコード）で発火。<code>this.On(L10n.Changed, (string code) =&gt; …)</code> で受ける</span></div>
+  <div class="api"><code class="sig">L10n.Configure(root) / PollChanges() / Reload() / Root / DefaultRoot</code><span class="desc">置き場（既定 "assets://locale"）・書き換わっていたら読み直す（既定では誰も呼ばない）・読み直す（どれも読み直したら Changed）</span></div>
+  <div class="api"><code class="sig">L10n.MissingPolicy / MissingKeys</code><span class="desc">欠けの方針（MissingKeyPolicy.Key / Marked / Empty。既定は IsDebugAllowed なら Marked）・欠けていたキー</span></div>
+  <div class="api"><code class="sig">L10n.FormatNumber(value, digits) / FormatDate(date, pattern) / FormatTime(time, pattern) / Culture</code><span class="desc">今の言語の文化で書く（区切りつきの数・.NET の日付と時刻の書式）。Android（Invariant）では不変文化なので、言語ごとの書式は表に書いて渡す</span></div>
+  <div class="api"><code class="sig">SEED.Localization.LocalizedText（Key・Args）</code><span class="desc">ScriptComponent。同じアクタの Text へ「キー」の文字を入れ、言語が替わると入れ直す。Args は LocalizedArg { Name, Value } のリスト</span></div>
+  <div class="api"><code class="sig">SEED.Localization.LocalizedLabel（Key・Args）</code><span class="desc">ScriptComponent。部品の文字へ当てる（部品には手を入れない）。判定は Button → 選択のグループ（項目ごとに「キー.番号」）→ Toggle・Checkbox（子 Label の Text）→ アクタ自身の Text</span></div>
+  <div class="api"><code class="sig">LocalizedBinding.Of&lt;LocalizedText&gt;(actor) → SetArg(name, value) / ClearArgs() / SetCount(n) / ClearCount() / SetKey(key) / Apply() / Target</code><span class="desc">スクリプトから実行中の値を渡す（相手の OnStart の前は null）</span></div>
+  <div class="api"><code class="sig">SEED.Localization.LocalizationReloader（IntervalSeconds）</code><span class="desc">ScriptComponent。開発中（IsDebugAllowed）だけ間隔（既定 1 秒・実時間）ごとに L10n.PollChanges()</span></div>
+  <div class="api"><code class="sig">ILocalizedTarget（KindName・IsAlive・Apply(LocalizedRequest)） / LocalizedRequest(key, args, count).Resolve() / ResolveChild(item)</code><span class="desc">当てる先（TextLabelTarget・ButtonLabelTarget・ChildLabelTarget&lt;T&gt;〈Toggle・Checkbox の子 Label〉・SelectionLabelTarget）と引き方。判定の表は LocalizedTargetTable.Find(actor)</span></div>
+<pre><span class="k">using</span> SEED.Localization;
+<span class="k">string</span> s = <span class="t">L10n</span>.Get(<span class="s">"menu.start"</span>);
+<span class="k">string</span> g = <span class="t">L10n</span>.Get(<span class="s">"greeting"</span>, (<span class="s">"name"</span>, playerName));
+<span class="k">string</span> c = <span class="t">L10n</span>.Plural(<span class="s">"coins"</span>, n);
+<span class="t">L10n</span>.SetLanguage(<span class="s">"en"</span>);
+<span class="k">this</span>.On(<span class="t">L10n</span>.Changed, (<span class="k">string</span> code) =&gt; Refresh());
+<span class="k">string</span> day = <span class="t">L10n</span>.FormatDate(date, <span class="t">L10n</span>.Get(<span class="s">"format.date"</span>));</pre>
+  <table>
+    <tr><th>データ（&lt;言語&gt;.json）</th><th>読み方</th></tr>
+    <tr><td><code>"menu": { "start": "…" }</code></td><td>入れ子は <code>.</code> でつないだキー（<code>menu.start</code>）</td></tr>
+    <tr><td><code>"_about": "…"</code></td><td><code>_</code> で始まる鍵は説明（読まない）</td></tr>
+    <tr><td><code>"coins": { "one": "{n} coin", "other": "{n} coins" }</code></td><td>子がすべて zero・one・two・few・many・other なら複数形のまとまり</td></tr>
+    <tr><td><code>"days": ["日", "月"]</code></td><td>配列は番号のキー（<code>days.0</code>）</td></tr>
+    <tr><td><code>"todo": null</code></td><td>訳していない（次の言語を探す）</td></tr>
+    <tr><td><code>{name}</code>・<code>{0}</code>・<code>{name:N0}</code>・<code>{{ }}</code></td><td>差し込み・順・書式・波かっこそのもの。<b>渡していない <code>{…}</code> はそのまま残す</b>（Text の <code>{num}</code>・<code>{color}</code> などの記法と共存）</td></tr>
+  </table>
+  <table>
+    <tr><th>複数形の規則</th><th>言語</th></tr>
+    <tr><td>other だけ</td><td>ja・zh・ko・th・vi・id など</td></tr>
+    <tr><td>1 = one</td><td>en・de・es・it・nl・pt-PT など（表に無い言語の既定）</td></tr>
+    <tr><td>0 と 1 = one</td><td>fr・pt（ブラジル）・hi など</td></tr>
+    <tr><td>one / few / many</td><td>ru・uk・be・pl</td></tr>
+    <tr><td>one / few / other</td><td>cs・sk</td></tr>
+    <tr><td>zero / one / two / few / many / other</td><td>ar</td></tr>
+  </table>
+  <div class="warn"><b>重要</b>: <code>L10n.Changed</code> は今の言語のコードの <b>string で発火</b>する。購読は <code>this.On(L10n.Changed, (string code) =&gt; …)</code>。引数なしの <code>() =&gt; …</code> では呼ばれない（SEED.Events は引数の型が合う購読だけを呼ぶ）。</div>
+  <div class="warn"><b>重要</b>（Android）: Android の CoreCLR は Invariant（<code>runtime/android/dotnet_runtime.json</code> の <code>System.Globalization.Invariant=true</code>）なので、<code>L10n.SystemLanguage</code> は null（起動の言語は 保存した値 → 既定の言語）、数・日付の書式は不変文化（月・曜日の名前は英語）。言語ごとの書式（<code>"format.date": "M月d日"</code>）と曜日の名前は表に書いて引く。</div>
+  <div class="warn"><b>重要</b>: Edit（Play していないとき）はスクリプトが動かないので、LocalizedText のアクタはプレハブの文字のまま見える。SEED.UI の部品の既定の文字列（<code>DialogOptions.DefaultPositiveText</code> の "OK"・TimeWheel の午前/午後・<code>ChartView.EmptyText</code>）は L10n を読まない。<code>Dialog.Show</code> などへは <code>L10n.Get</code> で引いて渡す（対応表は docs/localization.md §10）。</div>
 </section>
 
 

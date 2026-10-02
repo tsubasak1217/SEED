@@ -68,6 +68,8 @@ templates/
              フルスワイプで削除できる行〈行のスクリプト scripts/UiGalleryListRow.cs〉に）
              （W2-4・W2-5・W2-7・W2-8・W2-9。docs/ui_components.md・docs/ui_navigation.md・docs/ui_charts.md・docs/ui_theme.md）
              template_actors.json・thumbnails/（テンプレートアクタのカタログと見本の画像。§9）
+  locale/    index.json・ja.json・en.json（多言語の表の見本。SEED.Localization。2026-10-02。docs/localization.md。
+             取り込むと assets/locale/ に入り L10n の既定の置き場で読める。カテゴリごと選ぶ。表示名は表に無いので「locale」のまま）
 ```
 
 各トップレベルフォルダの直下に置く `template_actors.json`（テンプレートアクタのカタログ）と
