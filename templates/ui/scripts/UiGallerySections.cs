@@ -10,6 +10,9 @@
 //        一覧かページのスクロールが始まったら開いている行を閉じる（SwipeGroup.CloseAll）。
 //    - 画面の組み立て（W2-7）: NavDialog・NavSheet・NavOverlay・NavToast のボタンで Dialog・BottomSheet・TopSheet・Toast を開く
 //      （根の ModalHost・ToastHost が受ける。シート・覆いの中身は nav_sheet_content・nav_overlay_content）
+//    - 2026-10-02 の部品の拡充（NavButtons2）: 危険のボタンのダイアログ（NavDanger）・選択肢の一覧のダイアログ（NavMenu。長押しのメニュー）・
+//      ボタンが入らず縦に積むダイアログ（NavStacked）・進捗の札（NavProgress。本文を途中で変えて 2.5 秒後に外から閉じる）・
+//      本文が長くスクロールするダイアログ（NavLong）・先頭のアイコンつきのトースト（NavToastIcon）
 //    - グラフ（W2-8）: GalleryLine（起床時間の 30 日・滑らかな曲線・平均の基準線）・GalleryBars（12 か月の積み上げ）
 //  W2 の手直し P2-5 でページの中身を画面の幅に合わせる作り（Content の縦の CanvasStack の中に段〈ShapesSection など〉、段の中に行ごとの
 //  CanvasWrap）にした。部品は名前で深さ優先に引くので、段・行の入れ物の下へ移っても同じ名前で届く。段の縦の位置は画面の幅で変わる
@@ -17,8 +20,10 @@
 //  一覧の幅が変わったら行の文字の枠を合わせ直させる（UiGalleryListRow.RefitTextBoxes。行は毎フレーム自分の幅を読まない）。
 //  デバッグの命令（SCRIPT_DEBUG:gallery,<名前>）: scroll,<位置>（ページを位置へすぐ移す。スクリーンショットの場面を作る）・
 //  scroll,<ノードの名前>（そのノードの上の端がページの窓の上の端に来る位置へすぐ移す。範囲へ収める。P2-5）・
-//  open,<dialog|sheet|overlay|toast>（ボタンと同じ）・stats（一覧の作った行の数と見えている範囲）・
-//  haptic,<none|tap|vibrate>（行のフルスワイプで構えたときの触感。P2-3）・list（件数・開いている行・畳んでいる行・一覧の位置と画面の矩形。P2-3）。
+//  open,<dialog|sheet|overlay|toast|danger|menu|stacked|progress|long|toast-icon>（ボタンと同じ）・stats（一覧の作った行の数と見えている範囲）・
+//  haptic,<none|tap|vibrate>（行のフルスワイプで構えたときの触感。P2-3）・list（件数・開いている行・畳んでいる行・一覧の位置と画面の矩形。P2-3）・
+//  wide（幅いっぱいのスライダの溝の長さ・ボタンの幅と文字の枠の幅。2026-10-02）・rows（開いている選択肢の一覧の行の画面の矩形。2026-10-02）・
+//  where,<ノードの名前>（ノードの画面の矩形〈画素〉。2026-10-02）。
 // ============================================================
 using System;
 using System.Collections.Generic;
@@ -54,6 +59,12 @@ public class UiGallerySections : SEEDScript
     private const float NoListWidth = -1f;
     /// <summary>一覧の幅が変わったとみなす差の下限（dp。浮動小数の丸めの差では合わせ直さない）。</summary>
     private const float ListWidthEpsilon = 0.01f;
+    /// <summary>進捗の札の見本: 本文を変えるまでの秒・閉じるまでの秒（2026-10-02）。</summary>
+    private const float ProgressMessageAt = 1.2f, ProgressCloseAt = 2.5f;
+    /// <summary>長い本文の見本の条の数（札に入りきらずスクロールする長さ。2026-10-02）。</summary>
+    private const int LongArticles = 30;
+    /// <summary>ダイアログの選択肢の一覧の窓（dialog.actor の Card/Items/Viewport）。</summary>
+    private const string MenuViewportPath = "Card/Items/Viewport";
 
     /// <summary>サンプルデータの乱数の種（実行のたびに同じ絵にする）。</summary>
     private const int Seed = 20260928;
@@ -91,6 +102,13 @@ public class UiGallerySections : SEEDScript
     private int _registryVersion = -1;
     /// <summary>デバッグの命令の受け口。</summary>
     private Action<string>? _cmd;
+    /// <summary>開いている進捗の札の見本（無ければ null）と開いてからの秒（2026-10-02）。</summary>
+    private DialogHandle? _progress;
+    private float _progressElapsed;
+    /// <summary>進捗の札の見本の本文を変えたか。</summary>
+    private bool _progressMessageChanged;
+    /// <summary>最後に開いた選択肢の一覧のダイアログ（行の矩形の命令 rows が引く。2026-10-02）。</summary>
+    private DialogHandle? _menu;
 
     public override void OnStart()
     {
@@ -124,6 +142,7 @@ public class UiGallerySections : SEEDScript
         CloseSwipesOnListDrag();
         WatchListWidth();
         AdvanceCollapse(SEED.Time.UnscaledDeltaTime);
+        AdvanceProgressDemo(SEED.Time.UnscaledDeltaTime);
         _list?.Update();
         if (_registryVersion == UiRegistry.Version) return;
         _registryVersion = UiRegistry.Version;
@@ -233,10 +252,16 @@ public class UiGallerySections : SEEDScript
     /// <summary>消した行を畳む時間（テーマの motion.swipe_collapse）。</summary>
     private static float CollapseSeconds => UiTheme.Number(UiTokens.MotionSwipeCollapse, SwipeMath.DefaultCollapseSeconds);
 
-    /// <summary>画面の組み立ての呼び出しのボタンをつなぐ。</summary>
+    /// <summary>画面の組み立ての呼び出しのボタンをつなぐ（2026-10-02 の拡充の見本のボタンも）。</summary>
     private void BindButtons()
     {
-        foreach (var (name, what) in new[] { ("NavDialog", "dialog"), ("NavSheet", "sheet"), ("NavOverlay", "overlay"), ("NavToast", "toast") })
+        var buttons = new[]
+        {
+            ("NavDialog", "dialog"), ("NavSheet", "sheet"), ("NavOverlay", "overlay"), ("NavToast", "toast"),
+            ("NavDanger", "danger"), ("NavMenu", "menu"), ("NavStacked", "stacked"), ("NavProgress", "progress"),
+            ("NavLong", "long"), ("NavToastIcon", "toast-icon"),
+        };
+        foreach (var (name, what) in buttons)
         {
             if (UiWidget.Of<Button>(gameObject.FindChild(name)) is { } b && _bound.Add(b))
             {
@@ -246,8 +271,8 @@ public class UiGallerySections : SEEDScript
         }
     }
 
-    /// <summary>重ねる面・トーストを開く（W2-7 の API）。</summary>
-    private static void Open(string what)
+    /// <summary>重ねる面・トーストを開く（W2-7 の API。2026-10-02 の拡充: 危険・選択肢の一覧・縦積み・進捗の札・長い本文・アイコンのトースト）。</summary>
+    private void Open(string what)
     {
         switch (what)
         {
@@ -264,8 +289,90 @@ public class UiGallerySections : SEEDScript
             case "toast":
                 Toast.Show("トーストもテーマの色になる");
                 break;
+            // ── 2026-10-02 の拡充 ──
+            case "danger":
+                // 危険（取り消せない操作）のボタン: Positive の塗りが color.error になる
+                ReportResult("danger", Dialog.Show(new DialogOptions
+                {
+                    Title = "アラームを削除しますか？", Message = "削除したアラームは元に戻せません。",
+                    PositiveText = "削除", PositiveKind = DialogButtonKind.Danger, NegativeText = "やめる",
+                }));
+                break;
+            case "menu":
+                // 選択肢の一覧（長押しのメニュー）: 押した項目で閉じる。選べない項目は灰色・危険の項目は color.error
+                _menu = Dialog.ShowMenu("7:30 のアラーム",
+                    new DialogMenuItem("編集する", UiIcon.Circle()),
+                    new DialogMenuItem("複製する", UiIcon.Square()),
+                    new DialogMenuItem("共有する（準備中）", UiIcon.Ring()) { Enabled = false },
+                    new DialogMenuItem("削除する", UiIcon.Ring(), DialogButtonKind.Danger));
+                ReportResult("menu", _menu);
+                break;
+            case "stacked":
+                // ボタンの文字が長く札の中の幅（264）に入らない: 縦に積んで右へ寄せる（Flutter の OverflowBar）
+                ReportResult("stacked", Dialog.Show(new DialogOptions
+                {
+                    Title = "アラームが鳴らないときは", Message = "端末の省電力の設定で止められていることがあります。",
+                    NeutralText = "あとで確かめる", NegativeText = "通知の設定を開く", PositiveText = "電池の最適化を開く",
+                }));
+                break;
+            case "progress":
+                // 進捗の札: ボタンなし・幕と戻るでは閉じない。本文を途中で変えて、終わったら外から閉じる（AdvanceProgressDemo）
+                _progress = Dialog.ShowProgress("購入の手続きをしています…", "購入");
+                _progressElapsed = 0f;
+                _progressMessageChanged = false;
+                ReportResult("progress", _progress);
+                break;
+            case "long":
+                // 本文が長い: 札が画面に入らない分だけ本文の窓を縮めてスクロールにする（題とボタンは見えたまま）
+                ReportResult("long", Dialog.Show(new DialogOptions { Title = "利用規約", Message = LongMessage(), PositiveText = "同意する", NegativeText = "閉じる" }));
+                break;
+            case "toast-icon":
+                // 先頭のアイコン（図形か画像）つきのトースト
+                Toast.Show("保存しました", UiIcon.Ring());
+                Toast.Show("通信に失敗しました", UiIcon.Circle(UiTheme.Current.Color(UiTokens.ColorError)), ToastLength.Long);
+                break;
         }
         Report($"open {what}");
+    }
+
+    /// <summary>ダイアログの結果（と選んだ項目の番号）をログへ出す。</summary>
+    private static void ReportResult(string what, DialogHandle? handle)
+    {
+        if (handle is null) return;
+        handle.Completed += r => Report($"{what} result={r} selected={handle.SelectedIndex}");
+    }
+
+    /// <summary>長い本文の見本（条を並べた文。札に入りきらない長さ）。</summary>
+    private static string LongMessage()
+    {
+        var lines = new List<string>();
+        for (int i = 1; i <= LongArticles; i++)
+            lines.Add($"第 {i} 条　アラームの鳴動と、寝坊したときの支払いの決まりを定めます。");
+        return string.Join("\n", lines);
+    }
+
+    /// <summary>進捗の札の見本: 途中で本文を変え、決めた秒が過ぎたら外から Positive で閉じる（実時間）。</summary>
+    private void AdvanceProgressDemo(float dt)
+    {
+        if (_progress is null) return;
+        if (_progress.IsClosed)
+        {
+            _progress = null;
+            return;
+        }
+        _progressElapsed += MathF.Max(0f, dt);
+        if (!_progressMessageChanged && _progressElapsed >= ProgressMessageAt)
+        {
+            _progressMessageChanged = true;
+            _progress.SetMessage("もう少しで終わります。通信が終わるまでアプリを閉じないでください。");
+            Report("progress message");
+        }
+        if (_progressElapsed >= ProgressCloseAt)
+        {
+            _progress.Close(DialogResult.Positive);
+            _progress = null;
+        }
+        Redraw.Request();
     }
 
     /// <summary>グラフへサンプルデータを入れる（見つけたら 1 度だけ）。</summary>
@@ -353,7 +460,55 @@ public class UiGallerySections : SEEDScript
             case "list":
                 ReportList();
                 break;
+            // 2026-10-02: 幅いっぱいのスライダの溝の長さ・ボタンの文字の枠（窓の幅を変えて追従を確かめる）
+            case "wide":
+                ReportWide();
+                break;
+            // 2026-10-02: 開いている選択肢の一覧の行の画面の矩形（行のタップの位置を求める）
+            case "rows":
+                ReportRows();
+                break;
+            case "where":
+                ReportWhere(At(1));
+                break;
         }
+    }
+
+    /// <summary>幅いっぱいのスライダとボタンの寸法を出す（溝の長さ・部品のレイアウトの幅・文字の枠の幅）。</summary>
+    private void ReportWide()
+    {
+        var sliderNode = gameObject.FindChild("WideSlider");
+        var buttonNode = gameObject.FindChild("WideButton");
+        float sliderWidth = sliderNode.GetComponent<CanvasTransform>() is { HasLayout: true } st ? st.LayoutSize.x : -1f;
+        float buttonWidth = buttonNode.GetComponent<CanvasTransform>() is { HasLayout: true } bt ? bt.LayoutSize.x : -1f;
+        float track = UiWidget.Of<Slider>(sliderNode)?.TrackLength ?? -1f;
+        float labelBox = buttonNode.FindChild("Label").GetComponent<Text>() is { } label ? label.BoxWidth : -1f;
+        Report($"wide slider={sliderWidth:0.##} track={track:0.##} button={buttonWidth:0.##} labelBox={labelBox:0.##}");
+    }
+
+    /// <summary>
+    /// 開いている選択肢の一覧のダイアログの窓の画面の矩形（画素）と、1 行の高さ（画素）を出す（行は窓の上から行の高さごとに並ぶ。
+    /// 同じ名前の行はノードの名前で引き分けられないので、窓の矩形から行の位置を求めてもらう）。
+    /// </summary>
+    private void ReportRows()
+    {
+        if (_menu is not { Root.IsValid: true } menu
+            || menu.Root.FindChild(MenuViewportPath).GetComponent<CanvasTransform>() is not { HasLayout: true } ct || ct.LayoutSize.y <= 0f)
+        {
+            Report("rows none");
+            return;
+        }
+        var rect = ct.LayoutRect;
+        float rowPx = UiTheme.Number(NavTokens.SizeDialogItemHeight) * rect.height / ct.LayoutSize.y;
+        Report($"rows viewport={rect.x:0.#},{rect.y:0.#},{rect.width:0.#},{rect.height:0.#} row={rowPx:0.##}");
+    }
+
+    /// <summary>名前のノードの画面の矩形（画素）を出す。</summary>
+    private static void ReportWhere(string name)
+    {
+        var node = GameObject.Find(name);
+        var rect = node.GetComponent<CanvasTransform>() is { HasLayout: true } ct ? ct.LayoutRect : Rect.Zero;
+        Report($"where {name} {rect.x:0.#},{rect.y:0.#},{rect.width:0.#},{rect.height:0.#}");
     }
 
     /// <summary>

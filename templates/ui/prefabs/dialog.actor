@@ -352,7 +352,291 @@
      "children": []
     },
     {
-     "name": "Message",
+     "name": "Progress",
+     "actor_kind": "Actor2D",
+     "visible": false,
+     "canvas_transform": {
+      "position": [
+       0.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Canvas",
+       "component": {
+        "type": "CanvasComponent",
+        "data": {
+         "width": 1.0,
+         "height": 1.0,
+         "auto_scale": false,
+         "viewport_ref": {
+          "type": "window"
+         },
+         "gravity_mode": "world_down",
+         "draw_zone": "foreground",
+         "pivot": [
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "name": "Stack",
+       "component": {
+        "type": "CanvasStackComponent",
+        "data": {
+         "enabled": true,
+         "direction": "vertical",
+         "spacing": 0.0,
+         "padding": {
+          "left": 0.0,
+          "top": 0.0,
+          "right": 0.0,
+          "bottom": 0.0
+         },
+         "main_align": "start",
+         "cross_align": "stretch",
+         "reverse": false,
+         "fit_width": false,
+         "fit_height": false,
+         "hidden_children": "collapse"
+        }
+       }
+      },
+      {
+       "name": "LayoutItem",
+       "component": {
+        "type": "CanvasLayoutItemComponent",
+        "data": {
+         "preferred_height": 60.0
+        }
+       }
+      }
+     ],
+     "children": [
+      {
+       "name": "Row",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Canvas",
+         "component": {
+          "type": "CanvasComponent",
+          "data": {
+           "width": 1.0,
+           "height": 1.0,
+           "auto_scale": false,
+           "viewport_ref": {
+            "type": "window"
+           },
+           "gravity_mode": "world_down",
+           "draw_zone": "foreground",
+           "pivot": [
+            0.0,
+            0.0
+           ]
+          }
+         }
+        },
+        {
+         "name": "Stack",
+         "component": {
+          "type": "CanvasStackComponent",
+          "data": {
+           "enabled": true,
+           "direction": "horizontal",
+           "spacing": 12.0,
+           "padding": {
+            "left": 0.0,
+            "top": 0.0,
+            "right": 0.0,
+            "bottom": 0.0
+           },
+           "main_align": "start",
+           "cross_align": "center",
+           "reverse": false,
+           "fit_width": false,
+           "fit_height": false,
+           "hidden_children": "collapse"
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 36.0
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Spinner",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Sprite",
+           "component": {
+            "type": "SpriteComponent",
+            "data": {
+             "texture_path": "",
+             "color": [
+              0.201556,
+              0.107023,
+              1.0,
+              1.0
+             ],
+             "width": 36.0,
+             "height": 36.0,
+             "layer": 0,
+             "shape": {
+              "kind": "arc",
+              "arc_start": -90.0,
+              "arc_sweep": 270.0,
+              "arc_thickness": 4.0,
+              "arc_round_caps": true
+             }
+            }
+           }
+          },
+          {
+           "name": "ProgressSpinner",
+           "component": {
+            "type": "ScriptComponent",
+            "data": {
+             "type_name": "SEED.UI.ProgressSpinner"
+            }
+           }
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Label",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "処理しています…",
+             "font_size": 16.0,
+             "color": [
+              0.838799,
+              0.791298,
+              0.913099,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "top",
+             "line_spacing": 1.4,
+             "layer": 0,
+             "box_width": 216.0,
+             "box_height": 22.4,
+             "wrap": true
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Body",
      "actor_kind": "Actor2D",
      "canvas_transform": {
       "position": [
@@ -379,25 +663,45 @@
      },
      "components": [
       {
-       "name": "Text",
+       "name": "Canvas",
        "component": {
-        "type": "TextComponent",
+        "type": "CanvasComponent",
         "data": {
-         "content": "本文",
-         "font_size": 16.0,
-         "color": [
-          0.396755,
-          0.361307,
-          0.47932,
-          1.0
-         ],
-         "align": "left",
-         "vertical_align": "top",
-         "line_spacing": 1.4,
-         "layer": 0,
-         "box_width": 264.0,
-         "box_height": 22.4,
-         "wrap": true
+         "width": 1.0,
+         "height": 1.0,
+         "auto_scale": false,
+         "viewport_ref": {
+          "type": "window"
+         },
+         "gravity_mode": "world_down",
+         "draw_zone": "foreground",
+         "pivot": [
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "name": "Stack",
+       "component": {
+        "type": "CanvasStackComponent",
+        "data": {
+         "enabled": true,
+         "direction": "vertical",
+         "spacing": 0.0,
+         "padding": {
+          "left": 0.0,
+          "top": 0.0,
+          "right": 0.0,
+          "bottom": 0.0
+         },
+         "main_align": "start",
+         "cross_align": "stretch",
+         "reverse": false,
+         "fit_width": false,
+         "fit_height": false,
+         "hidden_children": "collapse"
         }
        }
       },
@@ -411,7 +715,361 @@
        }
       }
      ],
-     "children": []
+     "children": [
+      {
+       "name": "Viewport",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Canvas",
+         "component": {
+          "type": "CanvasComponent",
+          "data": {
+           "width": 1.0,
+           "height": 1.0,
+           "auto_scale": false,
+           "viewport_ref": {
+            "type": "window"
+           },
+           "gravity_mode": "world_down",
+           "draw_zone": "foreground",
+           "pivot": [
+            0.0,
+            0.0
+           ]
+          }
+         }
+        },
+        {
+         "name": "Clip",
+         "component": {
+          "type": "CanvasClipComponent",
+          "data": {
+           "enabled": false
+          }
+         }
+        },
+        {
+         "name": "Scroll",
+         "component": {
+          "type": "CanvasScrollComponent",
+          "data": {
+           "enabled": false,
+           "direction": "vertical",
+           "edge": "clamp",
+           "inertia": true,
+           "snap": "none",
+           "snap_interval": 0.0,
+           "hand_off_to_parent": true,
+           "content_size": "auto"
+          }
+         }
+        },
+        {
+         "name": "Stack",
+         "component": {
+          "type": "CanvasStackComponent",
+          "data": {
+           "enabled": true,
+           "direction": "vertical",
+           "spacing": 0.0,
+           "padding": {
+            "left": 0.0,
+            "top": 0.0,
+            "right": 0.0,
+            "bottom": 0.0
+           },
+           "main_align": "start",
+           "cross_align": "start",
+           "reverse": false,
+           "fit_width": false,
+           "fit_height": false,
+           "hidden_children": "collapse"
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 22.4
+          }
+         }
+        }
+       ],
+       "children": [
+        {
+         "name": "Message",
+         "actor_kind": "Actor2D",
+         "canvas_transform": {
+          "position": [
+           0.0,
+           0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+           1.0,
+           1.0
+          ],
+          "pivot": [
+           0.0,
+           0.0
+          ],
+          "anchor": [
+           0.0,
+           0.0
+          ],
+          "scale_transform": true,
+          "scale_size": true,
+          "keep_aspect_ratio": false,
+          "aspect_ratio_axis": "width"
+         },
+         "components": [
+          {
+           "name": "Text",
+           "component": {
+            "type": "TextComponent",
+            "data": {
+             "content": "本文",
+             "font_size": 16.0,
+             "color": [
+              0.396755,
+              0.361307,
+              0.47932,
+              1.0
+             ],
+             "align": "left",
+             "vertical_align": "top",
+             "line_spacing": 1.4,
+             "layer": 0,
+             "box_width": 264.0,
+             "box_height": 22.4,
+             "wrap": true
+            }
+           }
+          }
+         ],
+         "children": []
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Items",
+     "actor_kind": "Actor2D",
+     "visible": false,
+     "canvas_transform": {
+      "position": [
+       0.0,
+       0.0
+      ],
+      "rotation": 0.0,
+      "scale": [
+       1.0,
+       1.0
+      ],
+      "pivot": [
+       0.0,
+       0.0
+      ],
+      "anchor": [
+       0.0,
+       0.0
+      ],
+      "scale_transform": true,
+      "scale_size": true,
+      "keep_aspect_ratio": false,
+      "aspect_ratio_axis": "width"
+     },
+     "components": [
+      {
+       "name": "Canvas",
+       "component": {
+        "type": "CanvasComponent",
+        "data": {
+         "width": 1.0,
+         "height": 1.0,
+         "auto_scale": false,
+         "viewport_ref": {
+          "type": "window"
+         },
+         "gravity_mode": "world_down",
+         "draw_zone": "foreground",
+         "pivot": [
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "name": "Stack",
+       "component": {
+        "type": "CanvasStackComponent",
+        "data": {
+         "enabled": true,
+         "direction": "vertical",
+         "spacing": 0.0,
+         "padding": {
+          "left": 0.0,
+          "top": 0.0,
+          "right": 0.0,
+          "bottom": 0.0
+         },
+         "main_align": "start",
+         "cross_align": "stretch",
+         "reverse": false,
+         "fit_width": false,
+         "fit_height": false,
+         "hidden_children": "collapse"
+        }
+       }
+      },
+      {
+       "name": "LayoutItem",
+       "component": {
+        "type": "CanvasLayoutItemComponent",
+        "data": {
+         "preferred_width": 312.0,
+         "preferred_height": 48.0
+        }
+       }
+      }
+     ],
+     "children": [
+      {
+       "name": "Viewport",
+       "actor_kind": "Actor2D",
+       "canvas_transform": {
+        "position": [
+         0.0,
+         0.0
+        ],
+        "rotation": 0.0,
+        "scale": [
+         1.0,
+         1.0
+        ],
+        "pivot": [
+         0.0,
+         0.0
+        ],
+        "anchor": [
+         0.0,
+         0.0
+        ],
+        "scale_transform": true,
+        "scale_size": true,
+        "keep_aspect_ratio": false,
+        "aspect_ratio_axis": "width"
+       },
+       "components": [
+        {
+         "name": "Canvas",
+         "component": {
+          "type": "CanvasComponent",
+          "data": {
+           "width": 1.0,
+           "height": 1.0,
+           "auto_scale": false,
+           "viewport_ref": {
+            "type": "window"
+           },
+           "gravity_mode": "world_down",
+           "draw_zone": "foreground",
+           "pivot": [
+            0.0,
+            0.0
+           ]
+          }
+         }
+        },
+        {
+         "name": "Clip",
+         "component": {
+          "type": "CanvasClipComponent",
+          "data": {
+           "enabled": false
+          }
+         }
+        },
+        {
+         "name": "Scroll",
+         "component": {
+          "type": "CanvasScrollComponent",
+          "data": {
+           "enabled": false,
+           "direction": "vertical",
+           "edge": "clamp",
+           "inertia": true,
+           "snap": "none",
+           "snap_interval": 0.0,
+           "hand_off_to_parent": true,
+           "content_size": "auto"
+          }
+         }
+        },
+        {
+         "name": "Stack",
+         "component": {
+          "type": "CanvasStackComponent",
+          "data": {
+           "enabled": true,
+           "direction": "vertical",
+           "spacing": 0.0,
+           "padding": {
+            "left": 0.0,
+            "top": 0.0,
+            "right": 0.0,
+            "bottom": 0.0
+           },
+           "main_align": "start",
+           "cross_align": "stretch",
+           "reverse": false,
+           "fit_width": false,
+           "fit_height": false,
+           "hidden_children": "collapse"
+          }
+         }
+        },
+        {
+         "name": "LayoutItem",
+         "component": {
+          "type": "CanvasLayoutItemComponent",
+          "data": {
+           "preferred_height": 48.0
+          }
+         }
+        }
+       ],
+       "children": []
+      }
+     ]
     },
     {
      "name": "Input",

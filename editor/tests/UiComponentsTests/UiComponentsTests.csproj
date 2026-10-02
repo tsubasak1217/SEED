@@ -127,9 +127,10 @@
       <Link>ui_theme.md</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <!-- W2 の手直し P2-1: ダイアログのプレハブ（既定の高さ・間隔・行間が DialogMetrics の計算と矛盾しないかを確かめる） -->
-    <None Include="..\..\..\templates\ui\prefabs\dialog.actor">
-      <Link>prefabs\dialog.actor</Link>
+    <!-- W2 の手直し P2-1: ダイアログのプレハブ（既定の高さ・間隔・行間が DialogMetrics の計算と矛盾しないかを確かめる）。
+         2026-10-02: 新しい区画（進捗・本文の窓・選択肢の窓）と、選択肢の行・スピナー・アイコンつきのトーストのプレハブの作り -->
+    <None Include="..\..\..\templates\ui\prefabs\dialog.actor;..\..\..\templates\ui\prefabs\dialog_item.actor;..\..\..\templates\ui\prefabs\progress_spinner.actor;..\..\..\templates\ui\prefabs\toast.actor">
+      <Link>prefabs\%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <!-- W2 の手直し P2-3: 一覧の行のプレハブ（SwipeActions のフルスワイプの前提どおりの作りかを確かめる） -->

@@ -318,6 +318,12 @@ public static class Program
         // ── W2-6b: 入力欄（置き場・スクロール・タップ・点滅・キーボードを避ける量・数字の欄・記法の逃がし・見た目・ダイアログの入力）──
         TextFieldTests.Register(h, theme);
 
+        // ── 2026-10-02 の部品の拡充: 危険の色・文字の枠・スライダの溝・スピナー・アイコン・入力欄の余白と選択・トークン・プレハブ・見本 ──
+        WidgetExtensionTests.Register(h, theme);
+
+        // ── 2026-10-02 の部品の拡充: ダイアログ（危険・選択肢の一覧・縦積み・進捗の札・長い本文のスクロール）とトーストのアイコン ──
+        DialogExtensionTests.Register(h, theme);
+
         return h.Run();
     }
 }

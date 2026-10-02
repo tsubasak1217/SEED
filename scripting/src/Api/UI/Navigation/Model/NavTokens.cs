@@ -55,6 +55,27 @@ public static class NavTokens
     public const string SizeDialogActionsGap = "size.dialog_actions_gap";
     /// <summary>ダイアログのボタンの高さ。</summary>
     public const string SizeDialogButtonHeight = "size.dialog_button_height";
+    /// <summary>
+    /// ダイアログの札と画面の上下の端（安全領域の内側）の最小の間（2026-10-02）。札が「画面の高さ − 安全領域 − この値 × 2」より高くなるときは、
+    /// 本文・選択肢の一覧の窓を縮めてスクロールにする（Material 3 の長い本文のダイアログ）。既定 24 は Flutter master の Dialog の
+    /// insetPadding の縦 24（_defaultInsetPadding。2026-09-29 に取得した dialog.dart で確かめた）。
+    /// </summary>
+    public const string SizeDialogMargin = "size.dialog_margin";
+    /// <summary>
+    /// ボタンが札の中の幅に入らず縦に積むときのボタンの間（2026-10-02。Flutter の AlertDialog の OverflowBar の overflowSpacing の既定 0
+    /// 〈actionsOverflowButtonSpacing ?? 0〉。同じ dialog.dart で確かめた）。
+    /// </summary>
+    public const string SizeDialogActionsOverflowGap = "size.dialog_actions_overflow_gap";
+    /// <summary>
+    /// 選択肢の一覧のダイアログ（Material の SimpleDialog 相当）の 1 行の高さ（2026-10-02。押せる大きさ 48。Flutter の SimpleDialogOption は
+    /// 上下 8 の余白＋文字で約 36 だが、指の押しやすさを優先して size.touch_min と同じ 48 にした）。
+    /// </summary>
+    public const string SizeDialogItemHeight = "size.dialog_item_height";
+    /// <summary>
+    /// 選択肢の一覧の上下の空き（2026-10-02。題・本文と一覧の間と、一覧が札の上端・下端にあるときの札の余白。Flutter の SimpleDialog の
+    /// contentPadding の上 12〈下は 16 だが、行の高さ 48 の中で文字が中央に来るので、12 で字面の下に約 24 が空く〉）。
+    /// </summary>
+    public const string SizeDialogItemsInset = "size.dialog_items_inset";
     /// <summary>つまみ（シート・覆いのグラブバー）の幅。</summary>
     public const string SizeHandleWidth = "size.handle_width";
     /// <summary>つまみの太さ。</summary>
@@ -151,7 +172,7 @@ public static class NavTokens
     {
         RadiusDialog, RadiusSheet, RadiusToast, RadiusTabIndicator,
         SizeTabBar, SizeTabIndicatorWidth, SizeTabIndicatorHeight, SizeDialogWidth, SizeDialogPadding, SizeDialogTitleGap, SizeDialogActionsGap,
-        SizeDialogButtonHeight,
+        SizeDialogButtonHeight, SizeDialogMargin, SizeDialogActionsOverflowGap, SizeDialogItemHeight, SizeDialogItemsInset,
         SizeHandleWidth, SizeHandleHeight, SizeHandleArea, SizeToastHeight, SizeDragDismiss, SizeBackPreviewShift,
         MotionPush, MotionCover, MotionFade, MotionOverlay, MotionDialog, MotionSheet, MotionToast, MotionToastShort, MotionToastLong,
         OpacityScrim, OpacityDialogScrim,

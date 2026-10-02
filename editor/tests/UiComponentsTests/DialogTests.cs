@@ -191,7 +191,10 @@ public static class DialogTests
             using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "prefabs", "dialog.actor")));
             var card = Child(doc.RootElement, "Card");
             var title = Child(card, "Title");
-            var message = Child(card, "Message");
+            // 2026-10-02: 本文は Body（区画の枠）→ Viewport（切り抜き・スクロールの窓）→ Message（文字）
+            var body = Child(card, "Body");
+            var viewport = Child(body, "Viewport");
+            var message = Child(viewport, "Message");
             var buttons = Child(card, "Buttons");
             float titleSize = Data(title, "TextComponent").GetProperty("font_size").GetSingle();
             float bodySize = Data(message, "TextComponent").GetProperty("font_size").GetSingle();
@@ -214,7 +217,8 @@ public static class DialogTests
             Check.Close(0, stack.GetProperty("spacing").GetSingle(), Eps, "札の Stack の等間隔は 0（間隔は区画の枠が持つ）");
             Check.Close(theme.Number(NavTokens.SizeDialogPadding), stack.GetProperty("padding").GetProperty("top").GetSingle(), Eps, "余白");
             Check.Close(layout.SlotHeights[DialogMetrics.TitleSection], Data(title, "CanvasLayoutItemComponent").GetProperty("preferred_height").GetSingle(), Eps, "題の枠");
-            Check.Close(layout.SlotHeights[DialogMetrics.MessageSection], Data(message, "CanvasLayoutItemComponent").GetProperty("preferred_height").GetSingle(), Eps, "本文の枠");
+            Check.Close(layout.SlotHeights[DialogMetrics.MessageSection], Data(body, "CanvasLayoutItemComponent").GetProperty("preferred_height").GetSingle(), Eps, "本文の区画の枠（中身 ＋ 下の間隔）");
+            Check.Close(bodyHeight, Data(viewport, "CanvasLayoutItemComponent").GetProperty("preferred_height").GetSingle(), Eps, "本文の窓の高さ（中身だけ。下の間隔は窓に入れない）");
             Check.Close(layout.SlotHeights[DialogMetrics.ButtonsSection], Data(buttons, "CanvasLayoutItemComponent").GetProperty("preferred_height").GetSingle(), Eps, "ボタンの行の枠");
             Check.Close(titleHeight, Data(title, "TextComponent").GetProperty("box_height").GetSingle(), Eps, "題の文字の枠の高さ");
             Check.Close(bodyHeight, Data(message, "TextComponent").GetProperty("box_height").GetSingle(), Eps, "本文の文字の枠の高さ");

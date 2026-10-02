@@ -29,6 +29,23 @@ public static class TextFieldLayout
     private const float Half = 0.5f;
     /// <summary>点滅の「見える・見えない」の 2 つの相。</summary>
     private const int BlinkPhases = 2;
+    /// <summary>
+    /// 欄ごとの左右の余白の「テーマのまま」（TextField.Padding の既定。負の値 = テーマの size.field_padding。2026-10-02）。
+    /// </summary>
+    public const float ThemePadding = -1f;
+
+    /// <summary>
+    /// 左右の内側の余白（2026-10-02: 欄ごとの上書き）。上書きが 0 以上の有限の値ならそれ、負（<see cref="ThemePadding"/>）・有限でなければ
+    /// テーマの size.field_padding（有限でない・負のテーマの値は 0）。以前は余白がテーマ全体で 1 つで、幅 112 の数値の欄に 7 桁が入らなかった
+    /// （Wake or Pay の W3-2b (5)）。
+    /// </summary>
+    /// <param name="overridePadding">欄ごとの上書き（TextField.Padding）。</param>
+    /// <param name="themePadding">テーマの size.field_padding。</param>
+    public static float ResolvePadding(float overridePadding, float themePadding)
+    {
+        if (float.IsFinite(overridePadding) && overridePadding >= 0f) return overridePadding;
+        return float.IsFinite(themePadding) && themePadding > 0f ? themePadding : 0f;
+    }
 
     /// <summary>
     /// 文字の左端の x（内側の枠の中）。収まれば揃えに従い、はみ出すなら <paramref name="scroll"/> だけ左へずらす。

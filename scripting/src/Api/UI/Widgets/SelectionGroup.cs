@@ -26,6 +26,13 @@ public abstract class SelectionGroup : UiWidget
     [SerializeField(Label = "最初の選択")]
     public int[] InitialSelection = Array.Empty<int>();
 
+    /// <summary>
+    /// 項目の文字の大きさ（2026-10-02。テーマのトークンの名前か数〈"18"〉。既定 text.label。空ならプレハブの大きさのまま。読み方は UiTextSize）。
+    /// 以前は text.label に固定で、チップ・ラジオごとに変えられなかった（Wake or Pay の W3-1 (2)）。
+    /// </summary>
+    [SerializeField(Label = "文字の大きさ")]
+    public string LabelSize = UiTokens.TextLabel;
+
     /// <summary>選択が変わった。</summary>
     public event Action<SelectionGroup>? SelectionChanged;
 
@@ -58,6 +65,16 @@ public abstract class SelectionGroup : UiWidget
     public void Select(int i, bool selected = true)
     {
         if (Model.Set(i, selected)) OnSelectionChanged();
+    }
+
+    /// <summary>項目の文字の大きさを変える（2026-10-02。トークンの名前か数。見た目も変える）。</summary>
+    /// <param name="labelSize">大きさの指定（空ならプレハブの大きさのまま）。</param>
+    public void SetLabelSize(string labelSize)
+    {
+        labelSize ??= string.Empty;
+        if (LabelSize == labelSize) return;
+        LabelSize = labelSize;
+        Refresh();
     }
 
     /// <summary>項目が押された（SelectItem から）。</summary>
@@ -142,7 +159,8 @@ public abstract class SelectionGroup : UiWidget
             if (node.FindChild(LabelChild).GetComponent<Text>() is { } label)
             {
                 label.Color = look.Label;
-                UiTextStyle.Apply(label, Theme, UiTokens.TextLabel);
+                // 大きさは部品ごとの指定（既定 text.label。2026-10-02）
+                UiTextStyle.Apply(label, Theme, LabelSize);
             }
             var dot = node.FindChild(DotChild);
             if (dot.IsValid)

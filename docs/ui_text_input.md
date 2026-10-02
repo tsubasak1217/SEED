@@ -129,13 +129,19 @@ PC の IME・キーは WindowEvent なので winit が起こす。カーソル�
 CanvasClip〉の下に Selection・Content〈Text〉・Composition・Caret・Placeholder）。
 
 - **大きさ**: レイアウトの大きさ（`CanvasTransform.LayoutSize`）を読むので、縦の CanvasStack の cross_align stretch で親の幅に伸ばせる。無ければ枠の Sprite の大きさ。
+  2026-10-02 から欄は毎フレーム自分のレイアウトの大きさを見て（`LayoutSizeWatch`）、変わったら中身を置き直す（以前は次に描き直す出来事まで古い幅のままだった）。
+- **左右の余白**（2026-10-02）: `Padding`（`SetPadding`）で欄ごとに決める。負（既定 −1 = `TextFieldLayout.ThemePadding`）ならテーマの `size.field_padding`、0 以上ならその値
+  （0 = 余白なし。`TextFieldLayout.ResolvePadding`）。幅の狭い数値の欄で桁が欠けないように詰める（Wake or Pay の W3-2b (5)。幅 112・余白 16 で「250000」の最後の桁が欠けた）。
+- **選択の禁止**（2026-10-02）: `AllowSelection = false`（`SetAllowSelection`。Flutter の `enableInteractiveSelection: false`。W3-2b (6)）で、長押しは全選択にせず
+  タップと同じ（押した位置へカーソル）、`SelectAllOnFocus` と `SelectAll()` も選ばない、キーボード（PC の Shift ＋ 矢印・Ctrl＋A）・IME が作った選択は次の出来事で
+  カーソルの位置（選択の動いた端）へ畳む（`TextFieldSelectionPolicy`）。選択が無いのでコピー・切り取りも起きない（貼り付けは別の `AllowPaste`）。
 - **文字の置き場**: Content は枠つきの Text（枠の高さの中で縦の中央・左寄せ・折り返さない）。左端 `TextFieldLayout.TextStartX`: 収まれば揃え（左・中央）、
   はみ出すなら横のスクロール（`ScrollToReveal`: カーソルが枠の外へ出たときだけ、枠の端へ来るまで動かす）。本文は記法を逃がして描く（`TextMarkupEscape`。
   `[` と `{` の前にバックスラッシュ）ので、利用者の打った `[icon:x]`・`{0}` もそのまま出る。カーソルの位置は元の文字で測る（`SEED.TextMeasure.CaretOffsets`）。
 - **カーソル・選択・変換中**: カーソルは 2（`size.caret`）× 文字の大きさの 1.25 倍の棒で、`motion.caret_blink`（0.5 秒）ごとに点滅（打鍵・移動のたびに見える側から数え直す）。
   選択は `color.selection` の帯、変換中の区間は下線（`size.composition_underline`）。選択があるときはカーソルを出さない。
 - **フォーカス**（`UiFocus`・`IFocusable`）: 欄のタップでフォーカス（タップの位置 `GestureEvent.LocalPosition` にいちばん近いカーソルの位置。サロゲートの組を割らない）。
-  フォーカスの間のタップはカーソルを移し、閉じられていたキーボードを出し直す。長押しで全選択。**欄の外のタップ**（押して 8 dp 以内で離す）でフォーカスを外す
+  フォーカスの間のタップはカーソルを移し、閉じられていたキーボードを出し直す。長押しで全選択（選択を許さない欄はタップと同じ）。**欄の外のタップ**（押して 8 dp 以内で離す）でフォーカスを外す
   （スクロールのドラッグでは外さない。別の欄・ボタンのタップはジェスチャーの段でそちらが先に受ける＝キーボードを隠して出し直さない）。
   **OS に取り消された指（`TouchPhase.Canceled`）はタップと数えない**（Android の戻るのジェスチャー・通知の引き下ろしが画面の端の指を奪ったとき。
   `OutsideTapTracker`。2026-09-30 の実機で、戻るのジェスチャーの指が欄の外のタップになり、戻るキーより先にフォーカスが外れていた。§13.1）。
@@ -157,6 +163,8 @@ CanvasClip〉の下に Selection・Content〈Text〉・Composition・Caret・Pla
 - **ダイアログの 1 行の入力**: `DialogOptions.Input`（`DialogInputOptions`）。`dialog.actor` の札の `Input` の枠（既定は隠す）へ `text_field.actor` を作って本文とボタンの行の間に並べ
   （札の高さは `DialogMetrics.Sections` の入力の区画。題・本文との間 `size.dialog_title_gap`・ボタンとの間 `size.dialog_actions_gap`）、開いたらフォーカス。
   Positive を選ぶと入力欄の文字（`TrimResult` なら前後の空白〈全角を含む〉を落とす）を `DialogHandle.InputText` へ置いてから閉じる。完了でも Positive（`SubmitOnDone`）。
+  入力欄の幅は札の中の幅（264）にそろえる（2026-10-02 の直し。以前は作ったばかりの入力欄へ書いていたので効かず、text_field.actor の 280 のまま右へ 16 はみ出した。
+  W3-3 (1)。今は入力欄のスクリプトが始まったときに当てる。[ui_navigation.md](ui_navigation.md) §3.2）。
 
 ## 9. 見た目とテーマのトークン
 
@@ -169,7 +177,7 @@ CanvasClip〉の下に Selection・Content〈Text〉・Composition・Caret・Pla
 | エラー（`SetError(true)`） | `color.error`・太い枠 | 同上 | `color.error` |
 | 無効（`Interactable = false`） | `color.disabled`・細い枠 | `color.on_disabled` | — |
 
-塗りは既定で無し（`Filled = true` で `color.surface_variant`）。角丸 `radius.field`、左右の内側の余白 `size.field_padding`（16）、高さの目安 `size.field_height`（52）、
+塗りは既定で無し（`Filled = true` で `color.surface_variant`）。角丸 `radius.field`、左右の内側の余白 `size.field_padding`（16。欄ごとの `Padding` で上書き。2026-10-02）、高さの目安 `size.field_height`（52）、
 文字 `text.field`（16）・数値の欄 `text.field_number`（24）、選択 `color.selection`（主の色の 40%）。Wake or Pay の数値の欄（枠線の角丸・約 112 dp・数字は中央で大きめ・
 フォーカスで枠が主の色）に合わせた。Android のしずく形のカーソルのつまみは作っていない（§14）。
 
@@ -284,7 +292,8 @@ h!.Completed += r => { if (r == DialogResult.Positive && h.InputText is { Length
 ## 14. 制限（`docs/backlog.md` の「W2-6 の残り」）
 
 - 複数行の入力欄（`TYPE_TEXT_FLAG_MULTI_LINE`・改行）は無い（Wake or Pay の v1 は 1 行だけ）。
-- Android のしずく形のカーソルのつまみ・選択のハンドル・長押しのメニュー（コピー・貼り付け）・ドラッグでの選択は無い（長押しは全選択）。
+- Android のしずく形のカーソルのつまみ・選択のハンドル・長押しのメニュー（コピー・貼り付け）・ドラッグでの選択は無い（長押しは全選択。選択を許さない欄はタップと同じ）。
+- 選択を許さない欄（`AllowSelection = false`）の畳み方は単体テストだけ（PC の Shift ＋ 矢印・Android の IME の選択の操作を Play・実機では確かめていない）。
 - Android の貼り付けの見分けは推測（変換の外の 2 書記素以上の一度の挿入）。次の単語の予測の候補・音声入力も止まる。IME によっては 1 文字ずつ貼る・変換中として貼るものは止まらない。
 - PC の Ctrl の組み合わせは物理キーの位置で読む（AZERTY などの配列では位置が違う）。
 - キーの状態（`Input.GetKey`）は入力欄が受けたキーでも届く（ゲームのショートカットは画面の側で止める）。

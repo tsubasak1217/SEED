@@ -1,9 +1,10 @@
-# 形と塗り・基本の部品・時刻ホイール・文字の描き方（W2-4・W2-5 の正典。2026-09-28。§12 は 2026-10-01）
+# 形と塗り・基本の部品・時刻ホイール・文字の描き方（W2-4・W2-5 の正典。2026-09-28。§12 は 2026-10-01・§13 は 2026-10-02）
 
 キャンバス UI の**形と塗り**（スプライトの角丸・楕円・弧・縁の線・グラデーション・9 スライス・ぼかしの影、角丸・楕円の切り抜き、
 形に合わせた当たり判定）と、**基本の部品**（`SEED.UI` のボタン・トグル・チェックボックス・スライダ・数値欄・セグメント・チップ・ラジオ・
 進捗の棒と輪）、部品が読む**テーマのトークン**、**ホイールと時刻ホイール**（W2-5。§11）、**文字の描き方**（グリフの SDF の焼き方・読み取り・
-平滑化の幅・小さな文字の太らせ。§12）の規則。背景と段階は [app_platform_roadmap.md](app_platform_roadmap.md) §3.3 の
+平滑化の幅・小さな文字の太らせ。§12）、**部品の拡充**（2026-10-02。不定の進捗・スライダの幅の追従・ボタンの危険の色と文字の枠・選択の文字の大きさ・
+輪の太さ・アイコン。§13。ダイアログ・トーストの拡充は [ui_navigation.md](ui_navigation.md) §3.2・§3.5、入力欄は [ui_text_input.md](ui_text_input.md) §8）の規則。背景と段階は [app_platform_roadmap.md](app_platform_roadmap.md) §3.3 の
 「ボタン」〜「形と塗り」「時刻ホイール」・§3.8.4（切り抜きの決定）・§3.8.5 の W2-4・W2-5。
 
 | 置き場 | 役割 |
@@ -115,16 +116,17 @@
 
 | 部品 | プレハブ（templates/ui/prefabs/） | 状態 | 見た目（トークン） | 振る舞い |
 |---|---|---|---|---|
-| `Button` | `button.actor`（Sprite・CanvasGesture〈タップ・長押し〉・Label・Icon〈任意〉）、丸いボタン `round_button.actor` | 通常・押下・長押し中・無効（`Interactable`・`Busy`） | 種類（Filled: primary / Tonal: selected / Outlined: 枠 outline / Text）。押下は state_layer を重ねる。無効は disabled・on_disabled | タップで `Clicked`（触感）、長押しで `LongPressed`、押下の終わりで `Released`。`Busy` の間は押せない（二重押しの防止）。押下がスクロールに負けたら取り消される（W2-2） |
+| `Button` | `button.actor`（Sprite・CanvasGesture〈タップ・長押し〉・Label・Icon〈任意〉）、丸いボタン `round_button.actor` | 通常・押下・長押し中・無効（`Interactable`・`Busy`） | 種類（Filled: primary / Tonal: selected / Outlined: 枠 outline / Text）。押下は state_layer を重ねる。無効は disabled・on_disabled。色の役割 `Tone = Danger`（2026-10-02）は primary の代わりに error・on_error（Tonal は Filled と同じ・Outlined の枠も error） | タップで `Clicked`（触感）、長押しで `LongPressed`、押下の終わりで `Released`。`Busy` の間は押せない（二重押しの防止）。押下がスクロールに負けたら取り消される（W2-2）。`FitLabel`（既定 true。2026-10-02）: レイアウトの大きさが変わるたびに文字の枠をボタンの大きさへ合わせる（§13.3） |
 | `Toggle` | `toggle.actor`（Sprite = 台・Knob） | オン・オフ・押下・無効 | 台 surface_variant → primary、つまみ knob_off（16）→ knob（24）、押している間はつまみ 24 | タップで切り替え、つまみは motion.short 秒（fastOutSlowIn） |
 | `Checkbox` | `checkbox.actor`（Sprite = 箱・Mark〈回転した棒 2 本〉） | オン・オフ・押下・無効 | オン: primary の塗り・印 on_primary、オフ: 枠 on_surface_muted | タップで切り替え |
-| `Slider` | `slider.actor`（当たりの帯・Track・Fill・Thumb） | 値・ドラッグ中・無効 | 溝 surface_variant、塗りとつまみ primary、ドラッグ中はつまみ 24 | 横のドラッグとタップでその位置の値へ（範囲・段階〈max も止まれる〉）。`ValueChanged` |
+| `Slider` | `slider.actor`（当たりの帯・Track・Fill・Thumb） | 値・ドラッグ中・無効 | 溝 surface_variant、塗りとつまみ primary、ドラッグ中はつまみ 24 | 横のドラッグとタップでその位置の値へ（範囲・段階〈max も止まれる〉）。`ValueChanged`。溝の長さはレイアウトの幅に追従（2026-10-02。§13.2） |
 | `NumberField` | `number_field.actor`（背景・Minus・Value・Plus〈Button〉） | 値・無効 | 背景 surface・枠 outline・文字 on_surface。端では片側のボタンが無効 | −・＋で段階ぶん、長押しで連続（押し続けるほど速く、最短 0.03 秒）。`TrySetText`（数でない入力は捨てる・範囲の外は収める） |
 | `SegmentedControl` | `segmented.actor`（台・Seg0..〈SelectItem〉） | 選択（必ず 1 つ）・押下・選べない | 台 surface_variant、選んだ項目 selected・on_selected | タップで選ぶ |
-| `ChipGroup` | `chip_group.actor`（Chip0..〈SelectItem〉） | 複数選択（`Multiple`）か 1 つ（外せる）・選べない | 選んだ: selected・枠なし、選んでいない: 枠 outline | タップで選ぶ・外す |
-| `RadioGroup` | `radio_group.actor`（Radio0..〈SelectItem: 輪・Dot・Label〉） | 1 つ選ぶ・選べない | 選んだ: 輪 primary・点を出す、選んでいない: 輪 on_surface_muted | タップで選ぶ |
+| `ChipGroup` | `chip_group.actor`（Chip0..〈SelectItem〉） | 複数選択（`Multiple`）か 1 つ（外せる）・選べない | 選んだ: selected・枠なし、選んでいない: 枠 outline。文字の大きさ `LabelSize`（既定 text.label。トークンか数。2026-10-02） | タップで選ぶ・外す |
+| `RadioGroup` | `radio_group.actor`（Radio0..〈SelectItem: 輪・Dot・Label〉） | 1 つ選ぶ・選べない | 選んだ: 輪 primary・点を出す、選んでいない: 輪 on_surface_muted。文字の大きさ `LabelSize`（同上） | タップで選ぶ |
 | `ProgressBar` | `progress_bar.actor`（溝・Fill・Label〈任意〉） | 値（0..1）・無効 | 溝 surface_variant・塗り primary・角丸 radius.progress | 値の変化は motion.medium 秒で伸び縮み |
-| `ProgressRing` | `progress_ring.actor`（溝〈弧 360〉・Arc・Label〈任意〉） | 値（0..1）・無効 | 溝 surface_variant、弧 primary（端を丸く・太さ size.ring_thickness） | 弧の角度 = 値 × 360（形と塗りの弧＝毎フレーム `SEED.Draw` を呼ばない） |
+| `ProgressRing` | `progress_ring.actor`（溝〈弧 360〉・Arc・Label〈任意〉） | 値（0..1）・無効 | 溝 surface_variant、弧 primary（端を丸く・太さ `Thickness`〈0 以下 = size.ring_thickness。2026-10-02〉） | 弧の角度 = 値 × 360（形と塗りの弧＝毎フレーム `SEED.Draw` を呼ばない） |
+| `ProgressSpinner`（2026-10-02） | `progress_spinner.actor`（Sprite = 弧〈丸い端〉） | 回す（`Spinning`）・無効 | 弧 primary（無効は opacity.disabled で薄く止める）。大きさ `Size`・太さ `Thickness`（0 以下 = size.spinner 36・size.spinner_thickness 4） | 不定の進捗。弧が伸び縮みしながら回る（Flutter の CircularProgressIndicator の不定の動き。§13.1） |
 | `WheelPicker`（W2-5） | `wheel_picker.actor`（当たり・Band・Viewport〈切り抜き・スクロール〉・Blocker）＋行 `wheel_row.actor` | 中央の項目・動いている・無効 | 帯 surface_variant・radius.wheel_band、文字 on_surface（選べない行 on_disabled）、帯の外 opacity.wheel_dim | 上下のドラッグ・慣性・行ごとのスナップ・端をつなげる・タップした行へ・キーの上下。§11 |
 | `TimeWheel`（W2-5） | `time_wheel.actor`（全列の帯・Meridiem・Hour・Minute〈WheelPicker〉） | 値（TimeOnly）・24/12 時間・分の刻み | 同上 | 12 時間表記の午前/午後の連動。§11 |
 
@@ -135,6 +137,9 @@
 9 スライス〈伸ばす・繰り返す〉・丸いアバター・円の切り抜き・角丸のカード・影・弧〉と全部品の状態〈押下・無効・オン/オフ・値〉を並べる）。
 `scripts/UiGalleryDemo.cs` がスライダ ↔ 数値欄 ↔ 進捗をつなぎ、「全部を無効にする」で全部品を無効にする（デバッグの命令 `ui,disable` / `ui,enable` / `ui,theme,<path>`）。
 **W2-9 で上にテーマの帯・縦のスクロールのページ・一覧・画面の組み立て・グラフの段を足した**（[ui_theme.md](ui_theme.md) §9）。
+**2026-10-02 で部品の段の進捗の棒の下に「スピナー 3 つ〈既定・56/6・20/2.5〉・太さ 3 と 10 の輪・幅いっぱいのスライダとボタン」（SpinnerRow・WideRow）、
+画面の組み立ての段に「危険の確認・メニュー・縦積み・進捗の札・長い本文・アイコン付き」のボタンの行（NavButtons2）を足した**（§13。デバッグの命令 `gallery,open,<danger|menu|stacked|progress|long|toast-icon>`・
+`gallery,wide`〈幅いっぱいのスライダの溝とボタンの文字の枠〉・`gallery,rows`〈選択肢の一覧の窓〉・`gallery,where,<名前>`）。
 **W2 の手直し P2-5 で画面の幅と安全領域に合わせる作りにした**（安全領域の内側の縦の CanvasStack に帯とページ、ページの中は段ごとの縦の Stack と行ごとの
 CanvasWrap。360〜540 dp で右が切れない。作りの図は [ui_theme.md](ui_theme.md) §9 の「ギャラリーの作り」）。
 テンプレートライブラリの「UI 部品」（`ui` のフォルダ）からプロジェクトへ取り込むと `assets/ui/...` になる。
@@ -617,3 +622,92 @@ em 40 は画数の多い漢字の細部（狭い隙間）を潰す（150 px で�
 - 尖りが逆向きに戻る辺（カスプ）の押し広げ（msdfgen の deconverge）は入れていない（検査で落ちれば真の SDF で描く）。
 - アトラスは追い出しをしないので、2048² に入る字数（全角のふつうの字で約 2,500、画数の多い字は 1 字で最大 2.56 字ぶん）を超える新しい字は描かれない（警告は出る）。
 - 異方性の強い変形では §12.7 と同じく `t` が縦横の二乗平均（中央値と真の SDF の切り替えも同じ `t` で決まる）。
+
+## 13. 部品の拡充（2026-10-02。Wake or Pay の W3 で見つかった制限の解消）
+
+Wake or Pay の W3-1〜W3-7 でプロジェクト側に回避のコードを書いた制限（docs/backlog.md の W3-1 (1)(2)・W3-2 (5)・W3-2b (5)(6)・W3-3 (1)(2)・W3-4 (1)(2)）を
+部品の側で直した。**既定の見た目は変えない**（新しい欄はどれも既定で従来どおりに見える。§13.6 で変更前の撮影と画素で比べた）。ダイアログ（危険のボタン・選択肢の一覧・
+ボタンの縦積み・進捗の札・長い本文のスクロール・入力欄の幅）とトーストの先頭のアイコンは [ui_navigation.md](ui_navigation.md) §3.2・§3.5、
+入力欄の余白と選択の禁止は [ui_text_input.md](ui_text_input.md) §8。
+
+| 部品・欄 | 既定 | 中身 | 純粋な計算（`editor/tests/UiComponentsTests` で検算） |
+|---|---|---|---|
+| `ProgressSpinner`（新規） | 大きさ・太さ 0（テーマ）・`Spinning` true | 不定の進捗（回る弧）。§13.1 | `Looks/SpinnerMotion.cs` |
+| `Slider` の溝 | — | レイアウトの幅に追従（§13.2） | `Looks/SliderGeometry.cs`・`LayoutSizeWatch.cs` |
+| `Button.Tone`・`SetTone` | `Primary` | `Danger` で color.error・color.on_error（§13.3） | `Looks/ButtonLook.cs` |
+| `Button.FitLabel` | true | 文字の枠をボタンの大きさへ合わせる（§13.3） | `Looks/ButtonLabelFit.cs` |
+| `SelectionGroup.LabelSize`（ChipGroup・RadioGroup・SegmentedControl）・`SetLabelSize` | `text.label` | 項目の文字の大きさ（トークンの名前か数。§13.4） | `Looks/UiTextSize.cs` |
+| `Button.LabelSize`・`UiTextStyle.Apply` の大きさ | （従来どおり） | 数（`"18"`）も書ける（§13.4） | `Looks/UiTextSize.cs` |
+| `ProgressRing.Thickness`・`SetThickness` | 0（size.ring_thickness） | 部品ごとの太さ（§13.4） | `Looks/UiSizeOverride.cs` |
+| `UiIcon`（トースト・ダイアログの選択肢） | — | 先頭のアイコン（図形か画像。§13.5） | `Looks/UiIcon.cs` |
+
+### 13.1 不定の進捗（`ProgressSpinner`）
+
+- **作り**: `templates/ui/prefabs/progress_spinner.actor`（Sprite = 弧〈丸い端〉＋ `SEED.UI.ProgressSpinner`）。色は color.primary、無効は opacity.disabled で薄くして止める。
+  大きさ（弧の外側の直径）`Size`・太さ `Thickness` は部品ごとに書け、0 以下ならテーマの `size.spinner`（36）・`size.spinner_thickness`（4）。値の出典は
+  Flutter の CircularProgressIndicator の既定（36×36〈year2023 の Material 3〉・strokeWidth 4）。
+- **動き**（`SpinnerMotion.At`。2026-10-02 に flutter/flutter master の `progress_indicator.dart` を取得して式と定数を確かめた）: 弧の周期 u（`motion.spinner_cycle` 1.333 秒）と
+  回転の周期 r（`motion.spinner_rotation` 2.222 秒）ののこぎり波から、頭 = fastOutSlowIn(Interval(0, 0.5)(u))・尾 = fastOutSlowIn(Interval(0.5, 1)(u))、
+  始まり = −90° ＋ 尾 × 270° ＋ r × 360° ＋ u × 90°（0〜360 へ畳む）、角度 = max(頭 × 270° − 尾 × 270°, 0.001 ラジアン)。周期の境目で途切れない。
+- **描き続け**: 回っている間（`Spinning`・押せる・自分と祖先が表示〈`UiVisibility.IsShownInHierarchy`〉・画面と重なる〈`IsOnScreen`。前のフレームの `LayoutRect`〉）だけ
+  毎フレーム弧を書いて `Redraw.KeepAlive(0.1)`。隠す・止める・スクロールで画面の外へ出すと、`render_policy: on_demand` の描画は 0.1 秒で止まる。時刻は実時間（`Time.UnscaledDeltaTime`）。
+- Wake or Pay のオプションの覆いの手作りの回転（`OptionsOverlayScreen.ApplyProgress`。輪を `CanvasTransform.Rotation` で回す）はこれで置き換えられる。
+
+### 13.2 スライダの溝の幅（`SliderGeometry`）
+
+以前の `Slider` は溝の左端と長さを開始時にプレハブの Track から 1 回だけ読み、コンテナが幅を伸ばしても（fill_width・Stretch・flex）溝は伸びなかった
+（Wake or Pay の W3-1 (1)。`FullWidthSlider` を自作して回避）。今は開始時にプレハブの寸法（部品の大きさ・Track の左端と長さ・溝の中心の高さ）を読み、
+毎フレーム自分の `CanvasTransform.LayoutSize`（前のフレームの描画の値。`LayoutSizeWatch` で 0.01 を超えて変わったときだけ）から溝を決め直す:
+溝の長さ = レイアウトの幅 − プレハブの左右の余白（左 = Track の左端・右 = 部品の幅 − Track の右端）、溝の中心 = プレハブの割合 × レイアウトの高さ。
+伸ばしていない部品はプレハブと同じ値になる（既定の見た目は変わらない）。溝の長さは `Slider.TrackLength` で読める。
+Wake or Pay の `FullWidthSlider` の「刻みの点（divisions）」は SEED の Slider には無い（§13.7）。
+
+### 13.3 ボタン: 危険の色（`ButtonTone`）と文字の枠（`FitLabel`）
+
+- **危険の色**: `Tone = ButtonTone.Danger`（`SetTone`）で、主の色の代わりにエラーの色を使う。Filled = color.error の塗りと color.on_error の文字、Outlined = error の枠と文字、
+  Text = error の文字、Tonal = Filled と同じ（Material 3 の errorContainer に当たるトークンが無いため）。押下は state_layer を重ね、無効は役割に依らず同じ灰色。
+  `ButtonLooks.Resolve(variant, pressed, disabled, theme)`（従来の形）は `Primary` と同じ結果。ダイアログの危険のボタン（`DialogButtonKind.Danger`）はこれで描く。
+- **文字の枠**: エンジンのレイアウトは文字の枠（`Text.BoxWidth`）を伸ばさない（[canvas_camera_rework.md](canvas_camera_rework.md) §6.3 の規則 3）ので、幅いっぱいに伸ばした
+  ボタンでは文字の枠がプレハブの幅のまま左に寄り、真ん中寄せの文字が真ん中に来なかった（W3-3 (2)。`WrappedText.FitWidth` で回避）。`FitLabel`（既定 true）なら、
+  ボタンのレイアウトの大きさが変わるたびに 文字の枠 = レイアウトの大きさ ＋（プレハブの文字の枠 − プレハブのボタンの大きさ）（軸ごと。枠なし〈0〉の軸は 0 のまま）。
+  button.actor（ボタン・枠とも 120×48）は枠 = ボタンの大きさ、dialog.actor のボタン（枠 320・真ん中に置いた文字）は差 232 を保つ。伸ばしていなければ枠は変わらない。
+
+### 13.4 文字の大きさ・太さの上書き
+
+- `SelectionGroup.LabelSize`（ChipGroup・RadioGroup・SegmentedControl。既定 `text.label`）: 項目の文字の大きさ（以前は text.label に固定。W3-1 (2)）。
+- 大きさの指定（`UiTextSize`）: テーマのトークンの名前（SEED のトークン・`app.*`）か数（`"18"`。インバリアントの書式）。空・テーマに無く数でもない・0 以下は「変えない」。
+  `Button.LabelSize`・`UiTextStyle.Apply` も同じ読み方（数を書けるようになった。トークンの名前の読み方は従来どおり）。
+- `ProgressRing.Thickness`（`SetThickness`・`ResolvedThickness`）: 0 以下ならテーマの `size.ring_thickness`（以前はトークンだけで、起床確認の輪と共有していた。W3-2 (5)）。
+  0 以下を「テーマのまま」にする上書きの規則は `UiSizeOverride`（`ProgressSpinner.Size`・`Thickness` も同じ）。
+
+### 13.5 アイコン（`UiIcon`）
+
+トーストの先頭・ダイアログの選択肢の項目のアイコン。`UiIcon.Image(path, 色?, 大きさ?)`（画像。色を指定しなければ白 = 画像の色のまま）・`Circle`（塗った円）・
+`Ring`（輪。太さ size.check_border）・`Square`（角丸 radius.checkbox の四角）。大きさは `Size`（0 以下 = `size.icon` 24）、アイコンと文字の間は `size.icon_gap`（12）。
+図形の既定の色は部品が決める（トースト = 文字の色、選択肢 = color.on_surface_muted・危険は color.error）。部品のプレハブの子の Sprite（`Icon`）へ当てる
+（`Widgets/UiIconView.cs`。見た目の決め方は `UiIconLooks.Resolve`・文字の左端は `UiIconLooks.TextStart`）。文字の中へ絵を入れる（インライン画像。W3-4 (3)）は未対応（§13.7）。
+
+### 13.6 検証（2026-10-02・PC。作業フォルダ `tmp/lane2/`）
+
+- **単体テスト**（C#）`dotnet run --project editor/tests/UiComponentsTests`: 168 / 168（拡充の 22 件＝基本の部品 14・ダイアログとトースト 8: 危険の色〈従来の形と同じ・Filled/Tonal/Outlined/Text〉・文字の枠・
+  スライダの溝〈伸ばしていなければプレハブと同じ・411 dp〉・大きさの見張り・文字の大きさの指定・上書き・スピナーの弧〈Python で独立に書いた Flutter の式の 9 時刻と 0.05° 以内〉・
+  境目のつながり・アイコン・入力欄の余白と選択の禁止・新しいトークンの値・プレハブと見本の作り・ダイアログとトースト〈[ui_navigation.md](ui_navigation.md) §11〉）。
+  トークンの表は `--update-docs docs/ui_theme.md` で作り直した（[ui_theme.md](ui_theme.md) §8。表と docs の一致のテストも通る）。
+- **Play**（主の作業ツリーの `runtime/target/debug/SEED.exe` を読むだけで使い、作業ディレクトリを作業ツリーの `runtime/` にして作業ツリーの `SEEDScripting.dll` を読ませた。
+  見本は作業ツリーの `templates/ui` の写し。540×1200・on_demand・IPC の撮影）: ギャラリーの拡充の行（スピナー 3 つ〈既定・56/6・20/2.5〉・太さ 3 と 10 の輪・
+  幅いっぱいのスライダとボタン）。`gallery,wide` の値: 窓の幅 540 → スライダ 508・溝 488・ボタン 508・文字の枠 508、窓を 411 にすると 379・359・379・379、720 にすると
+  688・668・688・688（窓の大きさを Win32 で変えた。溝とボタンの文字の枠が次のフレームで追従する）。
+- **既定の見た目**: 変更前（主の作業ツリーの DLL と templates/ui）と変更後のギャラリーを同じスクロールの位置で撮り、部品の段の拡充の行より上（ボタン・トグル・
+  チェックボックス・輪・スライダ・数値欄・セグメント・ラジオ・チップ・棒）は **差 0 画素**。
+- 単体テストの無い所: `ProgressSpinner` の毎フレームの当て方・`UiVisibility`（エンジンの欄を読む）は Play の撮影で弧が伸び縮みしながら回ることを見ただけ。
+
+### 13.7 制限と持ち越し
+
+- **スピナーは親の切り抜き（CanvasClip）で見えないだけの所でも回り続ける**（祖先の Visible と画面との重なりだけを見る。切り抜きの外かは見ない）。スクロールの窓の中で
+  窓の外へ出たときは、窓が画面の中にあると回り続ける（描き続けを頼む）。隠したい間は `SetSpinning(false)` か親を隠す。
+- **見張りの読み出し**: Slider・Button（文字の枠）・TextField は毎フレーム自分の `LayoutSize` を読む（FFI 3 回ほど）。止まっている画面（on_demand で描画が止まる）では
+  フレームが来ないので費用は出ない。`FitLabel = false` で文字の枠の見張りを止められる。
+- **文字の枠の書き手が 2 つ**: スクリプトがボタンの文字の枠を自分で書く（Wake or Pay の `WrappedText.FitWidth`）と、ボタンの大きさが変わったときに `FitLabel` が上書きする
+  （両方とも同じ幅を書くなら食い違わない。違う幅にしたいボタンは `FitLabel = false`）。
+- `Tonal` の危険は `Filled` と同じ（errorContainer のトークンを足していない）。Slider に刻みの点（Flutter の divisions）は無い。
+- 文字の中に絵を入れる（インライン画像。W3-4 (3)）・絵文字の書体（W3-1 (9)）は未対応（backlog）。

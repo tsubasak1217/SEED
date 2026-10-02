@@ -11,6 +11,7 @@
 //    - 「全部を無効にする」ボタンで全部品の Interactable を切り替える（押下・無効の見た目を並べて見るため）
 //    - 部品のイベントを画面の Log とログ（[UI] …）へ出す（IPC の検査がログで当たりを確かめる）
 //    - 時刻ホイール（W2-5）: 値の変化（time）と止まった値（time-settled）、数のホイールの中央の値（wheel・wheel-settled）
+//    - 2026-10-02 の拡充: 幅いっぱいのスライダ（wide-slider）とボタン（click WideButton）、スピナー・太さを変えた輪（全部を無効にするの対象）
 //  部品のスクリプトは OnStart の順が決まっていないので、登録簿（UiRegistry.Version）が変わるたびにつなぎ直す。
 //  デバッグの命令（SCRIPT_DEBUG:ui,<名前>）: disable（全部品を無効）・enable（戻す）・theme,<assets:// のテーマ>・
 //  mark <文字>（ログへ区切りを出す。検査が場面ごとにログを分けるため）・
@@ -131,7 +132,17 @@ public class UiGalleryDemo : SEEDScript
             slider.ValueChanged += (_, v) => { field.SetValue(v); ShowProgress(v); Report($"slider {v}"); };
             field.ValueChanged += (_, v) => { slider.SetValue(v); ShowProgress(v); Report($"number {v}"); };
         }
+        // 2026-10-02 の拡充: 幅いっぱいのスライダとボタン（値・押下をログへ）、スピナーと太さを変えた輪（全部を無効にするの対象）
+        if (Find<Slider>("WideSlider") is { } wide && _bound.Add(wide))
+            wide.ValueChanged += (_, v) => Report($"wide-slider {v:0.#}");
+        if (Find<Button>("WideButton") is { } wideButton && _bound.Add(wideButton))
+            wideButton.Clicked += _ => Report("click WideButton");
+        foreach (var name in ExtendNames)
+            if (Find<UiWidget>(name) is { } extra) _bound.Add(extra);
     }
+
+    /// <summary>2026-10-02 の拡充の部品（スピナー・太さを変えた輪）の名前。</summary>
+    private static readonly string[] ExtendNames = { "Spinner", "SpinnerLarge", "SpinnerSmall", "RingThin", "RingThick" };
 
     /// <summary>スライダの値を進捗の棒・輪へ映す。</summary>
     private void ShowProgress(float value)

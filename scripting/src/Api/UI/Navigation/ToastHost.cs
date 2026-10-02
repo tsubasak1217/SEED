@@ -63,14 +63,26 @@ public sealed class ToastHost : UiWidget
     public int PendingCount => _queue.PendingCount;
 
     /// <summary>トーストを出す（空きが無ければ待たせる）。</summary>
-    public ToastItem Show(string message, ToastLength length = ToastLength.Short)
-        => Show(message, Theme.Number(length == ToastLength.Long ? NavTokens.MotionToastLong : NavTokens.MotionToastShort));
+    public ToastItem Show(string message, ToastLength length = ToastLength.Short) => Show(message, null, length);
+
+    /// <summary>先頭のアイコンつきのトーストを出す（2026-10-02。アイコンは図形か画像。null なら文字だけ）。</summary>
+    /// <param name="message">文字。</param>
+    /// <param name="icon">先頭のアイコン。</param>
+    /// <param name="length">見せる長さ。</param>
+    public ToastItem Show(string message, UiIcon? icon, ToastLength length = ToastLength.Short)
+        => Show(message, icon, Theme.Number(length == ToastLength.Long ? NavTokens.MotionToastLong : NavTokens.MotionToastShort));
 
     /// <summary>トーストを出す（見せる秒を指定）。</summary>
-    public ToastItem Show(string message, float seconds)
+    public ToastItem Show(string message, float seconds) => Show(message, null, seconds);
+
+    /// <summary>先頭のアイコンつきのトーストを出す（見せる秒を指定。2026-10-02）。</summary>
+    /// <param name="message">文字。</param>
+    /// <param name="icon">先頭のアイコン（null なら文字だけ）。</param>
+    /// <param name="seconds">見せる秒。</param>
+    public ToastItem Show(string message, UiIcon? icon, float seconds)
     {
         _queue.MaxVisible = (int)Theme.Number(NavTokens.CountToastVisible, ToastQueue.DefaultMaxVisible);
-        var item = _queue.Enqueue(message, seconds);
+        var item = _queue.Enqueue(message, seconds, icon);
         Debug.Log($"{LogPrefix} show #{item.Id} \"{message}\" {(item.Phase == ToastPhase.Shown ? "shown" : "pending")}");
         if (item.Phase == ToastPhase.Shown) Spawn(item);
         Redraw.Request();

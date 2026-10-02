@@ -80,11 +80,23 @@ public sealed class DialogHandle : ModalHandle
     /// <summary>入力欄の結果の文字を置く（Dialog が Positive を選んだときに閉じる前に呼ぶ）。</summary>
     internal void SetInputText(string? text) => InputText = text;
 
+    /// <summary>
+    /// 選んだ項目の番号（2026-10-02。選択肢の一覧のダイアログで結果が <see cref="SEED.UI.DialogResult.Selected"/> のときだけ
+    /// DialogOptions.Items の添字。それ以外・閉じる前は <see cref="DialogModel.NoSelection"/>〈-1〉）。
+    /// </summary>
+    public int SelectedIndex { get; private set; } = DialogModel.NoSelection;
+
+    /// <summary>選んだ項目の番号を置く（Dialog が Selected を選んだときに閉じる前に呼ぶ）。</summary>
+    internal void SetSelectedIndex(int index) => SelectedIndex = index;
+
     /// <summary>結果が決まった（閉じる動きの後）。</summary>
     public event Action<DialogResult>? Completed;
 
     /// <summary>結果を待つ（await できる）。</summary>
     public Task<DialogResult> ResultAsync => _result.Task;
+
+    /// <summary>開く前に SetMessage で置いた本文（面ができたら当てる）。</summary>
+    private string? _pendingMessage;
 
     internal DialogHandle(DialogOptions options) : base(ModalKind.Dialog)
     {
@@ -93,6 +105,33 @@ public sealed class DialogHandle : ModalHandle
 
     /// <summary>ボタンを押さずに閉じる（Dismissed）。</summary>
     public void Dismiss() => Close(SEED.UI.DialogResult.Dismissed);
+
+    /// <summary>
+    /// 外から結果つきで閉じる（2026-10-02。進捗の札が終わったら Positive で閉じるなど。閉じる動きの後に Completed）。
+    /// 面ができる前に呼んでも、できたらすぐ閉じる。
+    /// </summary>
+    /// <param name="result">結果。</param>
+    public void Close(DialogResult result) => base.Close(result);
+
+    /// <summary>
+    /// 本文を変える（2026-10-02。進捗の札の「ダウンロード中 40%」など。札の高さは本文の行の数に合わせて割り付け直す）。
+    /// 面ができる前に呼んだら、できたときに当てる。閉じた後は何もしない。
+    /// </summary>
+    /// <param name="message">本文。</param>
+    public void SetMessage(string message)
+    {
+        if (IsClosed) return;
+        if (Plane is Dialog dialog) dialog.SetMessage(message);
+        else _pendingMessage = message ?? string.Empty;
+    }
+
+    /// <summary>面ができる前に置いた本文（Dialog が開くときに読む。無ければ null）。</summary>
+    internal string? TakePendingMessage()
+    {
+        var message = _pendingMessage;
+        _pendingMessage = null;
+        return message;
+    }
 
     /// <inheritdoc />
     internal override void Complete(object? result)
