@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ヒエラルキー（editor/src/Panels/HierarchyPanel）の行の振る舞いを「実物の XAML と差分更新」で確かめる検証用コンソール。
+
+    HierarchySyncTests（純ロジックの単体テスト）と役割を分けている:
+      - あちら: 差分更新（HierarchyTreeSync）と目アイコンの判定（HierarchyEyeClick）を WPF 抜きで検証する
+      - こちら: 本物のパネルへヒエラルキーの JSON を 2 回流し（行の使い回しを起こし）、行の目アイコンを押して
+               ランタイムへ送られる SET_VISIBLE の番号を確かめる（2 回目のレビュー #12 の再現と回帰の検知）
+
+    SEEDEditor 本体をプロジェクト参照するのは、パネルの XAML・アイコン・共通書式がすべて本体アセンブリの中にあるため。
+    **エディタは起動しない**（App はリソース読み込みのために生成するだけで、Run() は呼ばない）。
+    ランタイムも起動しない（RuntimeManager は存在しない exe で作り、送信はパイプが無いのでログへ書くだけ。
+    そのログの行を読んで「何を送ったか」を確かめる）。
+
+    実行: dotnet run (project=editor/tests/HierarchyPanelProbe)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.HierarchyPanelProbe</RootNamespace>
+    <AssemblyName>HierarchyPanelProbe</AssemblyName>
+    <!-- 本体と同じ RID（本体の参照の復元条件をそろえる。VersionControlPanelPreviewProbe と同じ）-->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\SEEDEditor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WPF のリソース探索先を本体へ向ける初期化は VersionControlPanelPreviewProbe のものを共有する -->
+    <Compile Include="..\VersionControlPanelPreviewProbe\ResourceAssemblyInitializer.cs">
+      <Link>Linked\ResourceAssemblyInitializer.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

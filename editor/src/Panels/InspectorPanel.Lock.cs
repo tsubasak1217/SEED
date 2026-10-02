@@ -37,6 +37,15 @@ namespace SEEDEditor.Panels;
 /// なお「ロック対象をリネームした」場合も名前一致が崩れるので解除される。
 /// 取り違えを防ぐ側に倒した判断で、実害は「もう一度ロックし直す」だけ。</para>
 ///
+/// <para><b>中身の照合（2026-10-03 の 2 回目のレビュー #13）</b>:
+/// 名前が合っても、同じ名前の兄弟（リストの行など）がロックした番号へずれ込むことがある（削除の Undo など）。
+/// そのままだと表示はロックしたアクタの値、書き先は別のアクタになる（ランタイムの SELECTED / ACTOR_COMPONENTS はロックで捨てる）。
+/// そこでヒエラルキーが変わるたびに、ロックした番号の ACTOR_COMPONENTS を取り直し（GET_ACTOR_COMPONENTS）、
+/// 名前と中身（ルートの種類・プレハブの参照・コンポーネントの構成。<see cref="Inspector.InspectorLockIdentity"/>）を照合する。
+///   ・同じ … ロックを続け、取り直した値で描き直す（表示と書き先が同じアクタになる）
+///   ・違う … ロックを外して表示を空にし、ヘッダーで知らせる
+/// 名前も構成も同じ兄弟は見分けられない（ACTOR_COMPONENTS に個体の ID が無い）。その場合も描き直すので食い違いは起きない。</para>
+///
 /// <para><b>状態はセッション内のみ</b>。レイアウトにも設定にも保存しない。</para>
 /// </summary>
 public partial class InspectorPanel
@@ -81,6 +90,15 @@ public partial class InspectorPanel
         "インスペクタをロック\n表示中のアクターに固定し、他を選んでも切り替えません。\n"
         + "（エディタを閉じるまでの一時設定）";
 
+    /// <summary>
+    /// ロックした番号へ別のアクタがずれ込んだのでロックを外したときに、ヘッダー（アクタ名の欄）へ出す知らせ（2 回目のレビュー #13）。
+    /// 次に何かを選ぶと通常の表示に戻る。
+    /// </summary>
+    private const string InspectorLockReplacedNotice = "選択なし（ロックしたアクターが別のアクターと入れ替わったため、ロックを外しました）";
+
+    /// <summary>ロックした番号の中身を取り直す IPC の接頭辞（選択のときと同じ問い合わせ）。</summary>
+    private const string LockVerifyCommandPrefix = "GET_ACTOR_COMPONENTS:";
+
     // ── ヒエラルキー JSON のキー（runtime の build_hierarchy_json と一致必須）──
 
     /// <summary>ヒエラルキーノードの DFS ID キー。</summary>
@@ -88,6 +106,9 @@ public partial class InspectorPanel
 
     /// <summary>ヒエラルキーノードの名前キー。</summary>
     private const string HierarchyNodeNameKey = "name";
+
+    /// <summary>ヒエラルキーノードの親の DFS ID キー（ルートは null）。</summary>
+    private const string HierarchyNodeParentKey = "parent";
 
     // ── セッション状態（永続化しない）──────────────────────────────────
 
@@ -102,6 +123,28 @@ public partial class InspectorPanel
     /// DFS ID がずれたときの同一性チェックに使う（<see cref="ValidateInspectorLock"/>）。
     /// </summary>
     private string _lockedActorName = "";
+
+    /// <summary>
+    /// ロックしたアクタの目印（名前と中身の構成）。ロックした時点に表示していた ACTOR_COMPONENTS から作り、
+    /// その後にロックした番号の応答を描くたびに最新へ更新する（利用者がロック中に足したコンポーネントで外れないように）。
+    /// 取り直しの応答をこれと照合する（2 回目のレビュー #13）。作れなければ null（照合しない）。
+    /// </summary>
+    private Inspector.InspectorLockIdentity? _lockedIdentity;
+
+    /// <summary>ロックした番号の中身の取り直し（GET_ACTOR_COMPONENTS）を送り、応答を待っているか。</summary>
+    private bool _lockVerifyPending;
+
+    /// <summary>
+    /// 最後に取り直しのきっかけにした「ロックした番号までの木の形」の要約（番号・名前・親のハッシュ）。
+    /// 同じ形が続けて届いたときは取り直さない（ロック中もヒエラルキーは何度も届き、取り直すたびにインスペクタを描き直すので、
+    /// ロックした番号に入るアクタが変わり得るとき＝手前の木の形が変わったときだけ問い合わせる）。ロックした直後は null。
+    /// </summary>
+    private int? _lastLockVerifiedPrefixShape;
+
+    /// <summary>
+    /// 直近に描いた ACTOR_COMPONENTS の JSON（表示中のアクタのもの）。ロックしたときの目印の元にする。
+    /// </summary>
+    private string? _lastAppliedActorComponentsJson;
 
     // ── 選択入口のガード ───────────────────────────────────────────────
 
@@ -141,6 +184,14 @@ public partial class InspectorPanel
         // （ACTOR_COMPONENTS の "name"）を使う。表示テキストは名前が空のときに
         // "Actor #3" へ置き換わるため、HIERARCHY のノード名とは決して一致しない。
         _lockedActorName  = _currentActorName;
+        // 中身の照合の目印（表示中の ACTOR_COMPONENTS から。2 回目のレビュー #13）。
+        // 選び直した直後でまだ前のアクタの応答しか描いていなければ作らない（前のアクタと照合して誤って外さないため。
+        // その場合は最初に描いた応答で目印ができる。AcceptLockedActorComponents）
+        _lockedIdentity   = _lastAppliedActorComponentsJson is { } shown && TryGetActorComponentsId(shown) == _currentActorId
+            ? Inspector.InspectorLockIdentity.TryParse(shown)
+            : null;
+        _lockVerifyPending             = false;
+        _lastLockVerifiedPrefixShape = null;
         EditorLog.Write($"[Inspector.Lock] ロック: dfsId={_lockedActorDfsId} name={_lockedActorName}");
     }
 
@@ -161,6 +212,9 @@ public partial class InspectorPanel
         _inspectorLocked  = false;
         _lockedActorDfsId = -1;
         _lockedActorName  = "";
+        _lockedIdentity   = null;
+        _lockVerifyPending             = false;
+        _lastLockVerifiedPrefixShape = null;
 
         if (clearSelection)
         {
@@ -211,7 +265,7 @@ public partial class InspectorPanel
     /// <param name="hierarchyJson">HIERARCHY のフラットなノード配列 JSON。</param>
     private void ValidateInspectorLock(string hierarchyJson)
     {
-        bool idStillValid = false;
+        var nodes = new System.Collections.Generic.List<Inspector.InspectorLockNode>();
 
         try
         {
@@ -225,10 +279,9 @@ public partial class InspectorPanel
 
                 var name = node.TryGetProperty(HierarchyNodeNameKey, out var nameEl)
                     ? nameEl.GetString() ?? "" : "";
-
-                if (id != _lockedActorDfsId) continue;
-                idStillValid = name == _lockedActorName;
-                break;
+                var parent = node.TryGetProperty(HierarchyNodeParentKey, out var parentEl) && parentEl.TryGetInt32(out var pid)
+                    ? pid : Inspector.InspectorLockShape.NoParent;
+                nodes.Add(new Inspector.InspectorLockNode(id, name, parent));
             }
         }
         catch (Exception ex)
@@ -238,14 +291,69 @@ public partial class InspectorPanel
             return;
         }
 
-        // そのままの位置に居る: 何もしない
-        if (idStillValid) return;
+        // 同じ番号に同じ名前が居るか（従来の確かめ）と、ロックした番号に入るアクタが変わり得る「木の形」の要約
+        // （WPF 非依存の Inspector/InspectorLockShape.cs。InspectorLogicTests が確かめる。2 回目のレビュー #13）
+        var (idStillValid, shape) = Inspector.InspectorLockShape.Evaluate(nodes, _lockedActorDfsId, _lockedActorName);
+
+        // そのままの位置に同じ名前が居る: 木の形が変わったときだけ、中身を取り直して照合する
+        // （同じ名前の兄弟がずれ込んでいないか。応答は OnActorComponentsReceived → AcceptLockedActorComponents）
+        if (idStillValid)
+        {
+            RequestLockVerification(shape);
+            return;
+        }
 
         // 居ない＝削除された、または手前のアクターが増減して DFS ID がずれた。
         // 「同じ名前のノードを探して追従する」ことも考えられるが、同名アクターは
         // 珍しくないため、削除直後に別の同名アクターへ乗り移る危険がある。
         // 取り違えて別アクターを編集させるより、解除して選び直させる方が安全。
         ReleaseInspectorLock(clearSelection: true, reason: "対象が見つからない");
+    }
+
+    // ── 中身の照合（2 回目のレビュー #13）──────────────────────────────
+
+    /// <summary>
+    /// ロックした番号の中身を取り直す（ロックした番号までの木の形が前回の照合から変わったときだけ。ロックした直後の最初の 1 回も）。
+    /// 応答は <see cref="AcceptLockedActorComponents"/> が照合する。
+    /// </summary>
+    /// <param name="shape">ロックした番号までの木の形と同じ名前の兄弟の数の要約（同じなら取り直さない）。</param>
+    private void RequestLockVerification(int shape)
+    {
+        if (_lastLockVerifiedPrefixShape == shape) return;
+        _lastLockVerifiedPrefixShape = shape;
+        _lockVerifyPending = true;
+        _runtime?.SendToRuntime($"{LockVerifyCommandPrefix}{_lockedActorDfsId}");
+    }
+
+    /// <summary>
+    /// ロックした番号の ACTOR_COMPONENTS を描く前に、ロックしたアクタと同じかを確かめる（OnActorComponentsReceived から呼ぶ）。
+    /// 取り直しの応答で中身が違えばロックを外して表示を空にし、知らせる（false＝描かない）。
+    /// 同じ（または判断できない）なら目印を最新の中身へ更新して描かせる（true）。
+    /// </summary>
+    /// <param name="json">届いた ACTOR_COMPONENTS の JSON。</param>
+    /// <param name="incomingId">応答の DFS 番号（取れなければ -1）。</param>
+    /// <returns>描いてよければ true。</returns>
+    private bool AcceptLockedActorComponents(string json, int incomingId)
+    {
+        if (!_inspectorLocked || incomingId != _lockedActorDfsId) return true;
+
+        var incoming = Inspector.InspectorLockIdentity.TryParse(json);
+        if (_lockVerifyPending)
+        {
+            _lockVerifyPending = false;
+            if (Inspector.InspectorLockIdentity.Compare(_lockedIdentity, incoming) == Inspector.InspectorLockVerdict.Different)
+            {
+                EditorLog.Write($"[Inspector.Lock] ロックした番号に別のアクターが入ったため解除: dfsId={_lockedActorDfsId} " +
+                                $"name={_lockedActorName} → {incoming?.Name}");
+                ReleaseInspectorLock(clearSelection: true, reason: "別のアクターと入れ替わった");
+                ActorNameBlock.Text = InspectorLockReplacedNotice;
+                return false;
+            }
+        }
+
+        // 同じアクタ（値の変化・利用者の編集）。目印を最新の中身にする（ロック中に足したコンポーネントで外れないように）
+        if (incoming is not null) _lockedIdentity = incoming;
+        return true;
     }
 
     // ── トグル UI ──────────────────────────────────────────────────────

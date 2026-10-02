@@ -95,6 +95,40 @@ public partial class MainWindow
     /// <summary>書き戻しの失敗のダイアログの本文（{0}=理由）。</summary>
     private const string WriteBackFailedFormat = "Play 中の変更を書き戻せませんでした。\n\n{0}";
 
+    // ── 通知の文言（書き戻しで古くなったタブ・停止後の反映）────────────
+
+    /// <summary>
+    /// 書き戻しで古くなったアクタータブを、未保存の編集があるときに読み直してよいか確かめる本文（{0}=タブの名前）。
+    /// 未保存の印はシーンとタブで 1 つなので、シーンだけの編集でもこの確認が出る（2 回目のレビュー #14）。
+    /// </summary>
+    private const string StaleTabReloadConfirmFormat =
+        "{0} のファイルは Play 中の書き戻しで変わっています。\n" +
+        "ファイルから読み直すと、このタブの未保存の編集と Undo の履歴は失われます。\n" +
+        "（未保存の印はシーンとタブで共通のため、シーンだけを編集したときもこの確認が出ます。読み直してもシーンの編集は消えません）\n\n" +
+        "［はい］ファイルから読み直す\n" +
+        "［いいえ］今の中身のまま表示する（このタブを保存すると、書き戻した内容を上書きします）";
+
+    /// <summary>上の確認の題名。</summary>
+    private const string StaleTabReloadConfirmTitle = "書き戻しで変わったアクタータブ";
+
+    /// <summary>
+    /// 停止時にアクタータブを表示中だったので、Edit のシーンへの自動の再展開を見送ったときのトースト（{0}=プレハブ名か本数）。
+    /// アクタータブの表示中は Undo の履歴がタブの切り替えで作り直され「Ctrl+Z で戻せます」を約束できないため（2 回目のレビュー #16）。
+    /// </summary>
+    private const string ReapplyDeferredForActorTabToastFormat =
+        "アクタータブの表示中のため、{0} の変更は Edit のシーンへ自動では反映していません（Ctrl+Z で戻せないため）。" +
+        "シーンのタブで、バナーの［更新する］から反映してください";
+
+    /// <summary>再展開の結果のトースト（{0}=プレハブ名・{1}=件数）。シーンのタブを表示中（Undo 1 操作で戻せる）。</summary>
+    private const string ReapplyDoneToastFormat = "プレハブ {0} の変更を {1} 個のインスタンスへ反映しました（Ctrl+Z で戻せます）";
+
+    /// <summary>
+    /// 再展開の結果のトースト（{0}=プレハブ名・{1}=件数）。アクタータブを表示中（保存に続く自動反映など）。
+    /// シーンのタブへ移ると SET_ACTIVE_WORLD_LINE が Undo の履歴を作り直すので、Ctrl+Z を約束しない（2 回目のレビュー #16）。
+    /// </summary>
+    private const string ReapplyDoneInActorTabToastFormat =
+        "プレハブ {0} の変更を Edit のシーンの {1} 個のインスタンスへ反映しました（アクタータブの表示中のため、シーンのタブへ移ると Ctrl+Z では戻せません）";
+
     /// <summary>
     /// Play 中に変わったプレハブを覚えておき、Play 停止後に Edit のシーンへ反映する待ち行列
     /// （判定は純粋なクラス <see cref="SEEDEditor.Reload.PrefabPlayReapplyQueue"/>。テストあり）。
@@ -102,10 +136,12 @@ public partial class MainWindow
     private readonly SEEDEditor.Reload.PrefabPlayReapplyQueue _prefabPlayQueue = new();
 
     /// <summary>
-    /// Play 中の書き戻しでファイルが変わったアクタータブ（絶対パス）。タブの中身は古い版のままなので、
+    /// Play 中の書き戻しでファイルが変わったアクタータブの「読み直しが要る」印。タブの中身は古い版のままなので、
     /// Edit へ戻って次にそのタブを表示するときに読み直す（<see cref="TryReloadStaleActorTab"/>）。
+    /// タブを閉じたとき・新しく開いたときは印を消す（<see cref="ForgetStaleActorTab"/>。2 回目のレビュー #14。
+    /// 判定は純粋なクラス <see cref="SEEDEditor.Reload.StaleActorTabs"/>。テストあり）。
     /// </summary>
-    private readonly HashSet<string> _staleActorTabPaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SEEDEditor.Reload.StaleActorTabs _staleActorTabs = new();
 
     /// <summary>
     /// 直近に保存したプレハブ（.actor / .actor2d）の絶対パス。
@@ -304,13 +340,26 @@ public partial class MainWindow
 
     /// <summary>
     /// Play が止まって Edit へ戻ったとき（<c>OnStateChanged</c> の Edit）に、Play 中に変わったプレハブを
-    /// Edit のシーンへ反映する。設定オンなら <c>PREFAB_REAPPLY_PATH</c>（パスごとに Undo 1 操作・件数のトースト）、
-    /// オフなら <c>PREFAB_STATUS</c> だけ（版ずれのバナーで知らせる）。画面プレビューは設定に関わらず作り直し、
-    /// 表示中のアクタータブが書き戻しで古くなっていれば読み直す。
+    /// Edit のシーンへ反映する。設定オンでシーンのタブを表示中なら <c>PREFAB_REAPPLY_PATH</c>（パスごとに Undo 1 操作・
+    /// 件数のトースト）、設定オフまたはアクタータブを表示中なら <c>PREFAB_STATUS</c> だけ（版ずれのバナーで知らせる）。
+    /// 画面プレビューは設定に関わらず作り直し、表示中のアクタータブが書き戻しで古くなっていれば読み直す。
+    ///
+    /// <para>
+    /// 【送る順（2026-10-03 の 2 回目のレビュー #16）】
+    /// 表示中のアクタータブの読み直し（<c>OPEN_ACTOR</c>）を**先に**送る。<c>OPEN_ACTOR</c> は Undo の履歴を作り直すので、
+    /// 再展開の後に送ると再展開の Undo を消したうえで「Ctrl+Z で戻せます」と出していた。さらにアクタータブの表示中は、
+    /// シーンのタブへ移る <c>SET_ACTIVE_WORLD_LINE</c> も履歴を作り直すので、自動の再展開そのものを見送ってバナーに落とす
+    /// （判定は <see cref="SEEDEditor.Reload.PrefabPlayReapplyQueue.TakeOnReturnToEdit"/>）。
+    /// </para>
     /// </summary>
     private void OnReturnedToEditForPrefabs()
     {
-        var plan = _prefabPlayQueue.TakeOnReturnToEdit(EditorPreferences.Instance.PrefabAutoPropagateOnSave);
+        // ① いま表示しているアクタータブが古ければ、再展開より前に読み直す（ほかのタブは表示したときに読み直す）
+        if (_activeActorPath is not null) TryReloadStaleActorTab(_activeActorPath);
+
+        // ② Edit のシーンへの反映。アクタータブ（キャンバス編集タブを含む）の表示中は自動では再展開しない
+        var plan = _prefabPlayQueue.TakeOnReturnToEdit(
+            EditorPreferences.Instance.PrefabAutoPropagateOnSave, actorTabShown: _activeActorPath is not null);
         foreach (var path in plan.ChangedPaths)
             RequestPreviewRefresh(path);
         if (_runtimeManager is not null)
@@ -322,8 +371,14 @@ public partial class MainWindow
             }
             if (plan.RequestStatus) RequestPrefabStatus();
         }
-        // いま表示しているアクタータブが古ければここで読み直す（ほかのタブは表示したときに読み直す）
-        if (_activeActorPath is not null) TryReloadStaleActorTab(_activeActorPath);
+        if (plan.DeferredByActorTab)
+        {
+            var target = plan.ChangedPaths.Count == 1
+                ? PrefabDisplayName(plan.ChangedPaths[0])
+                : $"{plan.ChangedPaths.Count} 個のプレハブ";
+            ShowToast(string.Format(ReapplyDeferredForActorTabToastFormat, target));
+            EditorLog.Write($"[Prefab] アクタータブの表示中のため停止後の自動反映を見送り、版ずれのバナーに落としました: {target}");
+        }
     }
 
     // ── 書き戻しで古くなったアクタータブ ─────────────────────────
@@ -336,23 +391,61 @@ public partial class MainWindow
         var tab = _actorTabs.FirstOrDefault(t =>
             !t.IsSceneCanvas && string.Equals(NormalizeTabPath(t.Path), NormalizeTabPath(absolute), StringComparison.OrdinalIgnoreCase));
         if (tab is null) return;
-        _staleActorTabPaths.Add(tab.Path);
+        _staleActorTabs.Mark(tab.Path);
         EditorLog.Write($"[Prefab] 書き戻しでタブの中身が古くなりました（Edit へ戻って表示するときに読み直します）: {tab.Path}");
+    }
+
+    /// <summary>
+    /// アクタータブの「読み直しが要る」印を消す（タブを閉じたとき・同じファイルを新しいタブで開いたとき。MainWindow.FileOps.cs）。
+    /// 以前は印が残り、閉じた後に開き直して編集したタブを、次に表示したとき確認なしで読み直して編集と Undo を消していた（2 回目のレビュー #14）。
+    /// </summary>
+    /// <param name="path">アクタータブのパス（<c>ActorTab.Path</c>）。</param>
+    private void ForgetStaleActorTab(string path)
+    {
+        if (_staleActorTabs.Forget(path))
+            EditorLog.Write($"[Prefab] タブを閉じた・開き直したので読み直しの印を消しました: {path}");
     }
 
     /// <summary>
     /// そのアクタータブに読み直しの印があれば、ファイルから読み直して表示する（<c>OPEN_ACTOR</c> は同じ世界線を
     /// 読み直してそのタブを表示する）。印が無ければ何もしない。Edit 中だけ（Play 中はタブを表示できない）。
+    ///
+    /// <para>
+    /// 未保存の編集があるときは読み直す前に確かめる（2 回目のレビュー #14。読み直すとそのタブの未保存の編集と Undo が消える）。
+    /// タブ単位の未保存の印は無いので、エディタ全体の未保存の印（<c>_isDirty</c>。シーンとタブで共通）で代用する
+    /// （シーンだけの編集でも確かめる。安全側）。［いいえ］なら今の中身のまま表示し、印は消える（聞くのは 1 回だけ）。
+    /// </para>
     /// </summary>
     /// <param name="path">アクタータブのパス（<c>ActorTab.Path</c>）。</param>
     /// <returns>読み直したら true（呼び出し側は SET_ACTIVE_WORLD_LINE を送らなくてよい）。</returns>
     private bool TryReloadStaleActorTab(string path)
     {
-        if (_runtimeManager?.State != EditorState.Edit) return false;
-        if (!_staleActorTabPaths.Remove(path)) return false;
         var tab = _actorTabs.FirstOrDefault(t => t.Path == path);
-        if (tab is null) return false;
-        SendNavCommand($"OPEN_ACTOR:{tab.WorldLine},{tab.Path}");
+        var action = _staleActorTabs.TakeOnShow(
+            path,
+            canReloadNow: _runtimeManager?.State == EditorState.Edit && tab is not null,
+            hasUnsavedEdits: _isDirty);
+        switch (action)
+        {
+            case SEEDEditor.Reload.StaleActorTabShowAction.ShowAsIs:
+                return false;
+
+            case SEEDEditor.Reload.StaleActorTabShowAction.AskBeforeReload:
+                var answer = MessageBox.Show(
+                    string.Format(StaleTabReloadConfirmFormat, tab!.Name), StaleTabReloadConfirmTitle,
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (answer != MessageBoxResult.Yes)
+                {
+                    EditorLog.Write($"[Prefab] 書き戻しで変わったアクタータブを読み直さずに表示しました（利用者が選択）: {tab.Path}");
+                    return false;
+                }
+                break;
+
+            case SEEDEditor.Reload.StaleActorTabShowAction.Reload:
+                break;
+        }
+
+        SendNavCommand($"OPEN_ACTOR:{tab!.WorldLine},{tab.Path}");
         EditorLog.Write($"[Prefab] 書き戻しで変わったアクタータブを読み直しました: {tab.Path}");
         return true;
     }
@@ -366,6 +459,8 @@ public partial class MainWindow
     /// 0 件（＝このシーンにそのプレハブのインスタンスが無い）のときは黙っている。
     /// 1 件以上ならトーストで件数と「Ctrl+Z で戻せる」ことを知らせ、シーンを未保存扱いにする
     /// （再展開の結果は .scene を保存して初めて残るため）。
+    /// アクタータブ（キャンバス編集タブを含む）の表示中（保存に続く自動反映など）は、シーンのタブへ移ると
+    /// <c>SET_ACTIVE_WORLD_LINE</c> が Undo の履歴を作り直すので、Ctrl+Z を約束しない文言にする（2 回目のレビュー #16）。
     /// </summary>
     /// <param name="count">再展開したインスタンス数。</param>
     /// <param name="source">プレハブの assets:// 仮想パス。</param>
@@ -376,7 +471,8 @@ public partial class MainWindow
             if (count <= 0) return;
 
             var name = PrefabDisplayName(source);
-            ShowToast($"プレハブ {name} の変更を {count} 個のインスタンスへ反映しました（Ctrl+Z で戻せます）");
+            var format = _activeActorPath is null ? ReapplyDoneToastFormat : ReapplyDoneInActorTabToastFormat;
+            ShowToast(string.Format(format, name, count));
             // 再展開はシーンの内容を変えるので、保存を促すために未保存扱いにする。
             MarkDirty();
             EditorLog.Write($"[Prefab] 自動反映: {source} → {count} 件");

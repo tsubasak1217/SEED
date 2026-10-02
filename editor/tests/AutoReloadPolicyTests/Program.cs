@@ -122,6 +122,8 @@ public static class Program
 
         // ── プレハブの外部変更（判定表・監視の対象・デバウンスと自己書き込みの除外）──
         PrefabAutoReloadTests.Register(h);
+        // 監視の開始時の覚え込み（2 回目のレビュー #15。PrefabHashSeedTests.cs）
+        PrefabHashSeedTests.Register(h);
 
         return h.Run();
     }

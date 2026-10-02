@@ -695,6 +695,14 @@ public sealed class AssetCollector
     /// <param name="sourceRel">参照元ファイルのルート相対パス。</param>
     private void Resolve(AssetReferenceCandidate candidate, string sourceRel)
     {
+        // ⓪ C# のコメントの中にだけ書かれた末尾 '/' の参照（`/// 原画は <c>assets://art/</c> に置く` のような説明の文の「置き場」）は
+        //    何もしない（収録も警告もしない）。2026-10-03 の 2 回目のレビュー #26:
+        //    末尾 '/' を拾う直し（95723ec7。NormalizeRelative の TrimEnd）の前は、こうした参照は照合に外れて何も入らなかった。
+        //    直しの後は ③ のフォルダの展開に乗り、説明の文だけで art/ の配下が丸ごと（除外ルールに当たる .psd・Thumbs.db や .cs も。
+        //    IncludeFolder は除外ルールを見ない）pak とテンプレートのインポートへ入っていた。「コメントの中の参照の収録は従来どおり」の
+        //    約束に合わせて、修正前と同じ結果（何もしない）に戻す。同じ文字列がコードにも書かれていれば印が無いので、下の ③ で展開する。
+        if (IsCommentOnlyFolderMention(candidate)) return;
+
         // ① ファイルとして実在するか（候補の順に試す）
         foreach (var cand in candidate.Candidates)
         {
@@ -734,7 +742,8 @@ public sealed class AssetCollector
 
         // ⑤ C# のコメントの中にだけ書かれた参照（説明の例 "assets://common/data/xxx.json" など）は、
         //    実行時に読まれないのでパッケージ版の失敗にならない。警告にせず別の一覧へ残す（2026-10-03。
-        //    Wake or Pay で 2 件の誤検出）。実在するものは ①〜③ で従来どおり収録してある（収録は保守的に）。
+        //    Wake or Pay で 2 件の誤検出）。実在するものは ①〜③ で従来どおり収録してある（収録は保守的に。
+        //    末尾 '/' のフォルダ参照だけは ⓪ で修正前と同じく何もしない）。
         if (candidate.OnlyInComments)
         {
             if (_ignoredCommentKeys.Add(primary + "|" + sourceRel))
@@ -745,6 +754,15 @@ public sealed class AssetCollector
         // ⑥ 拡張子付きなのに実体が無い = 本物の欠落
         AddMissing(primary, candidate.Raw, sourceRel);
     }
+
+    /// <summary>
+    /// C# のコメントの中にだけ書かれた、末尾が区切り（'/' か '\'）の確実な参照か（＝説明の文に書いたフォルダの置き場）を判定する。
+    /// こうした参照は実行時に読まれず、末尾 '/' を拾う直し（95723ec7）の前は何も収録しなかったので、<see cref="Resolve"/> は何もしない。
+    /// </summary>
+    /// <param name="candidate">判定する参照候補。</param>
+    /// <returns>コメントの中にだけある末尾 '/' のフォルダ参照なら true。</returns>
+    private static bool IsCommentOnlyFolderMention(AssetReferenceCandidate candidate)
+        => candidate.IsExplicit && candidate.OnlyInComments && AssetPathUtil.EndsWithSeparator(candidate.Raw);
 
     /// <summary>
     /// 欠落参照を 1 件記録する（同じ「参照先 + 参照元」の重複報告は落とす）。

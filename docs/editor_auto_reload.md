@@ -117,6 +117,12 @@ Android の実行中（端末のアプリが動いていて IPC がつながっ�
 - 判定は `editor/src/Reload/PrefabPlayReapplyQueue.cs`（純粋なクラス）、テストは `editor/tests/PrefabPlayReapplyTests`。
 - 消化は `MainWindow.OnStateChanged`（Edit）→ `OnReturnedToEditForPrefabs`（`MainWindow.Prefab.cs`）。
   シーン・スクリプトの保留分の消化の後に行う。
+- **停止した時点でアクタータブ（キャンバス編集タブを含む）を表示中なら、設定オンでも再展開せず `PREFAB_STATUS`（バナー）に落とし**、
+  見送った理由をトーストで知らせる（2026-10-03。`docs/reviews/2026-10-03_code_review.md` #16）。アクタータブの表示中は、
+  タブの読み直し（`OPEN_ACTOR`）とシーンのタブへの切り替え（`SET_ACTIVE_WORLD_LINE`）が Undo の履歴を作り直すので、
+  「Ctrl+Z で戻せます」を約束できないため。更新はシーンのタブで、バナーの［更新する］から行う。
+- 表示中のアクタータブが書き戻しで古ければ、**反映より前に**読み直す（`OPEN_ACTOR` を先に送る。後に送ると再展開の Undo を消す）。
+  そのタブに未保存の編集があれば確かめる（[editor_prefab.md](editor_prefab.md) 8 章）。
 
 ### 7.1 プレハブの外部変更の取り込み（2026-10-03）
 
@@ -149,6 +155,13 @@ AI・別ツール）になる。アセットルート配下の `.actor` / `.acto
 1. パスごとに最後のイベントから **600 ms** 静まったら判定する（書き込みの途中で読まない）。
 2. 内容の SHA-256 を読む（`FileContentHash`。シーンの自動再読込と共有）。読めなければ 600 ms 後に読み直す（**5 回**まで。超えたら捨てる）。
 3. 前に知っていた内容と同じなら何もしない（touch・重複イベント）。
+   **監視の開始時**（設定がオンなら）と**設定をオンにしたとき**に、既存の `.actor` / `.actor2d` の内容を背景スレッドで読んで覚える
+   （`PrefabKnownHashSeeder`。数が多くても UI を止めない。2026-10-03。`docs/reviews/2026-10-03_code_review.md` #15）。
+   それまでは「知っている内容」を埋めるのが判定と自己書き込みの終了だけで、起動直後の最初の書き込みは内容が同じでも外部の変更になっていた。
+   - **覚え終わる前に届いたイベントは従来どおり外部の変更**として扱う（その時点では内容を知らない）。
+   - 覚え込みを読んでいる間に書かれたファイル（読む前後で更新時刻が違う・更新時刻が覚え込みの開始より後）は覚えない
+     （新しい内容を「知っている」ことにすると、その書き込みを取りこぼすため）。
+   - 覚え込みより後にイベント・自己書き込みで知った内容は、遅れて届いた覚え込みで上書きしない。判定待ちのパスにも覚えさせない。
 4. 一括の書き換え（「ツール → プロジェクトの形式をアップグレード」のダイアログの間と、閉じてから **1.5 秒**）は当て直さない。
 5. **エディタ自身の書き込み**は当て直さない。どれもランタイムがファイルを書くので、開始と終了を知らせる:
 
@@ -163,7 +176,8 @@ AI・別ツール）になる。アセットルート配下の `.actor` / `.acto
    当て直しの続きがあるので、監視が拾うと二重になる。
 6. それ以外は外部の変更として上の表に従って送る。
 
-テスト: `editor/tests/AutoReloadPolicyTests`（`PrefabAutoReloadTests.cs`。判定表の全組み合わせ・パス・デバウンス・自己書き込み・抑止）。
+テスト: `editor/tests/AutoReloadPolicyTests`（`PrefabAutoReloadTests.cs`。判定表の全組み合わせ・パス・デバウンス・自己書き込み・抑止。
+`PrefabHashSeedTests.cs`。開始時の覚え込みと、覚えてよいファイルの選び方）。
 
 ## 8. 関連ファイル
 
@@ -176,6 +190,8 @@ AI・別ツール）になる。アセットルート配下の `.actor` / `.acto
 | `editor/src/Reload/PrefabAutoReloader.cs` | `.actor` / `.actor2d` の監視・タイマー（第 7.1 節。判定は下の 2 つへ委譲） |
 | `editor/src/Reload/PrefabExternalChangeTracker.cs` | デバウンス・自己書き込みの除外・内容の比較・抑止（純粋なクラス） |
 | `editor/src/Reload/PrefabWatchPaths.cs` | 監視の対象のパスの判定（純粋な関数） |
+| `editor/src/Reload/PrefabKnownHashSeeder.cs` | 監視の開始時に既存のプレハブの内容を読む（背景スレッドで呼ぶ。覚えてよいファイルの選び方。第 7.1 節の規則 3） |
+| `editor/src/Reload/StaleActorTabs.cs` | 書き戻しで古くなったアクタータブの読み直しの印（閉じる・開くで消す・未保存なら確かめる。純粋なクラス） |
 | `editor/src/Reload/FileContentHash.cs` | 内容の SHA-256（シーン・プレハブの自動再読込が共有） |
 | `editor/src/MainWindow.PrefabAutoReload.cs` | プレハブ側の依存注入・送るものの振り分け・自己書き込みの橋渡し・メニュートグル |
 | `runtime/src/engine/core/app_base/app/prefab_live_patch/` | Play 中の当て直し・書き戻し（ランタイム側） |

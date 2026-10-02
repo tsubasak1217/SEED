@@ -33,6 +33,10 @@
     <Compile Include="..\..\src\Panels\Hierarchy\SelectionRestorePlan.cs">
       <Link>Linked\Panels\Hierarchy\SelectionRestorePlan.cs</Link>
     </Compile>
+    <!-- 行の目アイコンを押したときに送る値の判定（2 回目のレビュー #12。HierarchyEyeClickTests.cs） -->
+    <Compile Include="..\..\src\Panels\Hierarchy\HierarchyEyeClick.cs">
+      <Link>Linked\Panels\Hierarchy\HierarchyEyeClick.cs</Link>
+    </Compile>
     <!-- テストランナー（SpriteRigTests と共用） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>
