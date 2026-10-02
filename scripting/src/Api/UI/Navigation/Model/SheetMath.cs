@@ -45,6 +45,11 @@ public sealed class SheetOptions
     public string ContentPrefab { get; init; } = string.Empty;
     /// <summary>中身へ渡す値（中身の UiScreen.OnScreenEnter に届く）。</summary>
     public object? Args { get; init; }
+    /// <summary>
+    /// 開く動きを付けるか（2026-10-02。false = 大きさが測れたら開く段へすぐ移す。NavTransition.None 相当。既定 true）。
+    /// 閉じる動きを見せないのは ModalHandle.Close(結果, false)・ModalHost.CloseAll(false)。
+    /// </summary>
+    public bool Animate { get; init; } = true;
 }
 
 /// <summary>シートの段と幕の計算。</summary>
@@ -54,6 +59,22 @@ public static class SheetMath
     public const float DetentTolerance = 0.5f;
     /// <summary>半分の段の位置（板の高さに対する割合）。</summary>
     public const float HalfFraction = 0.5f;
+
+    /// <summary>
+    /// 上からの覆いを「高さいっぱい」（OverlayOptions.FillHeight）にするときの中身の根の高さ（2026-10-02）: 覆い全体の高さ − 板の上の余白
+    /// （上の安全領域）− つまみの行 − 板の下の余白 − 下の安全領域（0 未満にしない。壊れた値は 0 として扱う）。
+    /// </summary>
+    /// <param name="overlayHeight">覆い全体（TopSheet の根）の高さ。</param>
+    /// <param name="topInset">上の安全領域（板の上の余白）。</param>
+    /// <param name="handleRow">つまみの行の高さ。</param>
+    /// <param name="bottomMargin">板の下に空ける余白。</param>
+    /// <param name="bottomInset">下の安全領域。</param>
+    /// <returns>中身の根の高さ（キャンバスの単位）。</returns>
+    public static float OverlayFillHeight(float overlayHeight, float topInset, float handleRow, float bottomMargin, float bottomInset)
+    {
+        static float Finite(float v) => float.IsFinite(v) && v > 0f ? v : 0f;
+        return Math.Max(0f, Finite(overlayHeight) - Finite(topInset) - Finite(handleRow) - Finite(bottomMargin) - Finite(bottomInset));
+    }
 
     /// <summary>板の高さ（領域の高さ × 割合。割合は 0〜1 へ収める）。</summary>
     public static float PanelHeight(float areaHeight, float fraction)

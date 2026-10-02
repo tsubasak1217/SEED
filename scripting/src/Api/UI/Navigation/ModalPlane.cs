@@ -11,6 +11,9 @@ namespace SEED.UI;
 //  - 閉じる（RequestClose）: 出る動きの後に手札を閉じて自分を消す（ModalHost から外す）
 //  - 予測型の戻るのプレビュー（W2 の手直し 3b。IBackPreviewTarget）: 開いていて戻るで閉じる面は、手ぶりの間に派生が決めたノード
 //    （ダイアログの札・シートの板）を縮める。確定すると、縮めた姿勢のまま出る動きを始める（出終わったら消えるので元へ戻す必要もない）
+//  - 動きなしで閉じる（2026-10-02）: RequestClose(結果, animate: false) は派生の後片付け（OnBeginExit）の後、その場で閉じ終える
+//  - 自前の面（2026-10-02）: ModalHost.ShowPlane(種類, プレハブ, 指定) で開き、中身の画面のスクリプトへは DeliverEnter で値を届ける
+//  - 画面の下へ回す（2026-10-02。ModalHost.Park）: IsParked の間は戻るの層で数えず、プレビューの相手にもならない
 // ============================================================
 
 /// <summary>面の段階。</summary>
@@ -52,6 +55,14 @@ public abstract class ModalPlane : UiWidget, IBackPreviewTarget
     /// <summary>部品が消えたか（予測型の戻るのプレビューの相手を無効にする。3b）。</summary>
     private bool _destroyed;
 
+    /// <summary>フォーカスの範囲（開いている間。覆いを全画面の下に残す〈ModalHost.Park〉ときに後ろへ回す）。</summary>
+    internal FocusScope? Scope => _scope;
+
+    /// <summary>
+    /// 画面のスタックの画面の下へ回されているか（2026-10-02。ModalHost.Park）。回されている面は戻るを受けず、予測型の戻るの相手にもならない。
+    /// </summary>
+    public bool IsParked { get; internal set; }
+
     /// <inheritdoc />
     protected sealed override void OnWidgetStart()
     {
@@ -59,7 +70,9 @@ public abstract class ModalPlane : UiWidget, IBackPreviewTarget
         var claim = Host?.Claim(Owner);
         if (claim is null)
         {
-            Debug.LogWarning($"{LogPrefix} ModalHost から開く約束がありません（{Owner.Name}）。消します");
+            // 全部閉じる（ModalHost.CloseAll）で、面のスクリプトが動く前に取りやめた面は黙って消す
+            if (Host is null || !Host.TakeCancelled(Owner))
+                Debug.LogWarning($"{LogPrefix} ModalHost から開く約束がありません（{Owner.Name}）。消します");
             Owner.Destroy();
             Phase = ModalPhase.Closed;
             return;
@@ -69,10 +82,13 @@ public abstract class ModalPlane : UiWidget, IBackPreviewTarget
         Handle.Plane = this;
         Handle.Root = Owner;
         // 開いている面として登録し、帯の中の並びの底上げ（あとから開いた面が手前）を当てる
-        Host!.Register(this);
+        Host!.Register(this, claim.Value.Kind);
         _scope = UiFocus.CreateScope(Owner, $"{Kind}:{Owner.Name}", overlay: true);
         OnPlaneStart();
-        if (Handle.EarlyClose.Requested) RequestClose(Handle.EarlyClose.Result);
+        // 面ができる前に手札の Close が呼ばれていた: 外から閉じる入口で閉じる（ダイアログはボタンと同じ決め方を通る。2026-10-03）
+        if (Handle.EarlyClose.Requested) CloseFromOutside(Handle.EarlyClose.Result, Handle.EarlyClose.Animate);
+        // 開く前に頼まれた「画面の下へ回す」を当てる（面ができてから。ModalHost.Park）
+        Host.ApplyPendingPark(this);
     }
 
     /// <inheritdoc />
@@ -110,16 +126,60 @@ public abstract class ModalPlane : UiWidget, IBackPreviewTarget
     /// <summary>
     /// 閉じる（結果つき）。出る動きの後に手札を閉じて自分を消す。準備中なら動かさずに消す。
     /// </summary>
-    public void RequestClose(object? result)
+    public void RequestClose(object? result) => RequestClose(result, animate: true);
+
+    /// <summary>
+    /// 閉じる（結果つき。2026-10-02: 動きの有無を選べる）。animate = false なら出る動きを見せずにこのフレームで閉じ終える
+    /// （手札の Closed・Completed もこの呼び出しの中で届く。派生の後片付け〈フォーカス・キーボード〉は OnBeginExit で同じく行う）。
+    /// 閉じる動きの途中に animate = false で呼ぶと、今すぐ閉じ終える（結果は最初の頼みのまま）。
+    /// </summary>
+    /// <param name="result">結果（手札へ）。</param>
+    /// <param name="animate">出る動きを見せるか。</param>
+    public void RequestClose(object? result, bool animate)
     {
-        if (Phase is ModalPhase.Exiting or ModalPhase.Closed) return;
+        if (Phase == ModalPhase.Closed) return;
+        if (Phase == ModalPhase.Exiting)
+        {
+            // 閉じる動きの途中: 動きなしの頼みなら今すぐ閉じ終える（二度は閉じない）
+            if (!animate) FinishClose();
+            return;
+        }
         CloseResult = result;
         bool wasPreparing = Phase == ModalPhase.Preparing;
         Phase = ModalPhase.Exiting;
-        Debug.Log($"{LogPrefix} {Kind} close {Owner.Name} result={result ?? "null"}");
+        Debug.Log($"{LogPrefix} {Kind} close {Owner.Name} result={result ?? "null"}{(animate ? string.Empty : " (no motion)")}");
         if (wasPreparing) FinishClose();
-        else OnBeginExit();
+        else
+        {
+            // 派生の後片付けと出る動きの始まり。動きなしなら続けて閉じ終える（始めた動きは面と一緒に消える）
+            OnBeginExit();
+            if (!animate) FinishClose();
+        }
         Redraw.Request();
+    }
+
+    /// <summary>
+    /// 外から閉じる（2026-10-03。レビュー #9）: 手札の Close・Dismiss、ModalHost.CloseAll、面ができる前に頼まれた Close の当て直しの入口。
+    /// 既定は <see cref="RequestClose(object?, bool)"/> と同じ。ダイアログ（Dialog）はボタンと同じ決め方（結果の留め金・入力欄の文字の確定・
+    /// フォーカスとキーボードの持ち上げの片付け）を通すよう上書きする。
+    /// </summary>
+    /// <param name="result">結果（手札が整えた値）。</param>
+    /// <param name="animate">出る動きを見せるか。</param>
+    internal virtual void CloseFromOutside(object? result, bool animate) => RequestClose(result, animate);
+
+    /// <summary>
+    /// 中身の画面のスクリプト（UiScreen）へ渡す値を届ける（2026-10-02。自前の面〈ModalPlane の派生〉が中身のプレハブを作ったときに使う。
+    /// UiScreen の Enter は内部の口なので、派生はこれを通す）。中身の根に UiScreen が無い（まだ始まっていない）なら false。
+    /// 1 回だけ届けるのは呼び手の責任（届いたら true を覚えておく）。
+    /// </summary>
+    /// <param name="contentRoot">中身の根。</param>
+    /// <param name="args">渡す値（UiScreen.OnScreenEnter）。</param>
+    /// <returns>届けたら true。</returns>
+    protected static bool DeliverEnter(GameObject contentRoot, object? args)
+    {
+        if (!contentRoot.IsValid || Of<UiScreen>(contentRoot) is not { } screen) return false;
+        screen.Enter(args);
+        return true;
     }
 
     /// <summary>出る動きが終わった: 手札を閉じて自分を消す（派生が呼ぶ）。</summary>
@@ -163,8 +223,9 @@ public abstract class ModalPlane : UiWidget, IBackPreviewTarget
     protected virtual bool ClosesOnBack => true;
 
     /// <inheritdoc />
-    /// <remarks>開いていて（入る・出る動きの途中でない）、戻るで閉じ、縮めるノードがあり、部品が消えていない。</remarks>
-    bool IBackPreviewTarget.IsBackPreviewValid => !_destroyed && Phase == ModalPhase.Open && ClosesOnBack && BackPreviewNode.IsValid;
+    /// <remarks>開いていて（入る・出る動きの途中でない）、戻るで閉じ、縮めるノードがあり、部品が消えていない。画面の下へ回された面は縮めない。</remarks>
+    bool IBackPreviewTarget.IsBackPreviewValid =>
+        !_destroyed && !IsParked && Phase == ModalPhase.Open && ClosesOnBack && BackPreviewNode.IsValid;
 
     /// <inheritdoc />
     bool IBackPreviewTarget.IsBackPreviewExiting => !_destroyed && Phase == ModalPhase.Exiting;

@@ -921,6 +921,14 @@
                               Header="シーンを自動再読込"
                               IsCheckable="True"
                               Click="OnToggleAutoReloadScene"/>
+                    <!-- プレハブ（.actor / .actor2d）がエディタの外で書き換えられたら、
+                         シーンのインスタンスへ取り込む（Edit は下の自動反映の設定に従う。
+                         Play 中は状態を保ったまま当て直し、停止後に Edit へ反映する）。
+                         設定は EditorPreferences.AutoReloadPrefabs に永続化。 -->
+                    <MenuItem x:Name="MenuItemAutoReloadPrefabs"
+                              Header="プレハブを自動再読込"
+                              IsCheckable="True"
+                              Click="OnToggleAutoReloadPrefabs"/>
                     <!-- プレハブ（.actor）を保存したとき、今開いているシーン内の
                          同じプレハブのインスタンスへ自動で反映する。反映は Undo 1 操作で
                          戻せ、件数はトーストで知らせる。インスタンスごとに手を入れて

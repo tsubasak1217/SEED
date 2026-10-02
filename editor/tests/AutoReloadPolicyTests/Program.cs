@@ -120,6 +120,9 @@ public static class Program
                 AutoReloadPolicy.DecideOnReturnToEdit(hasPending: true, autoReloadEnabled: false),
                 "オフにした意思を復帰時にも尊重する"));
 
+        // ── プレハブの外部変更（判定表・監視の対象・デバウンスと自己書き込みの除外）──
+        PrefabAutoReloadTests.Register(h);
+
         return h.Run();
     }
 }

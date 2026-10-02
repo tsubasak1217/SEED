@@ -64,6 +64,11 @@ public partial class ActorNode : IHierarchySyncNode
     /// </summary>
     public bool            IsPrefab { get; set; }
     /// <summary>
+    /// プレハブインスタンスのルートなら参照パス（assets:// 仮想パス）。それ以外は null。
+    /// 「Play 中の変更をプレハブへ書き戻す」の確認ダイアログに書き戻し先を出すのに使う。
+    /// </summary>
+    public string?         PrefabSource { get; set; }
+    /// <summary>
     /// 整理専用のフォルダノードか否か。Rust 側は Transform を持たないため
     /// Hierarchy 上ではグループとは別の専用アイコン・色で区別表示する。
     /// フォルダは同時に IsGroup=true でも届く（選択種別スキップ等の既存グループ挙動を流用するため）。
@@ -253,6 +258,12 @@ public partial class HierarchyPanel : UserControl
     /// MainWindow が Inspector.OpenPrefabSource へ橋渡しする（参照元パスは Inspector が保持）。
     /// </summary>
     public event Action<int>? PrefabSourceOpenRequested;
+
+    /// <summary>
+    /// プレハブルートの右クリックメニュー「Play 中の変更をプレハブへ書き戻す」（Play / Pause 中だけ出る）。
+    /// 引数は（対象アクターの DFS ID, プレハブの参照パス）。確認ダイアログと送信は MainWindow（MainWindow.Prefab.cs）。
+    /// </summary>
+    public event Action<int, string?>? PrefabWriteBackRequested;
 
     /// <summary>
     /// 選択アクターのワールド/ビューポート所属が一意に定まったときに発火する
@@ -506,6 +517,10 @@ public partial class HierarchyPanel : UserControl
                     HasCanvas = e.TryGetProperty("has_canvas", out var hc) && hc.GetBoolean(),
                     // プレハブインスタンスのルートか（旧 JSON にフィールドが無ければ false）
                     IsPrefab  = e.TryGetProperty("is_prefab", out var ip) && ip.GetBoolean(),
+                    // プレハブの参照パス（旧 JSON・非プレハブは null）
+                    PrefabSource = e.TryGetProperty("prefab_source", out var ps) && ps.ValueKind == JsonValueKind.String
+                        ? ps.GetString()
+                        : null,
                     // 整理専用フォルダノードか（旧 JSON にフィールドが無ければ false）
                     IsFolder  = e.TryGetProperty("is_folder", out var iff) && iff.GetBoolean(),
                     // 画面プレビュー（保存されない表示用のアクタ）の印（旧 JSON は外。HierarchyPanel.Preview.cs）
@@ -1162,6 +1177,12 @@ public partial class HierarchyPanel : UserControl
                 (_, _) => ConfirmAndReapplyPrefab(prefabNode.Id));
             AddMenuItem(menu, "プレハブリンク解除", null,
                 (_, _) => ConfirmAndUnlinkPrefab(prefabNode.Id));
+            // Play / Pause 中だけ: 詰めた見た目を .actor へ書き戻す（docs/editor_prefab.md 8 章）
+            if (_runtime?.State is EditorState.Play or EditorState.Pause)
+            {
+                AddMenuItem(menu, "Play 中の変更をプレハブへ書き戻す", null,
+                    (_, _) => PrefabWriteBackRequested?.Invoke(prefabNode.Id, prefabNode.PrefabSource));
+            }
         }
         // 末尾に区切り＋画面プレビューの項目（HierarchyPanel.Preview.cs）
         AppendPreviewNodeItems(menu);

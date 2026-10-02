@@ -9,6 +9,8 @@
 | `runtime/src/engine/core/app_base/ipc.rs` | `PREFAB_*` コマンドのワイヤ形式 |
 | `editor/src/MainWindow.Prefab.cs` | 保存時の自動反映・版ずれバナー・設定トグル |
 | `editor/src/AI/Tools/EditorCommandExecutor.Visual.cs` | MCP `prefab_reapply` の実装 |
+| `runtime/src/engine/core/app_base/app/prefab_live_patch/` | **Play 中**の当て直し・書き戻し（8 章。設計は `mod.rs` 冒頭） |
+| `editor/src/Reload/PrefabPlayReapplyQueue.cs` | Play 中に変わったプレハブを覚えて停止後に Edit へ反映する判定（純粋。テスト `editor/tests/PrefabPlayReapplyTests`） |
 
 ---
 
@@ -23,7 +25,7 @@
   （自己参照・二重リンクの混入を防ぐため）。
 - ネストプレハブは **1 段のみ**展開する（インスタンスの配下へは降りない）。
 
-インスタンスが生まれる経路は 4 つあり、いずれも `prefab_source` と
+インスタンスが生まれる経路は 5 つあり、いずれも `prefab_source` と
 後述の `prefab_hash` の両方を設定する:
 
 | 経路 | 実装 |
@@ -32,6 +34,15 @@
 | ヒエラルキーからプロジェクトへドラッグして書き出し（＝プレハブ化） | `actor_ops.rs::handle_export_actor` |
 | ロジック配置（配置元＝アクタファイル） | `logic_placement_ops.rs` |
 | 地形のアクタ散布（`kind=actor` プロップ） | `terrain_scatter_actor_ops.rs` |
+| **Play 中のスクリプトの `GameObject.Instantiate`**（ScreenStack が積む画面など。2026-10-02〜） | `script_scene_ops.rs::apply_script_instantiate` |
+
+5 番目は Play 中だけの経路で、根に実行時だけの印 `Actor::spawned_by_script`（保存されない）も付く。
+Play 中の当て直し（8 章）がスクリプトの積んだ画面も対象にできるようにするため、2026-10-02 に
+`prefab_source` / `prefab_hash` を付けるようにした（それまでは付いておらず、ヒエラルキーでもプレハブに見えなかった）。
+
+アクタファイル化（`handle_export_actor`）と Play 中の書き戻し（8 章）は `actor_ops.rs::prepare_prefab_template` を共有し、
+根の `prefab_source` と `prefab_hash` を書かない（`prefab_hash` を外すのは 2026-10-02 から。それまではインスタンスを
+書き出すと取り込み済みの版がファイルへ混ざっていた）。
 
 ---
 
@@ -156,6 +167,10 @@
 | `PREFAB_REAPPLY_PATH:{path}` | 絶対パス or `assets://` 仮想パス | `PREFAB_REAPPLY_DONE:{件数},{仮想パス}` | 変更 |
 | `PREFAB_STATUS` | なし | `PREFAB_STATUS:{json}` | 読み取り |
 | `UNLINK_PREFAB:{actor_dfs}` | アクタの DFS ID | （通常通知のみ） | 変更 |
+| `PREFAB_LIVE_PATCH_PATH:{path}` | 絶対パス or `assets://` 仮想パス | `PREFAB_LIVE_PATCH_DONE:{件数},{仮想パス}`（0 件でも返す）／`PREFAB_LIVE_PATCH_ERROR:{理由}` | 変更（**Play 中だけ**。8 章） |
+| `PREFAB_WRITE_BACK:{actor_dfs}` | インスタンスの根の DFS ID | `PREFAB_WRITE_BACK_DONE:{当て直した件数},{仮想パス}`／`PREFAB_WRITE_BACK_ERROR:{理由}` | ファイルを上書き（**Play 中だけ**。8 章） |
+
+`*_DONE` の仮想パスにはカンマが入り得るので、エディタは最初のカンマだけで区切る。
 
 `HIERARCHY:` の各ノードには `prefab_source`（非プレハブは `null`）と
 `prefab_hash`（版が不明なら `null`）が載っている。
@@ -201,3 +216,88 @@ seed_prefab_reapply(all: true)
 | シーン上での編集 | できる（シーンの内容を正とする） | **できない**（インスペクタは読み取り専用。直すのはプレハブ） |
 | プレハブを保存したとき | 設定がオンなら自動反映（`PREFAB_REAPPLY_PATH`。シーンを未保存にする） | 常に作り直す（`PREVIEW_REFRESH_PATH`。シーンを未保存にしない） |
 | Play | そのまま動く | 開始で外れ、止めると戻る |
+
+---
+
+## 8. Play 中のホットリロード（当て直し・書き戻し。2026-10-02）
+
+正典コード: `runtime/src/engine/core/app_base/app/prefab_live_patch/`（設計は `mod.rs` 冒頭）・
+`editor/src/MainWindow.Prefab.cs`・`editor/src/Reload/PrefabPlayReapplyQueue.cs`。
+
+### なぜ丸ごとの再展開ではいけないか
+
+2 章の再展開（`PREFAB_REAPPLY_PATH`）はインスタンスを作り直す。Play 中にこれをやると、スクリプトの CLR インスタンスも
+作り直されて **OnStart が走り直し、画面が初期化される**（進行・入力中の値・スクリプトが積んだ行が消え、
+スクリプトが持っていたハンドルも無効になる）。そこで Play 中は「動いているインスタンスを壊さず、ファイルが変えた
+ところだけを当てる」別の経路を使う。
+
+### 当て直し（`PREFAB_LIVE_PATCH_PATH:{path}`）
+
+Play 中のシーン（世界線 0）で `prefab_source == path` のインスタンス**全部**（スクリプトの `Instantiate` で
+Play 中に作られたものを含む）へ、ファイルの今の中身を当てる。インスタンスの中に入れ子になった同じパスのインスタンスへは降りない。
+
+| 対象 | 扱い |
+| --- | --- |
+| ノード | ルートからの**名前のパス**で突き合わせる（同名の兄弟は出現順）。ファイルに増えたノードは対応する親の下へ組み立てる（スクリプト込み。その部分木だけ OnStart が走る）。ファイルから消えたノードは破棄する（OnDestroy が走る）。並びはファイルの順に揃える |
+| スロット | （種別, 同種内の順番）で突き合わせ、`field_edit::apply_component_data_in_place`（Undo の復元と同じ関数）で**その場で**差し替える。`NeedsRebuild` のスロットだけ作り直す。値が今と同じスロットは触らない（アニメーター・音などの実行中の状態を作り直さないため） |
+| スクリプト | **CLR インスタンスを作り直さない・`[SerializeField]` も触らない**（Play 中にスクリプトが書いた値を正とする）。型名の並びが変わったノードだけ、そのノードのスクリプトを全部作り直す（消して、ファイルの並びで末尾へ作る） |
+| 根 | 名前・active・visible・Transform / CanvasTransform は触らない（配置側の持ち物。再展開が維持する値と同じ）。スロットと子は当てる |
+| 2D の子 | CanvasTransform も当てる（欄ごとに合成） |
+| 3D の子 | Transform は当てない（ワールド空間で持つため）。新しく作るノードだけ根の配置へ移す（再展開と同じ delta）。モデルのインスタンス行列は今の値を残す |
+| スクリプトが生成した部分木（`spawned_by_script`）・プレビュー | 突き合わせない。消さず・触らず・直前にあったファイル由来の兄弟の後ろに付いていく |
+
+**3 方向と 2 方向**: インスタンスが作られた版（`prefab_hash`）のファイルの中身が分かれば、「元の版 → 新しい版」で
+変わった欄だけを当てる（文字の大きさを変えたなら、スクリプトが書いた本文はそのまま）。ノード・スロットも
+「ファイルが足した／消した」だけを作る／消し、実行中に消されたノードは作り直さない。元の版は Play の間だけ
+メモリへ控える（`base_cache.rs`。Play の開始・スクリプトの Instantiate・当て直し・書き戻しの直前）。
+控えが無いインスタンス（`prefab_hash` の無い旧シーン・シーンのインスタンスが古い版のまま）は 2 方向
+（ファイルの値を当てる。ただし消すことはしない）になる。ログ `[PrefabLivePatch] ...（3 方向 N / 2 方向 M）` で分かる。
+
+当て直しの後は描く理由（`RedrawReason::HotReload`）を立てる（レイアウト・テキストは次のフレームで測り直す）。
+`HIERARCHY` と選択中なら `ACTOR_COMPONENTS` を送る。**Undo は積まず `SCENE_MODIFIED` も送らない**
+（Play の世界は停止で Play 前の写しへ戻る）。Edit で届いたら `PREFAB_LIVE_PATCH_ERROR` で断る。
+
+### 書き戻し（`PREFAB_WRITE_BACK:{actor_dfs}`）
+
+Play 中にインスペクタで詰めた見た目は、停止で消える。インスタンスの根を選んで、その部分木を `.actor` へ書き戻す。
+
+- 直列化はアクタファイル化と同じ（`to_data` → `prepare_prefab_template` → `actor_file::save`。形式の版の刻印・
+  `.backup/` への世代退避・プレビューの濾過）。入れ子のプレハブは 1 段の参照のまま。
+- **スクリプトが Play 中に生成した部分木は書かない**（根自身は印があっても書く。ScreenStack が積んだ画面を詰めて書き戻すのが主な使い道）。
+- 根の名前・active・visible と 2D の根の CanvasTransform は**今のファイルの値を保つ**（シーンの "CardPlaced" という
+  名前や、出入りの動きの途中の位置・大きさを焼かない）。3D の根はアクタファイル化の規則（位置だけ原点）。
+- 書いた後、同じパスの Play 中のインスタンス全部へ当て直す（各インスタンスの `prefab_hash` も新しい版へ揃う）。
+- 利用者のファイルを上書きするので、エディタは確認ダイアログを出してから送る（「元に戻せません」。実際には
+  `actor_file::save` が直前の版を `.backup/` へ残す）。
+
+入口はヒエラルキーの右クリック「Play 中の変更をプレハブへ書き戻す」と、インスペクタのプレハブの帯の［書き戻す］
+（どちらもプレハブのインスタンスの根を選んでいて、Play / Pause 中だけ出る）。
+
+### エディタの流れ
+
+```
+保存（Play / Pause 中）        書き戻し（Play / Pause 中）
+  │ SAVE_OK                      │ 確認ダイアログ → PREFAB_WRITE_BACK:{dfs}
+  │ PREFAB_LIVE_PATCH_PATH       │ <- PREFAB_WRITE_BACK_DONE:{件数},{仮想パス}
+  │ <- PREFAB_LIVE_PATCH_DONE    │    そのファイルのアクタータブに「読み直し」の印
+  │ トースト（0 件なら出さない）  │    トースト
+  └──── どちらもパスを覚える（PrefabPlayReapplyQueue）────┘
+Play 停止（OnStateChanged → Edit）
+  設定オン: 覚えたパスごとに PREFAB_REAPPLY_PATH（Undo はパスごとに 1 操作・件数のトースト・シーンは未保存に）
+  設定オフ: PREFAB_STATUS だけ（版ずれのバナーで知らせる。シーンには触れない）
+  どちらでも: 画面プレビューを作り直す。表示中のアクタータブに印があれば OPEN_ACTOR で読み直す
+  （ほかのタブは次に表示したときに読み直す）
+```
+
+- 設定「プレハブ保存時にシーンのインスタンスへ自動反映」（`PrefabAutoPropagateOnSave`）は **Edit のシーンへの反映**
+  だけに効く。Play 中の当て直しは Play の表示だけを変えて停止で消えるので、設定に関わらず行う。
+- **Play 中にアクタータブで保存する操作は無い**（Ctrl+S は Edit 以外では何もしない・タブ切り替えも Edit だけ）。
+  代わりに、エディタの外（テキストエディタ・AI・別ツール）で `.actor` / `.actor2d` を書き換えると、監視が拾って
+  Play 中なら `PREFAB_LIVE_PATCH_PATH` を送る（2026-10-03。Edit なら `PREFAB_REAPPLY_PATH` か `PREFAB_STATUS`）。
+  エディタ自身の保存・書き戻し・アクタファイル化は自己書き込みとして除外する。正典は docs/editor_auto_reload.md §7.1。
+  ほかに書き戻しの続き・IPC（MCP の `seed_send_ipc` など）からも当て直しが走る。
+
+### MCP 化の候補（別レーンでまとめて行う）
+
+- `seed_prefab_live_patch(prefab_path)` → `PREFAB_LIVE_PATCH_PATH`（応答 `PREFAB_LIVE_PATCH_DONE` / `_ERROR`）
+- `seed_prefab_write_back(actor_dfs_id | name)` → `PREFAB_WRITE_BACK`（ファイルを上書きするので confirm 必須）

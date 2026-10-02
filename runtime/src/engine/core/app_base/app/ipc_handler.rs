@@ -1827,6 +1827,14 @@ impl App {
                     // 読み取りのみ。シーンには一切触れない（バナー表示用の問い合わせ）。
                     self.handle_prefab_status();
                 }
+                IpcCommand::PrefabLivePatchPath { path } => {
+                    // Play 中のプレハブの当て直し（状態を保つ。応答 PREFAB_LIVE_PATCH_DONE / _ERROR）。
+                    self.handle_prefab_live_patch_path(&path);
+                }
+                IpcCommand::PrefabWriteBack { actor_dfs } => {
+                    // Play 中の変更をプレハブへ書き戻す（確認ダイアログはエディタ側で表示済み）。
+                    self.handle_prefab_write_back(actor_dfs);
+                }
                 IpcCommand::ReapplyAllPrefabs => {
                     // 明示操作による「シーン内の全プレハブを更新」。
                     // シーン側の変更を破棄して .actor の内容で全インスタンスを再展開する

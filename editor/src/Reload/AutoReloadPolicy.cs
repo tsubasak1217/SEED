@@ -5,7 +5,7 @@ namespace SEEDEditor.Reload;
 /// <summary>
 /// 自動再読込の対象種別。
 ///
-/// スクリプト（.cs のホットリロード）とシーン（.scene の読み直し）では
+/// スクリプト（.cs のホットリロード）とシーン（.scene の読み直し）とプレハブ（.actor の当て直し）では
 /// Play 中に適用してよいかどうかの規則が異なるため、判定の入力として区別する。
 /// </summary>
 public enum AutoReloadKind
@@ -15,6 +15,39 @@ public enum AutoReloadKind
 
     /// <summary>今開いているシーン（.scene）の外部変更の取り込み。</summary>
     Scene,
+
+    /// <summary>
+    /// プレハブ（.actor / .actor2d）の外部変更の取り込み（テキストエディタ・AI・別ツールによる書き換え）。
+    /// Play 中も状態を保ったまま当て直せる（<c>PREFAB_LIVE_PATCH_PATH</c>。OnStart が走り直さない）ので保留しない。
+    /// Edit のシーンへの反映の細かい分岐は <see cref="AutoReloadPolicy.DecidePrefabExternalChange"/>。
+    /// </summary>
+    Prefab,
+}
+
+/// <summary>
+/// プレハブの外部変更を検出したときにランタイムへ送るもの
+/// （<see cref="AutoReloadPolicy.DecidePrefabExternalChange"/> の結果）。
+/// </summary>
+public enum PrefabExternalChangeAction
+{
+    /// <summary>何もしない（設定「プレハブを自動再読込」がオフ）。</summary>
+    None,
+
+    /// <summary>Edit のシーンのインスタンスを今すぐ丸ごと再展開する（<c>PREFAB_REAPPLY_PATH</c>。Undo 1 操作）。</summary>
+    ReapplyNow,
+
+    /// <summary>
+    /// Edit のシーンは再展開せず、版ずれの問い合わせ（<c>PREFAB_STATUS</c>）だけ送って
+    /// 「プレハブが更新されています」のバナーで知らせる
+    /// （設定「プレハブ保存時にシーンのインスタンスへ自動反映」がオフ。シーンには触れない）。
+    /// </summary>
+    StatusOnly,
+
+    /// <summary>
+    /// Play 中のインスタンスへ状態を保ったまま当て直し（<c>PREFAB_LIVE_PATCH_PATH</c>）、
+    /// パスを覚えて Play 停止後に Edit のシーンへも反映する（<see cref="PrefabPlayReapplyQueue"/>）。
+    /// </summary>
+    LivePatchAndRemember,
 }
 
 /// <summary>
@@ -74,6 +107,8 @@ public enum AutoReloadDecision
 ///   - Play / Pause 中の Scene              → 必ず Defer（Play 中のシーン再読込は禁止）
 ///   - Play / Pause 中の Script             → 設定「Play 中もスクリプトを即時反映する」が
 ///                                            オンなら ApplyNow、既定（オフ）なら Defer
+///   - Play / Pause 中の Prefab             → ApplyNow（状態を保つ当て直し。Edit のシーンへは
+///                                            停止後に反映する＝<see cref="DecidePrefabExternalChange"/>）
 /// </summary>
 public static class AutoReloadPolicy
 {
@@ -86,6 +121,18 @@ public static class AutoReloadPolicy
     /// <summary>Play 中にシーンの外部変更を保留したときの通知文言。</summary>
     public const string MessageSceneDeferred =
         "シーンの外部変更を検出（Play 停止時に再読み込み）";
+
+    /// <summary>Edit 中にプレハブの外部変更をシーンのインスタンスへ反映したときの通知文言（{0}=プレハブ名）。</summary>
+    public const string MessagePrefabReappliedFormat =
+        "プレハブ {0} の外部変更を検出（シーンのインスタンスへ反映）";
+
+    /// <summary>Edit 中にプレハブの外部変更を検出し、設定オフのため版ずれのお知らせだけにしたときの文言（{0}=プレハブ名）。</summary>
+    public const string MessagePrefabStatusOnlyFormat =
+        "プレハブ {0} の外部変更を検出（自動反映はオフ。更新のお知らせを確認）";
+
+    /// <summary>Play 中にプレハブの外部変更を検出し、Play 中のインスタンスへ当て直したときの文言（{0}=プレハブ名）。</summary>
+    public const string MessagePrefabLivePatchedFormat =
+        "プレハブ {0} の外部変更を検出（Play 中のインスタンスへ当て直し・停止後に Edit へ反映）";
 
     // ── 判定 ──────────────────────────────────────────────────
 
@@ -100,12 +147,13 @@ public static class AutoReloadPolicy
     /// <summary>
     /// 変更を検出したときの行動を決める。
     /// </summary>
-    /// <param name="kind">変更の種別（スクリプト / シーン）。</param>
+    /// <param name="kind">変更の種別（スクリプト / シーン / プレハブ）。</param>
     /// <param name="state">現在のエディタ再生状態。</param>
     /// <param name="autoReloadEnabled">その種別の自動再読込設定がオンか。</param>
     /// <param name="applyScriptsDuringPlay">
-    /// 設定「Play 中もスクリプトを即時反映する」の値。<see cref="AutoReloadKind.Scene"/> では無視される
-    /// （シーン再読込は Play 中には決して行わない）。
+    /// 設定「Play 中もスクリプトを即時反映する」の値。<see cref="AutoReloadKind.Scene"/> と
+    /// <see cref="AutoReloadKind.Prefab"/> では無視される（シーン再読込は Play 中には決して行わない。
+    /// プレハブは状態を保つ当て直しなので設定に関わらず適用する）。
     /// </param>
     /// <returns>取るべき行動。</returns>
     public static AutoReloadDecision Decide(
@@ -124,10 +172,51 @@ public static class AutoReloadPolicy
         // 3. Play 中。シーンは例外なく保留する（ワールドごと作り直すため）。
         if (kind == AutoReloadKind.Scene) return AutoReloadDecision.Defer;
 
-        // 4. Play 中のスクリプト。既定は保留。設定を明示的にオンにした人だけ即時反映する。
+        // 4. Play 中のプレハブ。スクリプトの CLR インスタンスを作り直さない当て直しなので、
+        //    第 1 節の副作用（OnStart の再実行）が無い。保留せず今すぐ当てる
+        //    （Edit のシーンへの反映は停止後。DecidePrefabExternalChange と PrefabPlayReapplyQueue）。
+        if (kind == AutoReloadKind.Prefab) return AutoReloadDecision.ApplyNow;
+
+        // 5. Play 中のスクリプト。既定は保留。設定を明示的にオンにした人だけ即時反映する。
         return applyScriptsDuringPlay
             ? AutoReloadDecision.ApplyNow
             : AutoReloadDecision.Defer;
+    }
+
+    /// <summary>
+    /// プレハブ（.actor / .actor2d）の外部変更を検出したときにランタイムへ送るものを決める。
+    ///
+    /// 【規則】（テスト: editor/tests/AutoReloadPolicyTests）
+    ///   - 設定「プレハブを自動再読込」がオフ           → None（何もしない。保留もしない）
+    ///   - Play / Pause                                 → LivePatchAndRemember
+    ///                                                    （設定「プレハブ保存時に…自動反映」に関わらず。
+    ///                                                     停止後の Edit への反映でその設定を見る）
+    ///   - Edit・設定「プレハブ保存時に…自動反映」オン → ReapplyNow（PREFAB_REAPPLY_PATH）
+    ///   - Edit・同設定オフ                             → StatusOnly（PREFAB_STATUS でバナーだけ。シーンに触れない）
+    ///
+    /// エディタ自身の保存（<c>SAVE_ACTOR</c>）の続きは <see cref="PrefabPlayReapplyQueue.DecideOnSave"/>
+    /// （Edit・設定オフは None＝本人が今保存したのでバナーを出さない）で、外部変更とは区別する。
+    /// </summary>
+    /// <param name="state">検出した時点の再生状態。</param>
+    /// <param name="autoReloadEnabled">設定「プレハブを自動再読込」。</param>
+    /// <param name="autoPropagate">設定「プレハブ保存時にシーンのインスタンスへ自動反映」。</param>
+    /// <returns>送るもの。</returns>
+    public static PrefabExternalChangeAction DecidePrefabExternalChange(
+        PlaybackState state,
+        bool          autoReloadEnabled,
+        bool          autoPropagate)
+    {
+        // 種別ごとの大枠（オフなら Drop・それ以外は今すぐ）は Decide の表に従う
+        var decision = Decide(AutoReloadKind.Prefab, state, autoReloadEnabled, applyScriptsDuringPlay: false);
+        if (decision == AutoReloadDecision.Drop) return PrefabExternalChangeAction.None;
+
+        // Play 中の当て直しは Play の表示だけを変え、停止で捨てられる。Edit のシーン（保存されるもの）を
+        // 守る設定（autoPropagate）は停止時に見る（PrefabPlayReapplyQueue.TakeOnReturnToEdit）。
+        if (IsPlaying(state)) return PrefabExternalChangeAction.LivePatchAndRemember;
+
+        return autoPropagate
+            ? PrefabExternalChangeAction.ReapplyNow
+            : PrefabExternalChangeAction.StatusOnly;
     }
 
     /// <summary>

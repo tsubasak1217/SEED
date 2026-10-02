@@ -32,7 +32,6 @@
 use std::time::{Duration, Instant};
 
 use crate::engine::components::ComponentData;
-#[cfg(test)]
 use crate::engine::components::ComponentKind;
 use crate::engine::core::app_base::ipc::IpcCommand;
 use crate::engine::core::app_base::undo::{
@@ -356,6 +355,9 @@ pub(super) fn field_edit_target(cmd: &IpcCommand) -> FieldEditTarget {
         | IpcCommand::ReapplyPrefabPath { .. }
         // 版ずれの問い合わせは読み取りのみ（シーンを変更しない）。
         | IpcCommand::PrefabStatus
+        // Play 中の当て直し・書き戻しは Play の世界だけを変える（停止で戻る）ので Undo に積まない。
+        | IpcCommand::PrefabLivePatchPath { .. }
+        | IpcCommand::PrefabWriteBack { .. }
         | IpcCommand::AiAddActor { .. }
         | IpcCommand::AiRemoveActor { .. }
         | IpcCommand::AiMoveActor { .. }
@@ -1107,8 +1109,12 @@ impl App {
     }
 }
 
-/// 対象スロットの種別が期待どおりかを確認するための補助（テストで使用）。
-#[cfg(test)]
+/// シリアライズ用データ（`ComponentData`）からコンポーネントの種別を引く。
+///
+/// テストの補助として生まれたが、Play 中のプレハブの当て直し（prefab_live_patch/plan.rs）が
+/// 「ファイルのスロット」と「動いているスロット」を種別で突き合わせるのにも使う。
+/// 網羅 match なので、`ComponentData` に variant を足すとビルドが落ちて書き漏らしに気付ける。
+/// スクリプトは常に `Script`（CLR 不在の `Placeholder` かどうかはデータからは分からない）。
 pub(super) fn component_kind_of(data: &ComponentData) -> ComponentKind {
     match data {
         ComponentData::ModelComponent(_) => ComponentKind::Model,

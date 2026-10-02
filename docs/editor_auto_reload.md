@@ -1,11 +1,12 @@
-# 自動再読込（スクリプト / シーン）と Play 中の扱い
+# 自動再読込（スクリプト / シーン / プレハブ）と Play 中の扱い
 
-エディタは 2 つの自動再読込を持つ。
+エディタは 3 つの自動再読込を持つ。
 
 | 種別 | 監視対象 | 反映方法 | 設定（表示メニュー） |
 | --- | --- | --- | --- |
 | スクリプト | アセットルート配下の `**/*.cs` | ランタイムへ `RELOAD_SCRIPTS`（ホットリロード） | 表示 > スクリプト > スクリプトを自動再読込 |
 | シーン | 今開いている `.scene` 1 ファイル | `LoadScene`（ファイルを開いたときと同じ経路） | 表示 > シーン > シーンを自動再読込 |
+| プレハブ | アセットルート配下の `**/*.actor` / `**/*.actor2d`（`.backup/` 等を除く） | Edit: `PREFAB_REAPPLY_PATH` か `PREFAB_STATUS`／Play: `PREFAB_LIVE_PATCH_PATH`（第 7.1 節） | 表示 > シーン > プレハブを自動再読込 |
 
 ---
 
@@ -37,6 +38,9 @@
 | シーン | オフ | 任意 | — | **Drop** |
 | シーン | オン | Edit | — | **ApplyNow** |
 | シーン | オン | Play / Pause | — | **Defer**（設定に関わらず必ず保留） |
+| プレハブ | オフ | 任意 | — | **Drop** |
+| プレハブ | オン | Edit | — | **ApplyNow**（送るものは第 7.1 節の表。設定「プレハブ保存時に…自動反映」で分かれる） |
+| プレハブ | オン | Play / Pause | — | **ApplyNow**（状態を保つ当て直し。保留しない。Edit のシーンへは停止後に反映） |
 
 - `Idle` / `Building` / `Launching` は「まだワールドが動いていない」ため **Edit** として扱う。
 - **Drop（設定オフ）では保留もしない。** 保留すると「オフにしたのに Play 停止時に勝手に反映された」になるため。
@@ -96,17 +100,86 @@ Android の実行中（端末のアプリが動いていて IPC がつながっ�
   未保存の編集は送らない（保存したときに送られる）。
 - PC 側の自動再読込（第 2〜3 節）は Android の実行中もそのまま動く（エディタの Edit のワールドは PC の規則で更新される）。
 
-## 7. 関連ファイル
+## 7. プレハブ（.actor）の Play 中の扱い（2026-10-02）
+
+プレハブは「保留して停止時に反映」ではなく、**Play 中のインスタンスへ状態を保ったまま当て直す**
+（`PREFAB_LIVE_PATCH_PATH`。スクリプトの CLR インスタンスを作り直さない＝第 1 節の副作用が無い）。
+そのうえで、Play 停止後に Edit のシーンへも反映する（Play の世界は停止で Play 前の写しへ戻るため）。
+正典は [editor_prefab.md](editor_prefab.md) 8 章。
+
+| 契機 | Play / Pause 中 | Play 停止時 |
+| --- | --- | --- |
+| プレハブの保存（`SAVE_OK`） | `PREFAB_LIVE_PATCH_PATH`（設定に関わらず）＋パスを覚える | 設定オン: `PREFAB_REAPPLY_PATH`／オフ: `PREFAB_STATUS`（バナー） |
+| Play 中の変更の書き戻し（`PREFAB_WRITE_BACK_DONE`） | ランタイムが続けて当て直し済み。パスを覚える | 同上 |
+
+- 設定は「表示 > シーン > プレハブ保存時にシーンのインスタンスへ自動反映」（`PrefabAutoPropagateOnSave`）。
+  Edit のシーン（保存されるもの）への反映だけに効く。停止時点の値で判断する（保留中にオフにしたら再展開しない）。
+- 判定は `editor/src/Reload/PrefabPlayReapplyQueue.cs`（純粋なクラス）、テストは `editor/tests/PrefabPlayReapplyTests`。
+- 消化は `MainWindow.OnStateChanged`（Edit）→ `OnReturnedToEditForPrefabs`（`MainWindow.Prefab.cs`）。
+  シーン・スクリプトの保留分の消化の後に行う。
+
+### 7.1 プレハブの外部変更の取り込み（2026-10-03）
+
+エディタの Ctrl+S は Edit 以外では動かないため、Play 中に `.actor` を直す手段はエディタの外（テキストエディタ・
+AI・別ツール）になる。アセットルート配下の `.actor` / `.actor2d` を監視し、外部の書き換えを次のように送る。
+
+| 自動再読込（`AutoReloadPrefabs`） | 状態 | 保存時の自動反映（`PrefabAutoPropagateOnSave`） | 送るもの |
+| --- | --- | --- | --- |
+| オフ | 任意 | 任意 | **何もしない**（保留もしない） |
+| オン | Edit | オン | `PREFAB_REAPPLY_PATH`（Undo 1 操作・件数のトースト・シーンは未保存に。0 件なら黙る） |
+| オン | Edit | オフ | `PREFAB_STATUS`（版ずれのバナーだけ。シーンに触れない） |
+| オン | Play / Pause | 任意 | `PREFAB_LIVE_PATCH_PATH` ＋パスを覚える（停止時は第 7 節の表どおり） |
+
+- Edit では画面プレビュー（`PREVIEW_REFRESH_PATH`）も作り直す（保存したときと同じ。設定に関わらず）。
+- 判定は `AutoReloadPolicy.DecidePrefabExternalChange`（純粋な関数）。エディタ自身の保存の続き
+  （`PrefabPlayReapplyQueue.DecideOnSave`）とは、Edit・自動反映オフのときだけ違う（本人が今保存したならバナーは出さない／
+  外部の書き換えならバナーで知らせる）。
+- 設定は「表示 > シーン > プレハブを自動再読込」（`editor_preferences.json` の `auto_reload_prefabs`、既定オン）。
+
+**監視の対象**（`PrefabWatchPaths`）: 拡張子が `.actor` / `.actor2d` のもの。`.backup/`（世代バックアップ）・
+`obj` / `bin` / `.git` / `.vs` / `node_modules` の中は拾わない。原子的な保存の一時ファイル `X.actor.tmp` は拾わず、
+名前の変更 `X.actor.tmp → X.actor` を本名で拾う。
+
+**デバウンスと自己書き込みの除外**（`PrefabExternalChangeTracker`。純粋なクラス。SceneAutoReloader と同じ値）:
+
+1. パスごとに最後のイベントから **600 ms** 静まったら判定する（書き込みの途中で読まない）。
+2. 内容の SHA-256 を読む（`FileContentHash`。シーンの自動再読込と共有）。読めなければ 600 ms 後に読み直す（**5 回**まで。超えたら捨てる）。
+3. 前に知っていた内容と同じなら何もしない（touch・重複イベント）。
+4. 一括の書き換え（「ツール → プロジェクトの形式をアップグレード」のダイアログの間と、閉じてから **1.5 秒**）は当て直さない。
+5. **エディタ自身の書き込み**は当て直さない。どれもランタイムがファイルを書くので、開始と終了を知らせる:
+
+| 書き込み | 開始（窓を開ける） | 終了（余韻 1.5 秒・その時点の内容を覚える） |
+| --- | --- | --- |
+| アクタータブの保存 `SAVE_ACTOR` | `ExecuteActorSave`（`NotifyActorSaveStarted`） | `SAVE_OK` / `SAVE_ERROR`（`OnSaveCompleted`） |
+| Play 中の変更の書き戻し `PREFAB_WRITE_BACK` | 送ったとき（プレハブの参照パスが分かるときだけ） | `PREFAB_WRITE_BACK_DONE` / `_ERROR` |
+| アクタファイル化 `EXPORT_ACTOR` | （パネルが直接送るので無し） | `EXPORT_ACTOR_OK` |
+
+   終了の知らせが来なければ開始から **15 秒**で窓を閉じる（応答が失われても監視が死なない）。終了時に覚えた内容と
+   同じなら、余韻の後に遅れて届いたイベントも 3 で落ちる。保存・書き戻しには既に `PREFAB_REAPPLY_PATH` /
+   当て直しの続きがあるので、監視が拾うと二重になる。
+6. それ以外は外部の変更として上の表に従って送る。
+
+テスト: `editor/tests/AutoReloadPolicyTests`（`PrefabAutoReloadTests.cs`。判定表の全組み合わせ・パス・デバウンス・自己書き込み・抑止）。
+
+## 8. 関連ファイル
 
 | ファイル | 役割 |
 | --- | --- |
 | `editor/src/Reload/AutoReloadPolicy.cs` | 判定ロジック（純関数。WPF・ランタイム非依存） |
 | `editor/tests/AutoReloadPolicyTests/` | 上記の単体テスト |
+| `editor/src/Reload/PrefabPlayReapplyQueue.cs` | Play 中に変わったプレハブの待ち行列（第 7 節。純粋なクラス） |
+| `editor/tests/PrefabPlayReapplyTests/` | 上記の単体テスト |
+| `editor/src/Reload/PrefabAutoReloader.cs` | `.actor` / `.actor2d` の監視・タイマー（第 7.1 節。判定は下の 2 つへ委譲） |
+| `editor/src/Reload/PrefabExternalChangeTracker.cs` | デバウンス・自己書き込みの除外・内容の比較・抑止（純粋なクラス） |
+| `editor/src/Reload/PrefabWatchPaths.cs` | 監視の対象のパスの判定（純粋な関数） |
+| `editor/src/Reload/FileContentHash.cs` | 内容の SHA-256（シーン・プレハブの自動再読込が共有） |
+| `editor/src/MainWindow.PrefabAutoReload.cs` | プレハブ側の依存注入・送るものの振り分け・自己書き込みの橋渡し・メニュートグル |
+| `runtime/src/engine/core/app_base/app/prefab_live_patch/` | Play 中の当て直し・書き戻し（ランタイム側） |
 | `editor/src/Scripting/ScriptAutoReloader.cs` | `.cs` の監視・デバウンス・コンパイル検証・送信 |
 | `editor/src/Scene/SceneAutoReloader.cs` | `.scene` の監視・自己保存の除外・再読込 |
 | `editor/src/MainWindow.SceneAutoReload.cs` | シーン側の依存注入と `CurrentPlaybackState` |
 | `editor/src/MainWindow.xaml.cs` | スクリプト側の依存注入・メニュートグル |
-| `editor/src/MainWindow.Camera.cs` | `OnStateChanged` での保留分の消化 |
-| `editor/src/EditorPreferences.cs` | `auto_reload_scripts` / `auto_reload_scene` / `play_script_hot_reload` |
+| `editor/src/MainWindow.Camera.cs` | `OnStateChanged` での保留分の消化（シーン → スクリプト → プレハブ） |
+| `editor/src/EditorPreferences.cs` | `auto_reload_scripts` / `auto_reload_scene` / `play_script_hot_reload` / `auto_reload_prefabs` |
 | `editor/src/AndroidRun/AndroidHotReloadController.cs` | Android の実行中の監視・まとめ・差し替えの呼び出し（第 6 節） |
 | `editor/src/MainWindow.AndroidRun.cs` | 上記の依存注入（種類ごとの設定の参照・Output への配線） |

@@ -29,6 +29,8 @@ public static class NavTokens
     public const string RadiusSheet = "radius.sheet";
     /// <summary>トースト。</summary>
     public const string RadiusToast = "radius.toast";
+    /// <summary>中央のポップアップの札（2026-10-02。既定はダイアログと同じ 28）。</summary>
+    public const string RadiusPopup = "radius.popup";
     /// <summary>タブの選択の印（丸い帯）。</summary>
     public const string RadiusTabIndicator = "radius.tab_indicator";
 
@@ -76,6 +78,14 @@ public static class NavTokens
     /// contentPadding の上 12〈下は 16 だが、行の高さ 48 の中で文字が中央に来るので、12 で字面の下に約 24 が空く〉）。
     /// </summary>
     public const string SizeDialogItemsInset = "size.dialog_items_inset";
+    /// <summary>
+    /// 中央のポップアップの札と画面の端の余白（2026-10-02。左右と、高さの上限の上下。既定 16 は Wake or Pay のプロフィールのポップアップの値）。
+    /// </summary>
+    public const string SizePopupMargin = "size.popup_margin";
+    /// <summary>中央のポップアップの札の幅の上限（2026-10-02。既定 560 = Material 3 のダイアログの最大の幅。広い画面で札が伸びすぎない）。</summary>
+    public const string SizePopupMaxWidth = "size.popup_max_width";
+    /// <summary>中央のポップアップの札の内側の余白（2026-10-02。上下左右。既定 8 は Wake or Pay のプロフィールのポップアップの値）。</summary>
+    public const string SizePopupPadding = "size.popup_padding";
     /// <summary>つまみ（シート・覆いのグラブバー）の幅。</summary>
     public const string SizeHandleWidth = "size.handle_width";
     /// <summary>つまみの太さ。</summary>
@@ -143,6 +153,8 @@ public static class NavTokens
     public const string RatioDialogScaleFrom = "ratio.dialog_scale_from";
     /// <summary>下からのシートの最大の高さ（覆う領域の高さに対する割合）。</summary>
     public const string RatioSheetMaxHeight = "ratio.sheet_max_height";
+    /// <summary>中央のポップアップの札の高さの上限（安全領域の高さに対する割合。2026-10-02。既定 0.8 は Wake or Pay のプロフィールのポップアップの値）。</summary>
+    public const string RatioPopupMaxHeight = "ratio.popup_max_height";
     /// <summary>
     /// 予測型の戻るのプレビューのいちばん小さい倍率（手ぶりを最後まで引いたときの大きさ。W2 の手直し 3b）。
     /// 既定 0.9 は Material 3 の予測型の戻る（画面が 90% まで縮む）から取った値で、記憶による。
@@ -170,13 +182,14 @@ public static class NavTokens
     /// <summary>数のトークン（既定のテーマが持つかの検査用）。</summary>
     private static readonly string[] Numbers =
     {
-        RadiusDialog, RadiusSheet, RadiusToast, RadiusTabIndicator,
+        RadiusDialog, RadiusSheet, RadiusToast, RadiusPopup, RadiusTabIndicator,
         SizeTabBar, SizeTabIndicatorWidth, SizeTabIndicatorHeight, SizeDialogWidth, SizeDialogPadding, SizeDialogTitleGap, SizeDialogActionsGap,
         SizeDialogButtonHeight, SizeDialogMargin, SizeDialogActionsOverflowGap, SizeDialogItemHeight, SizeDialogItemsInset,
+        SizePopupMargin, SizePopupMaxWidth, SizePopupPadding,
         SizeHandleWidth, SizeHandleHeight, SizeHandleArea, SizeToastHeight, SizeDragDismiss, SizeBackPreviewShift,
         MotionPush, MotionCover, MotionFade, MotionOverlay, MotionDialog, MotionSheet, MotionToast, MotionToastShort, MotionToastLong,
         OpacityScrim, OpacityDialogScrim,
-        RatioPushParallax, RatioDialogScaleFrom, RatioSheetMaxHeight, RatioBackPreviewScale, SpeedFlingDismiss, CountToastVisible,
+        RatioPushParallax, RatioDialogScaleFrom, RatioSheetMaxHeight, RatioPopupMaxHeight, RatioBackPreviewScale, SpeedFlingDismiss, CountToastVisible,
         LayerStackStep, LayerModalStep, LayerOverlay, LayerSheet, LayerDialog, LayerToast,
     };
 

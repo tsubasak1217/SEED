@@ -1,0 +1,51 @@
+{
+ "name": "SliderTick",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Sprite",
+   "component": {
+    "type": "SpriteComponent",
+    "data": {
+     "texture_path": "",
+     "color": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+     ],
+     "width": 3.0,
+     "height": 3.0,
+     "layer": 0,
+     "shape": {
+      "kind": "ellipse"
+     }
+    }
+   }
+  }
+ ],
+ "children": []
+}

@@ -244,6 +244,14 @@ pub struct Actor {
     /// **プレビューの根だけが Some**（中のノード・普通のアクタは None）。
     /// build_actor で ActorData から復元し、to_data で書き戻す（ファイルへの濾過は保存系の経路が行う）。
     pub editor_preview: Option<EditorPreviewInfo>,
+    /// Play 中にスクリプトの `GameObject.Instantiate` が生成した部分木の**根**の印（実行時だけの印）。
+    ///
+    /// `ActorData` には持たせない（＝`.scene` / `.actor`・Undo・Play の写しのどれにも出ない）。
+    /// 生成の適用（app/script_scene_ops.rs の apply_script_instantiate）だけが立てる。使い道は 2 つ:
+    ///  - Play 中のプレハブの当て直し（app/prefab_live_patch/）: インスタンスの中にスクリプトが積んだ部分木を
+    ///    「ファイルに無いから消す」対象にせず、そのまま残す。
+    ///  - Play 中の変更の書き戻し（PREFAB_WRITE_BACK）: スクリプトが積んだ部分木をファイルへ書かない。
+    pub spawned_by_script: bool,
     /// 保持コンポーネントの目録（実データは World）
     slots:          Vec<ComponentSlot>,
 }
@@ -274,6 +282,8 @@ impl Actor {
             is_folder,
             // プレビューの印は既定で無し（エディタのプレビューの出し入れだけが根に付ける）。
             editor_preview: None,
+            // スクリプトの生成の印は既定で無し（apply_script_instantiate だけが根に立てる）。
+            spawned_by_script: false,
             slots:      Vec::new(),
         }
     }

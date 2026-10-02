@@ -1,0 +1,56 @@
+{
+  "_about": "英語の文字列の表（正典 docs/localization.md）。キーは ja.json とそろえる。無いキーは index.json の fallback（ja）から引く。",
+  "ui": {
+    "_about": "SEED.UI の部品が持つ固定の文字列と、画面でよく使う言葉（ja.json の ui と同じキー）。",
+    "dialog": {
+      "ok": "OK",
+      "cancel": "Cancel",
+      "yes": "Yes",
+      "no": "No",
+      "close": "Close",
+      "later": "Later",
+      "quit": "Quit",
+      "delete": "Delete",
+      "progress": "Working…"
+    },
+    "nav": {
+      "back": "Back"
+    },
+    "list_row": {
+      "delete": "Delete"
+    },
+    "time_wheel": {
+      "am": "AM",
+      "pm": "PM"
+    },
+    "chart": {
+      "empty": "No records yet"
+    },
+    "weekday_short": ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+    "locale": {
+      "language": "Language",
+      "follow_system": "Use device language"
+    }
+  },
+  "format": {
+    "_about": "日付と時刻の書式（.NET の書式。MMM・tt は英語の名前なので、文化を引けない Android でも英語として正しく出る）。",
+    "date": "MMM d",
+    "date_long": "MMMM d, yyyy",
+    "time": "h:mm tt"
+  },
+  "sample": {
+    "_about": "書き方の見本（使わなければ消してよい）。英語は one / other の複数形。",
+    "greeting": "Hello, {name}",
+    "score": "Score {0}",
+    "money": "{amount:N0} yen",
+    "coins": {
+      "one": "{n} coin",
+      "other": "{n} coins"
+    },
+    "items": {
+      "zero": "No items",
+      "one": "{n} item",
+      "other": "{n} items"
+    }
+  }
+}

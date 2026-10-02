@@ -428,6 +428,162 @@ public static unsafe class ScriptHost
         return true;
     }
 
+    // ── 動的ノード API（GameObject の子の列挙・兄弟の順番・Create・AddComponent / RemoveComponent / AddScript）──
+    //  Rust 側 runtime/src/engine/core/scripting/host_api/nodes.rs の NODE_* 定数と値を一致させること。
+
+    /// <summary>NodeQuery の op: 論理の子の数（戻り値 = 数。対象が無ければ -1）。</summary>
+    private const int NodeQueryChildCount = 0;
+    /// <summary>NodeQuery の op: arg 番目の論理の子（out へ [index, generation]。戻り値 1 / 無ければ 0）。</summary>
+    private const int NodeQueryChildAt = 1;
+    /// <summary>NodeQuery の op: 論理の子の一覧（戻り値 = 数。2 × 数 ≦ cap のときだけ書く）。</summary>
+    private const int NodeQueryChildren = 2;
+    /// <summary>NodeQuery の op: 論理の兄弟の中の順番（戻り値 = 順番。無ければ -1）。</summary>
+    private const int NodeQuerySiblingIndex = 3;
+    /// <summary>NodeQuery の「無い」。</summary>
+    private const int NodeNotFound = -1;
+    /// <summary>エンティティ 1 つを受け渡す u32 の要素数（index, generation）。</summary>
+    private const int EntityWords = 2;
+    /// <summary>NodeComponent の op: AddComponent。</summary>
+    private const int NodeComponentAdd = 0;
+    /// <summary>NodeComponent の op: RemoveComponent。</summary>
+    private const int NodeComponentRemove = 1;
+    /// <summary>NodeComponent の op: AddScript。</summary>
+    private const int NodeComponentAddScript = 2;
+
+    /// <summary>NodeSetSibling の index: 末尾（SetAsLastSibling）。</summary>
+    public const int SiblingLast = -1;
+
+    /// <summary>
+    /// 論理の子（フォルダを透過）の数。対象が無い・ツリーが公開されていないときは 0。
+    /// このフレームに Create / Instantiate したばかりのノードは 0（構築はフレーム末尾）。
+    /// </summary>
+    public static int NodeChildCount(Entity e)
+    {
+        if (!_available || _api.NodeQuery == null || !e.IsValid) return 0;
+        int n = _api.NodeQuery(NodeQueryChildCount, e.Index, e.Generation, 0, null, 0);
+        return n < 0 ? 0 : n;
+    }
+
+    /// <summary>index 番目の論理の子を取得する。範囲外・対象が無ければ false。</summary>
+    public static bool TryNodeChildAt(Entity e, int index, out Entity child)
+    {
+        child = Entity.None;
+        if (!_available || _api.NodeQuery == null || !e.IsValid || index < 0) return false;
+        uint* outBuf = stackalloc uint[EntityWords];
+        if (_api.NodeQuery(NodeQueryChildAt, e.Index, e.Generation, index, outBuf, EntityWords) != 1) return false;
+        child = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
+
+    /// <summary>
+    /// 論理の子の一覧（その時点の写し。木の順＝レイアウトが並べる順）。無ければ空の配列。
+    /// </summary>
+    public static Entity[] NodeChildren(Entity e)
+    {
+        if (!_available || _api.NodeQuery == null || !e.IsValid) return Array.Empty<Entity>();
+        int count = _api.NodeQuery(NodeQueryChildCount, e.Index, e.Generation, 0, null, 0);
+        if (count <= 0) return Array.Empty<Entity>();
+
+        // 数だけ確保して一覧を受け取る（フェーズ中は木が変わらないので数は同じ。違えば受け取れた分だけ）
+        var buf = new uint[count * EntityWords];
+        int written;
+        fixed (uint* bp = buf)
+            written = _api.NodeQuery(NodeQueryChildren, e.Index, e.Generation, 0, bp, buf.Length);
+        if (written <= 0 || written > count) return Array.Empty<Entity>();
+
+        var result = new Entity[written];
+        for (int i = 0; i < written; i++)
+            result[i] = new Entity(buf[i * EntityWords], buf[i * EntityWords + 1]);
+        return result;
+    }
+
+    /// <summary>論理の兄弟の中の順番（0 始まり）。対象が無い・フォルダ・このフレームに作ったばかりなら -1。</summary>
+    public static int NodeSiblingIndex(Entity e)
+    {
+        if (!_available || _api.NodeQuery == null || !e.IsValid) return NodeNotFound;
+        return _api.NodeQuery(NodeQuerySiblingIndex, e.Index, e.Generation, 0, null, 0);
+    }
+
+    /// <summary>
+    /// 空のアクタを作る（ルートは即座に予約、構築と親への取り付けはフレーム末尾）。失敗時は false。
+    /// </summary>
+    /// <param name="name">名前（空なら "Actor"）。</param>
+    /// <param name="parent">親（無効ならシーンのルート）。</param>
+    /// <param name="kind">2D / 3D の決め方。</param>
+    /// <param name="entity">予約したルートのエンティティ。</param>
+    internal static bool TryNodeCreate(string? name, Entity parent, NodeCreateKind kind, out Entity entity)
+    {
+        entity = Entity.None;
+        if (!_available || _api.NodeCreate == null) return false;
+
+        using var nb = new Utf8Arg(name, stackalloc byte[Utf8Arg.StackBytesFor(name)]);
+        uint* outBuf = stackalloc uint[EntityWords];
+        int hasParent = parent.IsValid ? 1 : 0;
+        int ok;
+        fixed (byte* np = nb.Bytes)
+            ok = _api.NodeCreate(np, nb.Length, parent.Index, parent.Generation, hasParent, (int)kind, outBuf);
+
+        if (ok == 0) return false;
+        entity = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
+
+    /// <summary>
+    /// 兄弟の順番を変える（フレーム末尾に適用）。index は 0 以上か <see cref="SiblingLast"/>。受けたら true。
+    /// </summary>
+    public static bool TryNodeSetSibling(Entity e, int index)
+    {
+        if (!_available || _api.NodeSetSibling == null || !e.IsValid) return false;
+        return _api.NodeSetSibling(e.Index, e.Generation, index) != 0;
+    }
+
+    /// <summary>
+    /// コンポーネントを既定値で足す（World へは即座。スロットの目録への登録はフレーム末尾）。
+    /// 足したスロットのエンティティを返す。足せない種別・対象が無いときは false。
+    /// </summary>
+    public static bool TryNodeAddComponent(Entity e, string kindName, out Entity slot)
+    {
+        slot = Entity.None;
+        if (!_available || _api.NodeComponent == null || !e.IsValid || string.IsNullOrEmpty(kindName)) return false;
+
+        using var kb = new Utf8Arg(kindName, stackalloc byte[Utf8Arg.StackBytesFor(kindName)]);
+        uint* outBuf = stackalloc uint[EntityWords];
+        int ok;
+        fixed (byte* kp = kb.Bytes)
+            ok = _api.NodeComponent(NodeComponentAdd, e.Index, e.Generation, kp, kb.Length, 0, outBuf);
+
+        if (ok == 0) return false;
+        slot = new Entity(outBuf[0], outBuf[1]);
+        return true;
+    }
+
+    /// <summary>
+    /// index 番目（同種の中）のコンポーネントを外す（後始末はフレーム末尾。同じフレームの GetComponent からは即座に消える）。
+    /// 受けたら true。
+    /// </summary>
+    public static bool TryNodeRemoveComponent(Entity e, string kindName, int index)
+    {
+        if (!_available || _api.NodeComponent == null || !e.IsValid || string.IsNullOrEmpty(kindName)) return false;
+
+        using var kb = new Utf8Arg(kindName, stackalloc byte[Utf8Arg.StackBytesFor(kindName)]);
+        fixed (byte* kp = kb.Bytes)
+            return _api.NodeComponent(NodeComponentRemove, e.Index, e.Generation, kp, kb.Length, index, null) != 0;
+    }
+
+    /// <summary>
+    /// スクリプトを足す（フレーム末尾に CLR のインスタンスを作る。OnStart は次のフレーム）。受けたら true。
+    /// </summary>
+    /// <param name="e">アクタのルートエンティティ。</param>
+    /// <param name="typeName">スクリプトの型名（FullName）。</param>
+    public static bool TryNodeAddScript(Entity e, string typeName)
+    {
+        if (!_available || _api.NodeComponent == null || !e.IsValid || string.IsNullOrEmpty(typeName)) return false;
+
+        using var tb = new Utf8Arg(typeName, stackalloc byte[Utf8Arg.StackBytesFor(typeName)]);
+        fixed (byte* tp = tb.Bytes)
+            return _api.NodeComponent(NodeComponentAddScript, e.Index, e.Generation, tp, tb.Length, 0, null) != 0;
+    }
+
     // ── 時間スケール（SEED.Time.Scale）──────────────────────────
 
     /// <summary>
@@ -1504,4 +1660,12 @@ public unsafe struct ScriptHostApi
     public delegate* unmanaged[Cdecl]<int, int, int*, int, byte*, int, int*, int, byte*, int, int> TextInput;
     /// <summary>(op, font, fontLen, size, text, textLen, out float*, cap) → op 0=LineWidth は 1、1=CaretStops は必要な数（長さ + 1。cap 不足なら書かない）、2=Metrics は 2。読めない値=-1（1 行の文字の寸法。SEED.TextMeasure。W2-6b）</summary>
     public delegate* unmanaged[Cdecl]<int, byte*, int, float, byte*, int, float*, int, int> TextMeasure;
+    /// <summary>(op, idx, gen, arg, out uint*, cap) → op 0=子の数（無ければ -1）/ 1=arg 番目の子（out へ 2 要素。1/0）/ 2=子の一覧（数。2×数≦cap のときだけ書く）/ 3=兄弟の中の順番（無ければ -1）（動的ノード API。GameObject.ChildCount 等）</summary>
+    public delegate* unmanaged[Cdecl]<int, uint, uint, int, uint*, int, int> NodeQuery;
+    /// <summary>(name, nameLen, parentIdx, parentGen, hasParent, kind, out uint*) → 1/0（kind 0=親から推定 / 1=3D / 2=2D。GameObject.Create）</summary>
+    public delegate* unmanaged[Cdecl]<byte*, int, uint, uint, int, int, uint*, int> NodeCreate;
+    /// <summary>(idx, gen, index) → 1/0（index -1 = 末尾。GameObject.SetSiblingIndex 等。フレーム末尾に適用）</summary>
+    public delegate* unmanaged[Cdecl]<uint, uint, int, int> NodeSetSibling;
+    /// <summary>(op, idx, gen, name, nameLen, index, out uint*) → 1/0（op 0=AddComponent〈out へスロット〉/ 1=RemoveComponent / 2=AddScript）</summary>
+    public delegate* unmanaged[Cdecl]<int, uint, uint, byte*, int, int, uint*, int> NodeComponent;
 }

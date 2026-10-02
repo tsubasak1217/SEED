@@ -34,6 +34,8 @@ namespace SEED.UI;
 //  予測型の戻る（W2 の手直し 3b）の問い・プレビュー（上の画面を縮めて下の画面を見せ、確定したらその姿勢から下ろす）は
 //  ScreenStack.BackPreview.cs。
 //  【フォーカス】画面の枠ごとにフォーカスの範囲（FocusScope）を作り、上の画面の範囲を前へ出す。
+//  【中身の出所】（2026-10-02。lane3）渡された組み立て済みの中身（Push(GameObject)）・置いてある根（RootAdoptChild）・
+//  作り置き（Prewarm）・プレハブの順に決める（ScreenContentPlan）。渡された中身は ScreenStack.Content.cs、作り置きは ScreenStack.Prewarm.cs。
 // ============================================================
 
 /// <summary>画面のスタック（画面を積む・戻す・置き換える・根まで戻る）。</summary>
@@ -124,6 +126,12 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         public ContentSettleGate Settle;
         public FocusScope? Scope;
         public UiScreen? Screen;
+        /// <summary>中身の出所（2026-10-02。置いてある根が見つからなければ Prefab へ落ちる）。</summary>
+        public ScreenContentSource Source;
+        /// <summary>渡された中身の扱い（Push(GameObject)。それ以外は null）。</summary>
+        public SuppliedContent? Supplied;
+        /// <summary>借りた作り置き（Prewarm。それ以外は null）。</summary>
+        public PrewarmEntry? Prewarm;
     }
 
     /// <summary>1 回の出入り（計画と動きの状態）。</summary>
@@ -219,6 +227,28 @@ public sealed partial class ScreenStack : UiWidget, INavigator
     /// <summary>段の番号の画面がいちばん上か（戻るの段・フォーカスが祖先をたどるときに使う）。</summary>
     internal bool IsTopEntry(int entryId) => _model.Top?.Id == entryId;
 
+    /// <summary>
+    /// 手札の画面の段の添字（根 = 0。積まれていない・外れた画面は −1。2026-10-02。積んだ時点で並びは変わるので、Push の直後でも分かる）。
+    /// </summary>
+    /// <param name="handle">画面の手札。</param>
+    public int IndexOf(ScreenHandle handle) =>
+        handle is not null && _model.Find(handle.Id) is { } entry && _handles.TryGetValue(entry.Id, out var h) && ReferenceEquals(h, handle)
+            ? _model.IndexOf(entry)
+            : -1;
+
+    /// <summary>画面の枠を積む子（無ければスタック自身。ModalHost.Park が面を置く底上げの起点に使う）。</summary>
+    internal GameObject ScreensNode
+    {
+        get
+        {
+            ResolveChildren();
+            return _screens;
+        }
+    }
+
+    /// <summary>1 段のレイヤーの底上げ（LayerStep が 0 以下ならテーマの layer.stack_step）。</summary>
+    internal int EffectiveLayerStep => UiLayers.StackStep(Theme, LayerStep);
+
     /// <summary>上の画面のフォーカスの範囲を前へ出す（外のスタックの積み下ろしが終わった後。NavigatorRegistry から）。</summary>
     internal void BringTopScopeToFront()
     {
@@ -294,6 +324,8 @@ public sealed partial class ScreenStack : UiWidget, INavigator
             UiFocus.RemoveScope(instance.Scope);
         }
         _instances.Clear();
+        // 作り置きの隠した枠も登録簿から外す（枠そのものはスタックの子なので一緒に消える）
+        ForgetPrewarm();
     }
 
     /// <inheritdoc />
@@ -303,6 +335,8 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         ResolveChildren();
         float step = Time.UnscaledDeltaTime;
         AdvanceBuilds();
+        // 作り置き（Prewarm）を進める（出入りの動きの途中は作り始めない）
+        AdvancePrewarm();
 
         // 動いている途中に次の操作が来たら、今の動きを終わりまで飛ばす
         if (_current is { Started: true } && _runs.Count > 0) Finish(_current);
@@ -332,11 +366,16 @@ public sealed partial class ScreenStack : UiWidget, INavigator
 
     // ── 実体を作る ──────────────────────────────────────────
 
-    /// <summary>段の実体を作り始める（枠 → 次のフレームで中身）。枠はできあがるまで隠す。</summary>
+    /// <summary>
+    /// 段の実体を作り始める（枠 → 次のフレームで中身）。枠はできあがるまで隠す。
+    /// 中身の出所（ScreenContentPlan）が作り置きなら、作り置きの隠した枠ごと借りる（中身ができていれば次のフレームで Ready）。
+    /// </summary>
     private Instance CreateInstance(ScreenEntry entry)
     {
         ResolveChildren();
-        var frame = GameObject.Instantiate(FramePrefab, _screens);
+        var source = ScreenContentPlan.Choose(_supplied.ContainsKey(entry.Id), AdoptAvailable(entry), CanLeasePrewarm(entry.Prefab));
+        var lease = source == ScreenContentSource.Prewarmed ? LeasePrewarm(entry) : null;
+        var frame = lease?.Frame ?? GameObject.Instantiate(FramePrefab, _screens);
         if (!frame.IsValid) Debug.LogError($"{LogPrefix} 枠のプレハブを作れません: {FramePrefab}");
         frame.Visible = false;
         var instance = new Instance
@@ -344,9 +383,15 @@ public sealed partial class ScreenStack : UiWidget, INavigator
             Entry = entry,
             Handle = _handles[entry.Id],
             Frame = frame,
-            Content = new GameObject(Entity.None),
-            Phase = BuildPhase.FrameRequested,
+            Content = lease?.Content ?? new GameObject(Entity.None),
+            Phase = lease?.Phase ?? BuildPhase.FrameRequested,
+            // 作り置きを借りられなかったら（貸す直前に消えた）プレハブから作る
+            Source = source == ScreenContentSource.Prewarmed && lease is null ? ScreenContentSource.Prefab : source,
+            Prewarm = lease?.Entry,
         };
+        // 作り置きの中身ができていれば、手札の中身もすぐ分かる（枠の背景も今の指定で塗る）
+        if (instance.Content.IsValid) instance.Handle.Content = instance.Content;
+        if (lease is not null) PaintFrame(instance);
         _instances[entry.Id] = instance;
         entry.HasInstance = true;
         NavigatorRegistry.RegisterFrame(frame, this, entry.Id);
@@ -367,13 +412,16 @@ public sealed partial class ScreenStack : UiWidget, INavigator
                         PaintFrame(instance);
                         var body = instance.Entry.Options.SafeArea ? instance.Frame.FindChild(BodyChild) : instance.Frame;
                         var parent = body.IsValid ? body : instance.Frame;
-                        // 置いてある根（RootAdoptChild）があれば、作る代わりに枠の中へ移して引き取る（Edit と同じ見た目で始まる）
-                        var adopted = TakeAdoptChild(instance.Entry);
+                        // 渡された中身（Push(GameObject)）・置いてある根（RootAdoptChild）があれば、作る代わりに枠の中へ移して引き取る
+                        // （置いてある根は Edit と同じ見た目で始まる。ScreenStack.Content.cs）
+                        var adopted = TakeContent(instance);
                         if (adopted.IsValid)
                         {
                             adopted.SetParent(parent);
+                            // 渡された中身は、アプリの置き場で自分を隠していても画面として見せる（置いてある根は従来どおり触らない）
+                            if (instance.Source == ScreenContentSource.Supplied) NavNode.SetVisible(adopted, true);
                             instance.Content = adopted;
-                            Debug.Log($"{LogPrefix} {gameObject.Name} 置いてある根を引き取った: {RootAdoptChild}");
+                            Debug.Log($"{LogPrefix} {gameObject.Name} 中身を引き取った（{instance.Source}）: {instance.Entry}");
                         }
                         else
                         {
@@ -657,7 +705,11 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         return UiLayers.ScreenBias(index >= 0 ? index : _model.Count, step);
     }
 
-    /// <summary>段の実体を消す（外れた段は手札を閉じる。手放すだけなら手札は残す）。</summary>
+    /// <summary>
+    /// 段の実体を消す（外れた段は手札を閉じる。手放すだけなら手札は残す）。
+    /// 中身の後始末（2026-10-02）: 渡された中身（ReturnToParent）は枠を消す前に元の親へ戻し、使い回す作り置き（PrewarmMode.Reuse）は
+    /// 枠ごと隠して作り置きへ戻す（枠を消さない）。
+    /// </summary>
     private void DestroyEntry(ScreenEntry entry, bool notifyExit)
     {
         if (_instances.Remove(entry.Id, out var instance))
@@ -665,7 +717,7 @@ public sealed partial class ScreenStack : UiWidget, INavigator
             if (notifyExit) instance.Screen?.OnScreenExit();
             NavigatorRegistry.UnregisterFrame(instance.Frame);
             UiFocus.RemoveScope(instance.Scope);
-            instance.Frame.Destroy();
+            if (!ReleaseContent(instance)) instance.Frame.Destroy();
         }
         entry.HasInstance = false;
         if (entry.Removed && _handles.Remove(entry.Id, out var handle)) handle.Complete(entry.Result);
@@ -677,7 +729,15 @@ public sealed partial class ScreenStack : UiWidget, INavigator
     // ── 戻る ────────────────────────────────────────────────
 
     /// <inheritdoc />
-    bool INavigator.HandleBack()
+    bool INavigator.HandleBack() => HandleBack();
+
+    /// <summary>
+    /// このスタックへ戻るを渡す（2026-10-02 に公開。戻るの段の Navigation の層と同じ決め方: 動いている途中なら今の動きを終えてから、
+    /// 上の画面の ScreenOptions.IgnoreBack → UiScreen.OnBackPressed → 根より上なら 1 つ下ろす）。独自の戻るの層（BackDispatcher.AddLayer）
+    /// から特定のスタックへ戻るを渡すときに使う。
+    /// </summary>
+    /// <returns>受けたら true（根で画面も受けなければ false）。</returns>
+    public bool HandleBack()
     {
         if (_model.Top is not { } top) return false;
         // 動いている途中の戻るは、今の動きを終えてから決める

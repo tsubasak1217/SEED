@@ -70,7 +70,18 @@ public partial class MainWindow
         }
 
         var window = new ProjectUpgradeWindow(target, AssetsPath) { Owner = this };
-        window.ShowDialog();
+        // 一括アップグレードは .actor をまとめて書き換える（中身は同じで形式の版だけが上がる）。
+        // プレハブの外部変更の監視がそれを拾ってプレハブごとに再展開（Undo・トースト・未保存の印）を
+        // 送らないよう、ダイアログの間（と終わった直後の余韻）は抑止する（MainWindow.PrefabAutoReload.cs）。
+        _prefabAutoReloader?.BeginSuppression();
+        try
+        {
+            window.ShowDialog();
+        }
+        finally
+        {
+            _prefabAutoReloader?.EndSuppression();
+        }
     }
 
     /// <summary>

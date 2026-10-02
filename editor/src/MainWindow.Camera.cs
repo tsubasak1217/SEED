@@ -855,6 +855,11 @@ public partial class MainWindow
             if (state == EditorState.Edit)
                 _scriptAutoReloader?.NotifyReturnedToEdit();
 
+            // Play 中に保存・書き戻ししたプレハブを Edit のシーンへ反映する（MainWindow.Prefab.cs）。
+            // Play の世界は停止で Play 前の写しへ戻るので、Edit のインスタンスは古い版のまま残っている。
+            if (state == EditorState.Edit)
+                OnReturnedToEditForPrefabs();
+
             // 埋め込みインプレース Play の入力フォーカス制御。
             // 埋め込み Play では同じ子 HWND がゲーム描画も担うため、キーボード入力を
             // ランタイム側へ流すには OS フォーカスを子 HWND へ移す必要がある。

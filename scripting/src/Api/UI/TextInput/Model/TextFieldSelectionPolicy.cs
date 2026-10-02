@@ -10,6 +10,9 @@ namespace SEED.UI;
 //    - キーボード（PC の Shift + 矢印・Ctrl + A）・IME（Android の選択の操作）が作った選択は、次のフレームでカーソルの位置へ畳む
 //      （畳む先 = 選択の動いた端 = TextInputState.Caret。変換中の文字の区間は選択ではないので触らない）
 //  コピー・切り取りは選択が無ければ起きない（貼り付けは別の設定 AllowPaste）。
+//  ただし選択を畳むのは C# の Update の後追いなので、Ctrl + A と Ctrl + C が 2 回の Update の間に届くと、エンジンの場は全選択のまま
+//  クリップボードへ書けてしまう（2026-10-03。レビュー #10）。そのため選択を許さない欄は、場を始めるときにエンジンへもコピー・切り取りの
+//  禁止を渡す（SessionAllowsCopy。エンジンの場は EditKey::Copy / Cut を allow_copy で判定する）。
 // ============================================================
 
 /// <summary>入力欄の「選択を許すか」の決め方。</summary>
@@ -23,6 +26,15 @@ public static class TextFieldSelectionPolicy
     /// <param name="longPressed">長押しでフォーカスした。</param>
     public static bool SelectAllOnFocus(bool allowSelection, bool selectAllOnFocus, bool longPressed)
         => allowSelection && (selectAllOnFocus || longPressed);
+
+    /// <summary>
+    /// エンジンの文字入力の場（TextInputOptions.AllowCopy）へ渡す「コピー・切り取りを許すか」（2026-10-03。レビュー #10）。
+    /// コピーを許す欄（AllowCopy）で、かつ選択を許す欄だけ true。選択を許さない欄は、C# が選択を畳む前に届いた Ctrl + C・Ctrl + X も
+    /// エンジンが捨てる（場の設定は始めるときに渡すので、フォーカスの間に選択の許可を変えたら次のフォーカスから効く）。
+    /// </summary>
+    /// <param name="allowCopy">コピー・切り取りを許すか（TextField.AllowCopy）。</param>
+    /// <param name="allowSelection">選択を許すか（TextField.AllowSelection）。</param>
+    public static bool SessionAllowsCopy(bool allowCopy, bool allowSelection) => allowCopy && allowSelection;
 
     /// <summary>
     /// フォーカスのある欄の長押しで全選択するか。

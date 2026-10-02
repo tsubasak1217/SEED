@@ -450,123 +450,9 @@ impl App {
                     .and_then(|a| a.slots().get(slot_idx as usize).map(|s| (s.entity, s.kind)))
             };
             if let Some((slot_entity, kind)) = removal_info {
-                // スロット専用エンティティからコンポーネントを除去して despawn する。
-                // 各スロットは独自 entity を持つため、is_last_of_kind チェックは不要。
-                match kind {
-                    ComponentKind::Model => {
-                        scene.world.remove::<ModelComponent>(slot_entity);
-                    }
-                    ComponentKind::Script => {
-                        scene.world.remove::<ScriptComponent>(slot_entity);
-                    }
-                    ComponentKind::Placeholder => {
-                        scene.world.remove::<PlaceholderScriptSlot>(slot_entity);
-                    }
-                    ComponentKind::Canvas => {
-                        scene.world.remove::<CanvasComponent>(slot_entity);
-                    }
-                    ComponentKind::Sprite => {
-                        scene.world.remove::<SpriteComponent>(slot_entity);
-                    }
-                    ComponentKind::SkinnedSprite => {
-                        scene.world.remove::<SkinnedSpriteComponent>(slot_entity);
-                    }
-                    ComponentKind::InputMap => {
-                        scene.world.remove::<InputMapComponent>(slot_entity);
-                    }
-                    ComponentKind::Camera => {
-                        scene.world.remove::<CameraComponent>(slot_entity);
-                    }
-                    ComponentKind::Plugin => {
-                        scene.world.remove::<PluginComponent>(slot_entity);
-                    }
-                    ComponentKind::Collider => {
-                        scene.world.remove::<ColliderComponent>(slot_entity);
-                    }
-                    ComponentKind::Collider2d => {
-                        use crate::engine::components::Collider2dComponent;
-                        scene.world.remove::<Collider2dComponent>(slot_entity);
-                    }
-                    ComponentKind::Audio => {
-                        use crate::engine::components::AudioComponent;
-                        scene.world.remove::<AudioComponent>(slot_entity);
-                    }
-                    ComponentKind::AudioDictionary => {
-                        use crate::engine::components::AudioDictionaryComponent;
-                        scene.world.remove::<AudioDictionaryComponent>(slot_entity);
-                    }
-                    ComponentKind::LineRenderer => {
-                        use crate::engine::components::LineRendererComponent;
-                        scene.world.remove::<LineRendererComponent>(slot_entity);
-                    }
-                    ComponentKind::Text => {
-                        use crate::engine::components::TextComponent;
-                        scene.world.remove::<TextComponent>(slot_entity);
-                    }
-                    ComponentKind::Animator => {
-                        use crate::engine::components::AnimatorComponent;
-                        scene.world.remove::<AnimatorComponent>(slot_entity);
-                    }
-                    ComponentKind::Light => {
-                        use crate::engine::components::LightComponent;
-                        scene.world.remove::<LightComponent>(slot_entity);
-                    }
-                    ComponentKind::JointAttach => {
-                        use crate::engine::components::JointAttachComponent;
-                        scene.world.remove::<JointAttachComponent>(slot_entity);
-                    }
-                    ComponentKind::ParticleEmitter => {
-                        use crate::engine::components::ParticleEmitterComponent;
-                        scene.world.remove::<ParticleEmitterComponent>(slot_entity);
-                    }
-                    ComponentKind::Skybox => {
-                        use crate::engine::components::SkyboxComponent;
-                        scene.world.remove::<SkyboxComponent>(slot_entity);
-                    }
-                    ComponentKind::TerrainChunk => {
-                        use crate::engine::components::TerrainChunkComponent;
-                        scene.world.remove::<TerrainChunkComponent>(slot_entity);
-                    }
-                    ComponentKind::WaterVolume => {
-                        use crate::engine::components::WaterVolumeComponent;
-                        scene.world.remove::<WaterVolumeComponent>(slot_entity);
-                    }
-                    ComponentKind::WaterLink => {
-                        // 水位グラフのリンク（開口。W2.5）
-                        use crate::engine::components::WaterLinkComponent;
-                        scene.world.remove::<WaterLinkComponent>(slot_entity);
-                    }
-                    ComponentKind::InteractionSource => {
-                        use crate::engine::components::InteractionSourceComponent;
-                        scene.world.remove::<InteractionSourceComponent>(slot_entity);
-                    }
-                    ComponentKind::CanvasClip => {
-                        // 子を切り抜く（W2-1a）
-                        use crate::engine::components::CanvasClipComponent;
-                        scene.world.remove::<CanvasClipComponent>(slot_entity);
-                    }
-                    ComponentKind::CanvasStack
-                    | ComponentKind::CanvasWrap
-                    | ComponentKind::CanvasGrid
-                    | ComponentKind::CanvasLayoutItem
-                    | ComponentKind::CanvasSafeArea
-                    | ComponentKind::CanvasGesture
-                    | ComponentKind::CanvasScroll => {
-                        // キャンバス UI の純データの部品（W2-1b のレイアウトの 5 種と W2-2 の CanvasGesture）
-                        crate::engine::structs::objects::actor::canvas_layout_slots::remove(
-                            &mut scene.world, kind, slot_entity);
-                    }
-                    ComponentKind::CoverEmitter => {
-                        // カバーエミッタ（I3.1）
-                        use crate::engine::components::CoverEmitterComponent;
-                        scene.world.remove::<CoverEmitterComponent>(slot_entity);
-                    }
-                    ComponentKind::ControlPoint => {
-                        use crate::engine::components::ControlPointComponent;
-                        scene.world.remove::<ControlPointComponent>(slot_entity);
-                    }
-                }
-                scene.world.despawn(slot_entity);
+                // スロット専用エンティティからコンポーネントを除去して despawn する（後始末は共有関数。
+                // スクリプトの RemoveComponent〈script_node_ops.rs〉も同じ関数を通す）。
+                remove_slot_components(&mut scene.world, kind, slot_entity);
                 // アクターのスロットリストから削除
                 let mut c = 0u32;
                 if let Some(actor) =
@@ -1788,6 +1674,134 @@ impl App {
             ipc.send("SCENE_MODIFIED");
         }
     }
+}
+
+/// スロット専用エンティティからコンポーネントを種別ごとに除去して despawn する（スロットの目録からは外さない）。
+///
+/// エディタの「コンポーネント削除」（`handle_remove_component_slot`）とスクリプトの `GameObject.RemoveComponent`
+/// （script_node_ops.rs）が同じ後始末を通すための共有関数。種別ごとの除去（Drop の順序・CanvasScroll の実行中の状態など）は
+/// ここだけに書く。各スロットは独自の entity を持つため、同種の最後の 1 つかどうかの判定は要らない。
+///
+/// # 引数
+/// * `world`       - コンポーネントの置き場
+/// * `kind`        - スロットの種別
+/// * `slot_entity` - スロット専用のエンティティ
+pub(super) fn remove_slot_components(world: &mut crate::engine::ecs::World, kind: ComponentKind, slot_entity: crate::engine::ecs::Entity) {
+    match kind {
+        ComponentKind::Model => {
+            world.remove::<ModelComponent>(slot_entity);
+        }
+        ComponentKind::Script => {
+            world.remove::<ScriptComponent>(slot_entity);
+        }
+        ComponentKind::Placeholder => {
+            world.remove::<PlaceholderScriptSlot>(slot_entity);
+        }
+        ComponentKind::Canvas => {
+            world.remove::<CanvasComponent>(slot_entity);
+        }
+        ComponentKind::Sprite => {
+            world.remove::<SpriteComponent>(slot_entity);
+        }
+        ComponentKind::SkinnedSprite => {
+            world.remove::<SkinnedSpriteComponent>(slot_entity);
+        }
+        ComponentKind::InputMap => {
+            world.remove::<InputMapComponent>(slot_entity);
+        }
+        ComponentKind::Camera => {
+            world.remove::<CameraComponent>(slot_entity);
+        }
+        ComponentKind::Plugin => {
+            world.remove::<PluginComponent>(slot_entity);
+        }
+        ComponentKind::Collider => {
+            world.remove::<ColliderComponent>(slot_entity);
+        }
+        ComponentKind::Collider2d => {
+            use crate::engine::components::Collider2dComponent;
+            world.remove::<Collider2dComponent>(slot_entity);
+        }
+        ComponentKind::Audio => {
+            use crate::engine::components::AudioComponent;
+            world.remove::<AudioComponent>(slot_entity);
+        }
+        ComponentKind::AudioDictionary => {
+            use crate::engine::components::AudioDictionaryComponent;
+            world.remove::<AudioDictionaryComponent>(slot_entity);
+        }
+        ComponentKind::LineRenderer => {
+            use crate::engine::components::LineRendererComponent;
+            world.remove::<LineRendererComponent>(slot_entity);
+        }
+        ComponentKind::Text => {
+            use crate::engine::components::TextComponent;
+            world.remove::<TextComponent>(slot_entity);
+        }
+        ComponentKind::Animator => {
+            use crate::engine::components::AnimatorComponent;
+            world.remove::<AnimatorComponent>(slot_entity);
+        }
+        ComponentKind::Light => {
+            use crate::engine::components::LightComponent;
+            world.remove::<LightComponent>(slot_entity);
+        }
+        ComponentKind::JointAttach => {
+            use crate::engine::components::JointAttachComponent;
+            world.remove::<JointAttachComponent>(slot_entity);
+        }
+        ComponentKind::ParticleEmitter => {
+            use crate::engine::components::ParticleEmitterComponent;
+            world.remove::<ParticleEmitterComponent>(slot_entity);
+        }
+        ComponentKind::Skybox => {
+            use crate::engine::components::SkyboxComponent;
+            world.remove::<SkyboxComponent>(slot_entity);
+        }
+        ComponentKind::TerrainChunk => {
+            use crate::engine::components::TerrainChunkComponent;
+            world.remove::<TerrainChunkComponent>(slot_entity);
+        }
+        ComponentKind::WaterVolume => {
+            use crate::engine::components::WaterVolumeComponent;
+            world.remove::<WaterVolumeComponent>(slot_entity);
+        }
+        ComponentKind::WaterLink => {
+            // 水位グラフのリンク（開口。W2.5）
+            use crate::engine::components::WaterLinkComponent;
+            world.remove::<WaterLinkComponent>(slot_entity);
+        }
+        ComponentKind::InteractionSource => {
+            use crate::engine::components::InteractionSourceComponent;
+            world.remove::<InteractionSourceComponent>(slot_entity);
+        }
+        ComponentKind::CanvasClip => {
+            // 子を切り抜く（W2-1a）
+            use crate::engine::components::CanvasClipComponent;
+            world.remove::<CanvasClipComponent>(slot_entity);
+        }
+        ComponentKind::CanvasStack
+        | ComponentKind::CanvasWrap
+        | ComponentKind::CanvasGrid
+        | ComponentKind::CanvasLayoutItem
+        | ComponentKind::CanvasSafeArea
+        | ComponentKind::CanvasGesture
+        | ComponentKind::CanvasScroll => {
+            // キャンバス UI の純データの部品（W2-1b のレイアウトの 5 種と W2-2 の CanvasGesture）
+            crate::engine::structs::objects::actor::canvas_layout_slots::remove(
+                world, kind, slot_entity);
+        }
+        ComponentKind::CoverEmitter => {
+            // カバーエミッタ（I3.1）
+            use crate::engine::components::CoverEmitterComponent;
+            world.remove::<CoverEmitterComponent>(slot_entity);
+        }
+        ComponentKind::ControlPoint => {
+            use crate::engine::components::ControlPointComponent;
+            world.remove::<ControlPointComponent>(slot_entity);
+        }
+    }
+    world.despawn(slot_entity);
 }
 
 

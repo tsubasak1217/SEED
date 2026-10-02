@@ -341,6 +341,9 @@ dotnet build scripting/SEEDScripting.csproj
 1. `runtime/src/engine/core/scripting/host_api.rs` — import + `read_floats`/`write_floats`(必要なら `read_string`/`write_string`) + `has_component` の分岐追加
 2. （型付きの場合）`scripting/src/Api/<Name>.cs` 新規（`IComponentHandle<Name>` 実装＋ **`IsValid` プロパティ必須**）。
    スロット格納型は `editor/src/Scripting/ScriptReferenceCatalog.cs` の 2 表へ 1 行ずつ（§3-3）。`GameObject.cs` は触らない
+   （任意）スクリプトの `gameObject.AddComponent<Name>()` で足せるようにするなら、`runtime/src/engine/core/scripting/host_api/component_kinds.rs`
+   の `SCRIPT_ADDABLE_KINDS` と `insert_default_slot` に 1 行ずつ（既定値はエディタの「コンポーネント追加」と同じにする）、
+   docs/scripting_api.md §7「動的ノード」の「足せる種別」の表に 1 語足す（GPU の資源・ファイルが要る種別は足さない）
 3. `docs/scripting_api.md` 第 7 節の H3 小節 + 一覧表の行
 4. `docs/scripting_api.html` の `<h3>`/`<div class="api">` + 一覧表 `<tr>` + `data-keywords`
 5. `cargo build` と `dotnet build scripting/SEEDScripting.csproj` が両方成功

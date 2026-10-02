@@ -59,7 +59,7 @@ use super::{App, apply_delta_to_actor_subtree, despawn_actor_recursive, find_act
 
 /// スケールが実質 0（逆行列が特異）とみなす閾値。
 /// handle_set_actor_transform（transform_ops.rs）の特異判定と同じ値を使用する。
-const SINGULAR_SCALE_EPS: f32 = 1e-7;
+pub(super) const SINGULAR_SCALE_EPS: f32 = 1e-7;
 
 impl App {
     /// 通常シーン（world_line=0）の全プレハブインスタンスを一括再展開する（低レベル処理）。

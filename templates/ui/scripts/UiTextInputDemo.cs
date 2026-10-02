@@ -3,7 +3,7 @@
 //
 //  シーンの根に付ける。ページ（縦のスクロール）の枠へ部品のプレハブを作ってつなぐ:
 //    - 文字の欄（text_field.actor）: 例の文「例：田中太郎」・最大 20 文字。打つたびに下の行へ本文を写す
-//    - 数値の欄（number_input.actor・幅 112・数字は中央）＋スライダ（slider.actor）: 起床猶予 1〜5 分。欄の文字が数字として読めれば
+//    - 数値の欄（number_input.actor・幅 112・数字は中央）＋スライダ（slider.actor。2026-10-03 から 4 刻みの点）: 起床猶予 1〜5 分。欄の文字が数字として読めれば
 //      範囲へ収めてスライダへ（欄は打っている間は書き換えない）、フォーカスが外れた・完了したら欄を収めた値の文字へ直す。
 //      スライダを動かしたら欄にフォーカスが無いときだけ欄を書き換える（Wake or Pay の数値のサブ画面の決まり）
 //    - 計算の起床確認: 数字の欄＋「答える」（完了でも答える）。12 + 7 = 19 で正解
@@ -152,6 +152,8 @@ public class UiTextInputDemo : SEEDScript
             slider.Min = GraceMin;
             slider.Max = GraceMax;
             slider.Step = 1f;
+            // 刻みの点（2026-10-03。Flutter の divisions。1〜5 分なら 4 刻み＝5 つの点。値の段階 Step とは別に指定する）
+            slider.SetTickCount(GraceMax - GraceMin);
             slider.SetValue(GraceInitial, notify: false);
             slider.ValueChanged += (_, value) =>
             {

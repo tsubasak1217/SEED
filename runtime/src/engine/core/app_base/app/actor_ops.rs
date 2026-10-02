@@ -1366,30 +1366,9 @@ impl App {
             // World を参照してシリアライズ（子も再帰的に含まれる）
             let mut data = actor.to_data(&scene.world);
 
-            // .actor ファイルは「プレハブのテンプレート」であり、ルートは特定インスタンスへの
-            // 参照リンクを持たない。出力前に prefab_source を除去して、テンプレートに
-            // 参照リンクが混入する（＝自己参照・二重リンク）ことを防ぐ。
-            data.prefab_source = None;
-
-            // ルート Transform の position のみ 0 にリセットする（配置時の起点をオリジンに統一）。
-            // rotation / scale はプレハブの見た目を保つため保存値を維持する。
-            // instance_mats・子 Transform はワールド空間で保存されるため、除去した
-            // 平行移動分（root_pos）をサブツリー全体から差し引いて「ルート位置＝原点」
-            // 基準に再基準化する（T(-root_pos) の左乗算＝平行移動成分の減算。
-            // 回転・スケールは維持されるため平行移動のみの補正で整合する）。
-            if let Some(ref mut tf) = data.transform {
-                let root_pos = tf.position;
-                tf.position = [0.0, 0.0, 0.0];
-                let neg = [-root_pos[0], -root_pos[1], -root_pos[2]];
-                translate_exported_subtree(&mut data, neg, true);
-            }
-            // 2D アクター: CanvasTransform の position のみリセットする。
-            // ドロップ配置時にドロップ位置から position を設定し直すため 0 化が必要。
-            // rotation / scale / pivot / anchor は見た目の再現に必要なため維持する
-            // （docs/editor_2d3d_tabs.md Phase 3 の保存規則）。
-            if let Some(ref mut ct) = data.canvas_transform {
-                ct.position = [0.0, 0.0];
-            }
+            // プレハブのテンプレートの規則（根の参照リンク・版を外す、根の位置を原点へ）に整える。
+            // Play 中の変更の書き戻し（prefab_live_patch/write_back.rs）も同じ関数を通す。
+            prepare_prefab_template(&mut data);
 
             // 書き出しは actor_file に集約してある（保存先フォルダの作成・
             // 先頭への format_version の刻印・safe_write による原子的置換＋世代バックアップ）。
@@ -1443,6 +1422,36 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// シーンのアクタの直列化を「プレハブのテンプレート（`.actor`）」の規則に整える。
+///
+/// アクタファイル化（`handle_export_actor` / EXPORT_ACTOR）と Play 中の変更の書き戻し
+/// （`prefab_live_patch/write_back.rs` / PREFAB_WRITE_BACK）が共有する（同じ規則で書くため）。
+///
+/// - 根の `prefab_source` を外す: `.actor` は「プレハブのテンプレート」であり、根は特定インスタンスへの
+///   参照リンクを持たない（自己参照・二重リンクの混入を防ぐ）。入れ子のインスタンスの参照は 1 段のまま残す。
+/// - 根の `prefab_hash` を外す: テンプレートは自分の版を持たない（版はインスタンス側が取り込み時に記録する）。
+///   以前はインスタンスを書き出すと取り込み済みの版がファイルへ混ざっていた（2026-10-02 に外した）。
+/// - 3D: 根の Transform の position だけ 0 にし（配置時の起点を原点に統一）、instance_mats・子 Transform
+///   （ワールド空間）から同じ平行移動を差し引いて「根＝原点」基準へ再基準化する。rotation / scale は維持する。
+/// - 2D: 根の CanvasTransform の position だけ 0 にする（ドロップ配置時に設定し直すため。rotation / scale /
+///   pivot / anchor は見た目の再現に必要なので維持する。docs/editor_2d3d_tabs.md Phase 3 の保存規則）。
+pub(super) fn prepare_prefab_template(data: &mut ActorData) {
+    data.prefab_source = None;
+    data.prefab_hash = None;
+
+    // 3D: T(-root_pos) の左乗算＝平行移動成分の減算（回転・スケールは維持されるため平行移動だけの補正で整合する）
+    if let Some(ref mut tf) = data.transform {
+        let root_pos = tf.position;
+        tf.position = [0.0, 0.0, 0.0];
+        let neg = [-root_pos[0], -root_pos[1], -root_pos[2]];
+        translate_exported_subtree(data, neg, true);
+    }
+    // 2D: 位置だけ原点へ
+    if let Some(ref mut ct) = data.canvas_transform {
+        ct.position = [0.0, 0.0];
     }
 }
 

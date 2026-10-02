@@ -3653,6 +3653,19 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (2) `ChipGroup`・`RadioGroup`・`SegmentedControl` の `LabelSize`（トークンの名前か数）、(3) `DialogButtonKind.Danger`（`ButtonTone.Danger`）と選択肢の一覧のダイアログ
   （`Dialog.ShowMenu`・`DialogMenuItem`・`DialogResult.Selected`・`SelectedIndex`）。Wake or Pay の `FullWidthSlider` の刻みの点（divisions）は SEED の Slider に無い（下の別項目）。
   (4)〜(9) は残り。
+  → **(6) は 2026-10-03 に済**（動的ノード API: `GameObject.ChildCount`・`GetChild`・`Children`・`SiblingIndex`・`SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling`・
+  `GameObject.Create` / `Create2D` / `Create3D`・`AddComponent<T>()` / `RemoveComponent<T>()` / `AddScript<T>()`・`CanvasTransform.Size`。docs/scripting_api.md §7「動的ノード」）。
+- [ ] **動的ノード API（2026-10-03）の残した制限** — 2026-10-03（実装時に決めた範囲。直していない）。
+  (1) **`AddScript<T>()` のインスタンスを受け取る口が無い**（インスタンスはフレーム末尾にでき、`GetScript<T>()` に当たる API も無い。値は足したスクリプトの OnStart で自分から読む。
+  `[SerializeField]` の参照フィールドの解決〈`ResolveScriptInstance`〉はあるので、型名で引く `GetScript<T>()` を足すのが次の手）。
+  (2) **`AddComponent<T>()` で足せない種別**: Model・Skybox（GPU の資源・ファイルの読み込みが要る）、Camera・InputMap・Canvas・物理・水・ControlPoint（エディタで設定する前提）。
+  足すなら `runtime/src/engine/core/scripting/host_api/component_kinds.rs` の表と docs の表に 1 行ずつ。
+  (3) **スクリプトのスロットは `RemoveComponent` で外せない**（`RemoveScript<T>()` が無い。外すならエディタの削除と同じ `remove_slot_components` を通す）。
+  (4) **Play 中に選択中のアクタへスクリプトが足した・外したコンポーネントは、インスペクタ（`ACTOR_COMPONENTS`）を送り直さない**（ヒエラルキーは送る。次に選び直すと出る）。
+  (5) **`CanvasTransform.Size` は `CanvasLayoutItem.PreferredSize` の近道**で、効くのはレイアウトが測るノードの並べる矩形だけ（自由なノードの大きさ・Sprite の描く大きさは変わらない）。
+  CanvasTransform に大きさの欄を足すのは形式の変更（`.actor` / `.scene` の欄の追加・レイアウトの測り方の段の追加・インスペクタ）になるので見送った。
+  (6) **読み（`ChildCount` 等）はフレームの始めの木**（同じフレームに作った子は数えない）。同じフレームの生成・並べ替えを読みに反映するには、`node_pending` のような保留の表を木の形で持つ必要がある。
+  (7) Play 中の `HIERARCHY` は 400 ms ごとにまとめて送るので、エディタのヒエラルキーは並べ替えの途中の順を飛ばして最後の順だけを表示する（既存の間引き。`hierarchy_sync.rs`）。
 - [x] **PC の 1 倍で小さな文字の横線が欠けて別の字に見える** — 2026-09-30（W3-1 で発見。上の「PC の 1 倍で小さな文字の細い横線が消える・かすれる」の続き）。
   → **2026-10-01 に済**: 原因は text.wgsl が平滑化の幅を距離場の値の微分 fwidth(d) から決めていたこと（線の尾根を 2×2 の画素の組が挟むと fwidth ≒ 0 → しきい値の
   切り捨て）。測定: 17 px の「ー」を 0.1 dp ずつ下げた行で、横画のいちばん濃い alpha が 0.94〜0.98 → +0.5 dp で 0.25 → +0.6 dp で 0.00（消える）。
@@ -3680,6 +3693,11 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (6) **PC の 1 倍で「−」（U+2212）が消える**（「スヌーズ（−50 コイン）」が「（ 50 コイン）」に見える。書体に字形はある）。上の「PC の 1 倍で小さな文字の横線が欠けて別の字に見える」と同じ見立て。
   → **2026-10-01 に済**（同じ直し。docs/ui_components.md §12。鳴動画面の「スヌーズ（−50 コイン）」で「−」が見えることを確かめた）。
   (7) **SeedPak の「参照先が見つからないパス」が説明のコメントの中の例の文字列を拾う**（Wake or Pay で 2 件の誤検出。W3-0 から）。
+  → **(1) は 2026-10-02 に済（lane3）**: `ModalHost.CloseAll(animate = true)`・`CloseAll(ModalKind, animate)`（ダイアログ → シート → 覆いの順・同じ種類は新しい順。
+  ダイアログは `Dismissed`・シートと覆いは null。閉じない設定の面も閉じる。`animate: false` なら出る動きなしでこの中で閉じ、手札の知らせもこの中で届く。作りかけの面は
+  見せずに取りやめる。docs/ui_navigation.md §3.1・`Model/ModalCloseOrder.cs`）。**(4) は 2026-10-02 に docs/ui_navigation.md §2 の「入れ替わりの知らせの順」へ仕様として書いた（lane3）**
+  （順そのものは変えていない＝新しい画面の Enter → 動き〈古い画面は Update が回る〉→ 古い画面の Exit/Hidden → 新しい画面の Shown）。(2)(3) は残り（(7) は下）。
+  Wake or Pay の `AppNavigator.DismissModals`（戻るの繰り返し）は `CloseAll(animate: false)` に替えられる（アプリ側は未着手）。
   → **(7) は 2026-10-03 に済（lane2）**: `.cs` のコメント（`//`・`///`・`/* */`）の中にだけ書かれ実体の無い参照は、警告（`MissingReferences`）ではなく
   `IgnoredCommentReferences` へ入れ、ログは「参考:」の件数 1 行だけにした（`CSharpCommentSpans`・`AssetReferenceCandidate.OnlyInComments`。docs/packaging.md §2・§6）。
   **収録は変えない**（コメントの中でも実在すれば従来どおり入る）。誤検出の 2 件は `GameData.cs` の `"assets://common/data/xxx.json"` と `SoundDef.cs` の
@@ -3771,6 +3789,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (6) `Text.Measure`（W2-6c）が無いので幅は見積もり（既出）。
   → **(1)(2) は 2026-10-02 の UI 部品の拡充（lane2）で済**: (1) ダイアログの入力欄を札の中の幅（264）にそろえる（入力欄のスクリプトが始まったときに当てる。入力欄は自分の大きさの変化で置き直す。
   PC の撮影で枠が 138〜418 → 138〜402）、(2) `Button.FitLabel`（既定 true。ボタンのレイアウトの大きさが変わるたびに文字の枠を合わせる。`ButtonLabelFit`）。(3)〜(6) は残り。
+  → **(5) は 2026-10-02 に済（lane3）**: `OverlayOptions.FillHeight`・`FillBottomMargin`（負 = space.m 12。中身の根の `CanvasLayoutItem.PreferredSize.y` を
+  `SheetMath.OverlayFillHeight` に毎フレーム合わせ、落ち着くまで見せない。docs/ui_navigation.md §3.4）。Wake or Pay の `TopSheetFit` を外せる（アプリ側は未着手）。(3)(4)(6) は残り。
 - [ ] **W3-4（ショップ・オプション）で見つかった UI 部品の制限** — 2026-10-01（Wake or Pay の W3-4 で発見。プロジェクト側で回避済み）。
   (1) **Dialog にボタンの無い札（進捗用）と、ボタンの縦並び（OverflowBar 相当）が無い**（長い文字のボタン 3 つが幅 312 に入らない。Wake or Pay は「鳴らないときは」を全画面にした）。既出の P2-1 (2) と同じ根。
   (2) **不定の進捗（回る輪・スピナー）の部品が無い**（`ProgressRing` は値の輪で、太さのトークンが起床確認と共有）。
@@ -3790,6 +3810,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **PC の Play のスクリプトのコンパイルで `Uri`（System.Private.Uri）が参照に無い**（CS0103。System.Text.Json の件と同じ根: 参照の集合が「読み込み済み」だけ）。
   (5) トーストの札が下の押す場所を覆う（仕様どおり。庭の下のボタンが押せない間がある）。
   (6) `Time` は描画を止めている間は進まない（設計どおり）ので、実時間の計時は `Stopwatch` を使う必要がある → docs/redraw_policy.md に明記する。
+  → **(1) の前半は 2026-10-02 に済（lane3）**: `NavigatorRegistry.IsActiveNode` を公開した（docs/ui_navigation.md §5.2）。「シェルが全画面に覆われてもタブの中の画面に
+  `OnScreenHidden` が届かない」（覆われたときの知らせ）は残り。
 - [x] **W3-5（オンボーディング S-10）で見つかったプラットフォーム API の不足** — 2026-10-01（Wake or Pay の W3-5 で発見。プロジェクト側で回避済み）。
   (1) **`SEED.Platform.App` に OS の版（SDK_INT）を取る API が無い**（権限の段の出し分けを、権限の状態〈「その版では要らない」〉で代用している）。
   (2) **スクリプトへ「前面へ戻った（onResume）」を知らせるイベントが無い**（`platform.permission_changed` は変わったときだけ、`platform.launch` は開き直しだけ。
@@ -3859,22 +3881,79 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **TopSheet に動きなしで開く口が無い**（見えないまま開き、全画面が抜けたら見せて回避）。`NavTransition.None` 相当の引数。
   (5) `GameObject.IsValid` ではエンティティが消えたかを判別できない。
   (6) 隠した文字の字形を前もって焼く口が無い（2 フレーム描いて回避）。`Text.Warm(文字列)` のような API。
+  → **(1)(3)(4) は 2026-10-02 に済（lane3。docs/ui_navigation.md §2.8・§3.1・§3.3・§3.4・§3.6）**:
+  (1) `ScreenStack.Prewarm(prefab, PrewarmOptions)`（空いた時間に隠した枠の中で組み立て、次に積むときに枠ごと貸す。`PrewarmMode.Once`/`Refill`/`Reuse`・
+  温め描き `WarmDrawFrames`〈(6) の作り置きの画面の分はこれで焼ける〉・`UiScreen.IsPrewarmReady`。純粋な段階は `Model/PrewarmSlot.cs`）と
+  `Push(GameObject 中身, …, ScreenContentRelease)`・`Replace(GameObject …)`（組み立て済みの中身を積む。外れたら消すか元の親へ戻す）。中身の出所は
+  渡された中身 > 置いてある根 > 作り置き > プレハブ（`ScreenContentPlan`）。`WheelPicker`/`TimeWheel` の行の使い回し（仮想化）は残り。
+  (3) `ModalHost.ShowOverlay/ShowSheet/ShowDialog/ShowPopup(options, 面のプレハブ)`・`ShowPlane(種類, 面のプレハブ, 指定)`・`ModalPlane.DeliverEnter`（自前の面から
+  中身の UiScreen へ値を届ける）と中央のポップアップ `SEED.UI.Popup`（`Popup.Show(PopupOptions)`・templates/ui/prefabs/popup.actor・`IPopupContentSize`・
+  トークン size.popup_margin・size.popup_max_width・size.popup_padding・ratio.popup_max_height・radius.popup）。
+  (4) `OverlayOptions.Animate`・`SheetOptions.Animate`・`PopupOptions.Animate`（動きなしで開く）と `ModalHandle.Close(結果, animate: false)`（動きなしで閉じる）。
+  (2)(5)(6)〈作り置き以外の文字〉は残り。Wake or Pay の `PrebuiltContent`・`PopupPlane`・`OverlayPrefab` の一時の差し替えは、SEED.UI へ乗り換えれば外せる（アプリ側は未着手）。
+  → **(1) の後半（`WheelPicker`/`TimeWheel` の行の使い回し）は 2026-10-03 に確かめて済（lane3。docs/ui_components.md §11.3）**: 行の使い回しは **W2-5 から済んでいた**
+  （`WheelRows` が W2-3 の `ListView` で、見えている行と前後の余白〈描ける上限 ＋ 1 行〉だけを作り、範囲から外れた行を付け替える。列の全項目ぶんは作らない）。
+  上の「行の使い回し（仮想化）も要る」「時刻ホイールの行の生成」は誤った見込み。作る行は列あたり 12 行まで（窓 190・行 32。止まっているときは 11 行。項目の数・周の数によらない）で、
+  計算を `Wheel/WheelRowWindow.cs`（`CacheExtent`・`MaxCreatedRows`・`MaxDrawnRows`）に切り出し、一覧の並びと割り当て（`ListViewLayout`・`ListViewRecycler`）で 1/8 行ずつ・
+  速い払いを模して上限と「描く行はすべて作った行の中」を単体テストで固定した（振る舞いは変えていない）。**残り**: 組み立てた列の行が見えるまで数フレーム
+  （窓の大きさ〈前のフレームの描画〉待ち → 中身の長さが効くのを待つ → 行を作る → 次のフレームに付ける）かかり、行を前もって作る・窓の大きさを待たずに作る口は無い。
+  編集画面の 4 フレーム × 95 ms のうちホイールの分は計測していない（ホイールの行は時刻ホイール 1 つで 24〜26 行 = アクタ 48〜52。作り置き〈`ScreenStack.Prewarm`〉で隠すのが主）。
 - [ ] **W3-7（Wake or Pay の磨き 2）で見つかった UI 部品の不具合・制限** — 2026-10-02（プロジェクト側で回避済み）。
   (1) **【不具合】隠れた `CanvasScroll`（中身の大きさが自動）は見えている子だけで中身を測る**（`canvas_layout/pass.rs` の `accumulate_far_edge`）ため、画面が覆われている間に
   中身が 0 になりスクロール位置が 0 へ戻る（編集画面のサブ画面から戻ると一番上へ。アクティビティのタブでも 123 → 0）。Wake or Pay は編集画面だけ範囲を固定して回避（`HiddenScrollKeeper`）。
   隠れている間は測り直さない（前回の値を保つ）か、非表示の子も数える。
   (2) **ScreenStack・ModalHost に「覆いを全画面の下に残す」口が無い**（オプションのサブ画面の間、覆いを閉じずに下に置くのに、レイヤーの付け替え・戻るの層・フォーカスの後ろ回しを
   アプリ側で組んだ〈`ModalParking`〉）。`StackPreview`（予測型の戻るのプレビュー）と `NavigatorRegistry` の戻るの口が internal で使えない。
+  → **(2) は 2026-10-02 に済（lane3。docs/ui_navigation.md §3.7・§5.2）**: `ModalHost.Park(面の手札, スタック, 全画面の手札)`・`Unpark`・`IsParked`（面の根の底上げを
+  全画面の枠 − 半段へ〈`ParkedPlaneLayers`〉・回した面は戻るの層で数えずプレビューの相手にもならない〈`ModalPlane.IsParked`〉・フォーカスの範囲を重ねる範囲から外して後ろへ
+  〈`FocusModel.SetOverlay`〉・全画面の手札が閉じたら自動で戻す）。`NavigatorRegistry` を公開（`IsActiveNode`・`DispatchBack`・`WouldHandleBack`・`BackPreviewTarget`。
+  登録は internal のまま）、`ScreenStack.HandleBack()`・`WouldHandleBack()`・`BackPreviewTarget`・`IndexOf(ScreenHandle)` を公開。(1) は残り。
 
 - [ ] **2026-10-02 の UI 部品の拡充（lane2）で残したもの** — 2026-10-02（docs/ui_components.md §13.7・docs/ui_navigation.md §13）。
   (1) **Wake or Pay の `assets/ui` の写しは古いプレハブのまま**（dialog.actor に Body・Progress・Items が無く、dialog_item.actor・progress_spinner.actor が無い。toast.actor に Icon が無い）。
   新しい DLL で落ちはしないが、選択肢の一覧・本文のスクロール・進捗の札のスピナー・トーストのアイコンは出ない。templates/ui を取り込み直してから回避のコード
   （`FullWidthSlider`〈刻みの点を除く〉・`WrappedText.FitWidth`〈ボタンの文字〉・`DialogInputFit`・長押しのメニューのボタンのダイアログ・手作りの回転・`ProgressRing` の太さの共有）を外す。
   (2) **`Slider` に刻みの点（Flutter の divisions）が無い**（`FullWidthSlider` の `TickCount`。値の段階 `Step` はある）。
+  → **2026-10-03 に済（lane3。docs/ui_components.md §13.2）**: `Slider.TickCount`・`SetTickCount`・`TickPrefab`（点は子 `Ticks`〈Fill と Thumb の間〉の下に `slider_tick.actor` から作る。
+  塗りの上 color.on_primary・外 color.on_surface_muted・直径 `size.slider_tick` 3。`Looks/SliderTicks.cs`・`Widgets/SliderTickDots.cs`）。残りは下の「2026-10-03 の UI 部品の手直し」。
   (3) **`ProgressSpinner` は親の切り抜きで見えないだけの所でも回り続ける**（祖先の Visible と画面との重なりだけを見る）。
+  → **2026-10-03 に済（lane3。docs/ui_components.md §13.1）**: 祖先の有効な `CanvasClip` の矩形を画面に重ねた積と自分の矩形の重なりを見る（`UiVisibility.IsVisibleInView`・`Looks/ClipVisibility.cs`）。
   (4) ダイアログの札の幅は `size.dialog_width` で一定（Flutter の insetPadding の横 40 のような狭い画面での縮めが無い）・中の幅より長いボタンの文字は折り返さない・
   選択肢の一覧の行は開いた後に増減できない・`ButtonVariant.Tonal` の危険は Filled と同じ（errorContainer のトークンが無い）。
   (5) 実機（Pixel 6a）では未確認（PC の Play の撮影と単体テストまで。選択肢の行のタップ・スクロールの指の手触り・スピナーの滑らかさ）。
+
+- [ ] **2026-10-02 の画面の遷移・面の口（lane3）で残したもの** — 2026-10-02（docs/ui_navigation.md §2.8・§3.1・§3.3・§3.4・§3.6・§3.7・§5.2・§13）。
+  (1) **Play での目視が未確認**（単体テスト〈純粋な計算 18 件〉と C# のビルドまで。エディタ・実機は使っていない）: 作り置きの貸し借りで右から入る動きが重いフレーム無しで始まるか、
+  温め描きが利用者に見えないか（根の画面が不透明な前提）、`Reuse` で戻した画面の 2 回目の `OnScreenEnter`、動きなしの覆い・シートの開閉、覆いの高さいっぱい、
+  ポップアップの見た目（札の大きさ・× の位置・出入り）、`Park` した覆いの上を全画面が出入りする見え方・戻る・フォーカス、`CloseAll(false)` の直後に全画面を積む流れ。
+  (2) **ポップアップのテンプレートのサムネイルを撮り直す**（`templates/ui/thumbnails/popup.png` が無い。`template_actors.json` の `thumbnail_sample` は `Action: popup` で書いた。
+  editor/tools/SeedTemplateThumbnails で撮る）。
+  (3) 作り置きはプレハブ 1 つにつき 1 つ（同じ画面を 2 つ積むと 2 つ目はプレハブから作る）。隠した作り置きの部分木も毎フレームの走査に乗る（W3-6 (2) と同じ根）。
+  温め描きは根の画面が透ける（`Opaque = false`）スタックでは見える。
+  (4) `Park` は覆いの帯の面を想定して作った（シート・ダイアログを回すのも同じ規則で動く見込み〈推論・未確認〉）。全画面を `Replace` で替えると古い手札が閉じた時点で戻る
+  （残すなら新しい手札で `Park` し直す）。`PopToRoot` で覆いを見せたくなければ先に閉じる（自動では閉じない）。
+  (5) 下からのシートの「動きなし」は時間 0 の `CanvasScroll.ScrollTo`（Rust）に頼る（開く段へすぐ移す。同じフレームの描画に間に合うかは未確認）。
+  (6) Wake or Pay の回避コード（`PrebuiltContent`・`PopupPlane`・`OverlayPrefab` の一時の差し替え・`TopSheetFit`・`ModalParking`/`ModalUnderPage`/`ParkedPagePreview`・
+  `DismissModals`）はまだ外していない（プロジェクト側の作業。templates/ui の popup.actor の取り込みも要る）。
+  (7) `ProgressSpinner` の切り抜きの件（lane2 残件 (3)）と `Slider` の刻みの点（lane2 残件 (2)）は時間が足りず手を付けていない。
+  → **2026-10-03 に済（lane3）**（上の lane2 の節の (2)(3)）。
+
+- [ ] **2026-10-03 の UI 部品の手直し（lane3）で残したもの** — 2026-10-03（docs/reviews/2026-10-02_code_review.md の #9・#10・#20 の 4 件目、W3-6 (1) の後半、lane2 残件 (2)(3)）。
+  済んだもの: **#9** `DialogHandle.Close(DialogResult)`・`Dismiss()`・基底の `ModalHandle.Close`・`ModalHost.CloseAll`・面ができる前の Close の当て直しは、面の「外から閉じる」入口
+  （`ModalPlane.CloseFromOutside`。ダイアログは `Dialog.Choose`）を通る＝結果の留め金・入力欄のフォーカスを外す・Positive なら `InputText`（入力欄がまだできていなければ初めの文字。
+  `DialogModel.InputResultText`）・キーボードの持ち上げと KeyboardInsets の登録の片付け。外からの `Selected` は番号が無いので `Dismissed` に倒す（警告。`DialogModel.ExternalCloseResult`）。
+  **#10** 選択を許さない欄（`AllowSelection = false`）は場へコピー・切り取りの禁止も渡す（`TextFieldSelectionPolicy.SessionAllowsCopy`）。**#20 の 4 件目** docs/scripting_api.md のスピナーの例を
+  `SetSize`・`SetThickness` に直した。単体テスト UiComponentsTests 186 → 197 件。
+  (1) **Play・実機の目視は未確認**（単体テストと C# のビルドまで）: 外から `Close(Positive)` したダイアログの `InputText` とキーボードの片付け、刻みの点の見た目と描く順（塗りの上・つまみの下）・
+  点が次のフレームに出ること、スピナーがスクロールの窓の外で止まり戻ると回ること（`[SEED REDRAW]` のログで見られる）。
+  (2) 選択を許さない欄: フォーカスの間に `SetAllowSelection(false)` にしたときのコピーの禁止は**次のフォーカスから**（エンジンの文字入力の場に設定を途中で変える口が無い。
+  今の選択はその呼び出しで畳む）。Ctrl+A の後の文字・Backspace・Delete が同じ 2 回の Update の間に届くと、C# が畳む前に全体が置き換わる・消える（場に「選択を許さない」旗が無い。
+  直すなら Rust の `TextInputConfig` に選択の禁止を足して `EditKey::SelectAll`・Shift ＋ 矢印を場で捨てる）。
+  (3) ダイアログ: 外から項目を選んで閉じる口（`DialogHandle.Select(番号)` のような）は無い。
+  (4) 刻みの点: Flutter の divisions は値も寄せるが SEED は `Step` を別に指定する・点の形は丸だけ・ギャラリーの見本は無い（入力の見本 ui_text_input.scene の起床猶予のスライダだけ 4 刻み）。
+  Wake or Pay の `assets/ui` の slider.actor は古い（`Ticks` が無い）ので、`FullWidthSlider` を外すときに templates/ui の slider.actor と slider_tick.actor を取り込み直す。
+  (5) スピナー: 面積の無い切り抜き（畳んで高さ 0 の枠）の中・角丸／楕円の切り抜きの角の外だけ・別の不透明な面に覆われているだけのときは回り続ける（見えるほうへ倒す）。
+  祖先を 1 回たどる FFI は 1 段あたり 3 回ほど（深さ 15 で毎フレーム約 45 回。回っている間だけ）。
 
 ## 描画の構成（render.profile）と GPU メモリの計測 — 2026-10-02 実装時の残件（正典: docs/rendering_profiles.md）
 
@@ -3950,3 +4029,64 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   完了するフレームは実時間で決まる（WarashibeFishing のプロローグのヤシの葉の縁など、数十〜数百画素が 2 通りに分かれる）、(3) スクリプトの乱数の種が実行ごと
   （WarashibeFishing の `FishManager` は `System.Random`。MainGame の魚の出方が実行ごとに変わる）。検証のときだけ物理を固定ステップで回す・読み込みを待ってから時間を
   進める・`SEED.Random` の種を固定する口があれば、動く 3D の画面も画素単位で比べられる（docs/rendering_profiles.md §14.6）。
+
+## Play 中のプレハブのホットリロード — 2026-10-02 実装時の残件（正典: docs/editor_prefab.md 8 章）
+
+- [ ] **Play 中にプレハブを保存する UI の経路が無い** — 2026-10-02。`DoQuickSave` は `State != Edit` で何もしない・アクタータブのタブバーは Edit 以外で無効・`OnActorFileOpened` も Edit 限定（Play の世界とアクタータブは同じランタイムの別の世界線で、Play 中は EDIT_VIEW を無視するため）。保存に続く `PREFAB_LIVE_PATCH_PATH` の配線（`MainWindow.Prefab.cs::PropagateSavedPrefabToScene`）は入れたが、いま当て直しが走るのは書き戻しの続きと IPC（MCP `seed_send_ipc`）だけ。候補: (a) Play 中だけ `.actor` を監視して外部の書き換え（テキストエディタ・AI）で当て直す（`AutoReloadPolicy` と同じ流儀の監視クラス。自分の書き戻しは除外）、(b) Play 中もアクタータブを表示・保存できるようにする（ランタイムの EDIT_VIEW の扱いから要設計）。
+  → **(a) は 2026-10-03 に済**（docs/editor_auto_reload.md §7.1。`PrefabAutoReloader`・`PrefabExternalChangeTracker`。Play 中に限らず Edit でも `PREFAB_REAPPLY_PATH` / `PREFAB_STATUS` を送る。設定「プレハブを自動再読込」）。(b) は残り。
+- [ ] **アクタータブで開いているプレハブを外部で書き換えても、タブの中身は古い版のまま** — 2026-10-03（A の外部変更の取り込みの実装で気付いた。直していない）。
+  シーンのインスタンスへは当て直す（§7.1）が、そのファイルを開いているアクタータブは読み直さない。そのままタブで保存すると外部の変更を上書きする
+  （取り込み以前からの挙動）。書き戻しの `MarkActorTabStale` と同じ印を付ける案があるが、タブに未保存の編集があると読み直しで消えるので、
+  タブの未保存の判定（今は `_isDirty` がシーンとタブで共有）を分けてから。関連: `editor/src/MainWindow.PrefabAutoReload.cs`・`MainWindow.Prefab.cs`。
+- [ ] **アクタファイル化（`EXPORT_ACTOR`）は自己書き込みの「開始」を知らない** — 2026-10-03（同上）。パネル（ヒエラルキー・プロジェクト）が直接送るため、
+  監視は `EXPORT_ACTOR_OK` を受けた時点で終了として除外する。ランタイムは書いた直後に OK を返すのでデバウンス（600 ms）の満了に間に合うが、
+  エディタの UI スレッドが 600 ms 以上詰まると、書き出したばかりのプレハブへ 1 回 `PREFAB_REAPPLY_PATH` が飛ぶ（元のアクタが再展開される。中身は同じで Undo できる）。
+  直すなら送る口を `RuntimeManager` に 1 本化して開始を知らせる。書き戻し（`PREFAB_WRITE_BACK`）もプレハブの参照パスが分からないときは開始の窓を開けない（同じ扱い）。
+- [ ] **Play 中の「プレハブから更新」（`PREFAB_REAPPLY` / `_PATH` / `_ALL`）は丸ごとの再展開のまま** — 2026-10-02。ヒエラルキーの右クリックは Play 中も出るので、押すとスクリプトが作り直されて OnStart が走り直し、スクリプトが持っていた根のハンドルも無効になる（今回の当て直しを作った理由そのもの）。Play 中は当て直しへ振り替えるか、メニューを出さないのが筋。ランタイムの `handle_reapply_prefab*` にもモードの判定が無い。
+- [ ] **3D の子ノードの Transform は当て直さない** — 2026-10-02（仕様）。子の Transform・インスタンス行列はワールド空間で持つため、ファイル（原点基準）の値を当てると位置が飛ぶ。根の配置行列 × ファイルの根の逆行列で変換すれば当てられる（新しく作るノードはそうしている）。2D（CanvasTransform は親基準）は当てている。
+- [ ] **名前の突き合わせの限界** — 2026-10-02。ファイルでノードの名前を変えると「消えて増えた」扱い（3 方向は消して作る。2 方向は古い方を残して新しい方を作る＝二重に見える）。スクリプトが `GameObject.Name` で名前を変えたノードは「実行中に足されたノード」扱いになり、以後そのノードへは当たらない（ファイル側の同名ノードは「実行中に消された」扱いで作り直さない）。
+- [ ] **2 方向（元の版が分からない）では何も消さず、ファイルの値で上書きする** — 2026-10-02（仕様）。`prefab_hash` の無い旧シーンのインスタンス、シーンのインスタンスがファイルより古い版のとき、が該当。スクリプトが書いた値（文字など）もファイルの値へ戻る。ログ `[PrefabLivePatch] ...（3 方向 N / 2 方向 M）` で見分けられる。
+- [ ] **スクリプトの `[SerializeField]`・有効フラグ・スロット名は Play 中は当てない** — 2026-10-02（仕様）。Play 中にスクリプトが書き換えた状態を正とするため。プレハブでスクリプトの設定値を変えても、Play 中の見た目には出ず、停止後の Edit への反映（`PREFAB_REAPPLY_PATH`）で入る。型名の並びが変わったノードだけ、そのノードのスクリプトを全部作り直す（その OnStart が走り、スロットの並びの末尾へ移る）。
+- [ ] **当て直しで増減したコライダーが Play 中の物理へ入るか未確認** — 2026-10-02。UI のプレハブでは使わないので確かめていない（スクリプトの Instantiate と同じ取り込みの経路に乗るはずだが未検証）。
+- [ ] **`spawned_by_script` の印は ActorData を通ると落ちる** — 2026-10-02。実行時だけの印なので、Play 中に `to_data` → `build_actor` で組み直す操作（Play 中の Undo・コピー＆貼り付けなど）を通ったスクリプトの生成物は、書き戻しで書かれ、当て直しで「ファイルに無い」扱いになる（3 方向なら元の版に無いので消されはしない）。
+- [ ] **書き戻しは「スクリプトの生成物」以外の実行中の変更をすべて書く** — 2026-10-02（仕様）。スクリプトが付け替えで入れてきたアクタ、実行中に動かした子の位置・色（アニメーションの途中の値を含む）もそのまま書く。根の名前・active・visible・2D の根の CanvasTransform は今のファイルの値を保つ。
+- [ ] **書き戻しで古くなったアクタータブを読み直すと、そのタブの未保存の編集は消える** — 2026-10-02。エディタの未保存の印はシーンとタブで 1 つ（`_isDirty`）しか無く、タブごとに確かめられない。
+- [ ] **Android の実行中の差し替え（RELOAD_ASSET）は `.actor` でシーンを読み直したまま** — 2026-10-02。`hot_reload/asset_kind.rs` の表で `.actor` は `RebuildScene`。当て直し（`live_patch_prefab_path`）へ振り替えれば端末でも状態を保てる。
+- [ ] **Play 開始時に参照パスごとに 1 回 `.actor` を読む** — 2026-10-02。元の版の控え（3 方向の材料）のため。エディタとつながっているときだけ。計測は 1 本で 0.8〜1.7 ms（画面外の SEED.exe）。参照パスが多いシーンでは Play 開始が少し延びる。
+- [ ] **MCP 化の候補** — 2026-10-02。`seed_prefab_live_patch(prefab_path)` → `PREFAB_LIVE_PATCH_PATH`、`seed_prefab_write_back(actor_dfs_id|name)` → `PREFAB_WRITE_BACK`（ファイルを上書きするので confirm 必須）。ツール表と `seed_batch` の enum も更新すること。
+
+## ローカライズ（SEED.Localization）— 2026-10-02 実装時の残件（正典: docs/localization.md）
+
+- [ ] **【中】端末の言語を確実に取る `App.Locale`（runtime の仕事）** — 2026-10-02。Android の CoreCLR は `runtime/android/dotnet_runtime.json` の
+  `runtime_properties` で `System.Globalization.Invariant=true` なので `CultureInfo.CurrentUICulture` が不変文化になり、`L10n.SystemLanguage` は null。
+  起動の言語が「保存した値 → 既定の言語」になり、端末の言語で始められない（PC は OS の表示言語が取れている）。候補: SEED.Platform に
+  `App.Locale`（Android は `LocaleList.getDefault()` の先頭の `Locale.toLanguageTag()`、PC は `GetUserDefaultLocaleName`）と変化の知らせ
+  （`platform.locale_changed`）を足し、`L10n` の端末の言語の口（`L10n.cs` の `CreateCatalog` が渡す `LocaleCulture.DetectSystemLanguage`）を
+  「`App.Locale` → CurrentUICulture」の順にする。関連: docs/android.md §17.6・docs/localization.md §9。
+- [ ] **【中】Play での確かめ（未検証）** — 2026-10-02。`L10n`・`LocalizedText`・`LocalizedLabel`・`LocalizationReloader` はエンジンの上でしか動かず、
+  今回確かめたのはビルドと純粋な部分の単体テスト（`editor/tests/LocalizationTests` 61 件）だけ。見本のシーン（言語の切り替えのボタン・
+  LocalizedLabel を付けた Button と SegmentedControl・子 Label を足した Toggle・LocalizedText）を作り、エディタの Play と Android の実機で
+  ①切り替えで全部の文字がその場で入れ替わる ②次の起動も同じ言語 ③LocalizationReloader で JSON の保存が反映される
+  ④Android では端末の言語が null で既定の言語から始まる、を確かめる。
+- [ ] **【低】Android の数・日付の書式は不変文化** — 2026-10-02。言語ごとの書式は表に書く運用（docs/localization.md §9）。言語どおりの書式を
+  自動で出すなら ICU を APK に同梱する（`System.Globalization.AppLocalIcu`。APK が数 MB 増える）案。
+- [ ] **【低】テンプレートのカテゴリの表示名が「locale」のまま（editor 側）** — 2026-10-02。`editor/src/Templates/TemplateCategoryNames.cs` の表に
+  `["locale"] = "多言語（文字列の表）"` を 1 行足す。取り込みそのものは今のままで動く（`LocalizationTests` が計画・コピー・読み込みまで確かめている）。
+- [ ] **【低】`index.json` だけを選んで取り込むと言語の表が付いてこない** — 2026-10-02。言語の表は参照（assets:// のパス）で辿れないので、
+  取り込みでは `locale` のカテゴリごと選ぶ運用。直すなら `TemplateImporter` に「同じフォルダの言語の表を同伴する」規則を足す（editor 側）。
+- [ ] **【低】SEED.UI の部品の既定の文字列を L10n から引くか** — 2026-10-02。`DialogOptions.DefaultPositiveText`（"OK"）・`TimeWheel` の
+  `AmLabel`／`PmLabel`／`MeridiemOnLeft`・`ChartView.EmptyText`・`ChartFormat` の "M/d" は部品の中の固定。今回は部品に手を入れない方針で、
+  見本のキー（`templates/locale` の `ui.*`）と対応表（docs/localization.md §10）だけ。引くなら「表にキーがあれば使う」形にして、表の無い
+  プロジェクトの見た目を変えない。
+- [ ] **【低】LocalizedLabel の当てる先の表は固定** — 2026-10-02。Button・選択のグループ・Toggle・Checkbox・Text だけ（`LocalizedTargetTable`）。
+  アプリの自作の部品を足す口（登録の API）は無い。足すなら登録したデリゲートをスクリプトの読み直しで外す（`UiTheme.Changed` と同じ扱い）。
+- [ ] **【低】エディタの常駐の Play は前の Play の言語・表を持ち越す** — 2026-10-02。SEED.UI のテーマと同じ（スクリプトの読み直しでは
+  `L10n.ResetForReload` で捨てる）。LocalizationReloader が無いと、Play を止めて直した JSON が次の Play に効かない。Play の始まりで捨てる口が
+  SEEDScripting にあれば直せる。
+- [ ] **【低】複数形・言語の引き当ての簡略** — 2026-10-02。複数形は整数だけ（小数の形・fr／es／it／pt の「百万の many」・序数・性別は無い）。
+  `zh-CN` → `zh-Hans` のような書記体系の対応は無い（一覧に `zh-CN` か `zh` を書く）。更新の印は秒の単位なので同じ秒の 2 回目の保存は拾わない。
+- [ ] **【参考】§7.21（Localization）も AI 補完に届かない** — 2026-10-02。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」
+  の範囲（`ScriptApiReference.MaxChars = 12000` に対し、Compact の後は約 203,000 字。2026-10-02 に数えた）。
+- [ ] **【中・アプリ側】Wake or Pay の `StringTable` を L10n へ移す** — 2026-10-02。データの形（入れ子・`_` の説明・`{名前}`・`{{ }}`）は同じなので、
+  `assets/common/data/strings.ja.json` → `assets/locale/ja.json` と `index.json`、`Strings.Get/Format` → `L10n.Get` の置き換えで移せる
+  （手順は docs/localization.md §11。欠けの印は `⟦key⟧` → `[key]`）。W3 のアプリ側の作業。

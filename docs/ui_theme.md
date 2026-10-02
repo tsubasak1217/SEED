@@ -297,6 +297,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `radius.dialog` | 数 | 28 | 〃 | Dialog |
 | `radius.sheet` | 数 | 28 | 〃 | BottomSheet・TopSheet |
 | `radius.toast` | 数 | 8 | 〃 | Toast |
+| `radius.popup` | 数 | 28 | 〃 | Popup（札） |
 | `radius.tab_indicator` | 数 | 16 | 〃 | TabBar（選択の印） |
 | `radius.chart_bar` | 数 | 4 | 〃 | BarChart（棒の先） |
 | `radius.chart_tooltip` | 数 | 8 | 〃 | LineChart・BarChart（吹き出し） |
@@ -314,6 +315,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `size.slider_track` | 数 | 4 | 〃 | Slider（溝の太さ） |
 | `size.slider_thumb` | 数 | 20 | 〃 | Slider（つまみ） |
 | `size.slider_thumb_pressed` | 数 | 24 | 〃 | Slider（ドラッグ中のつまみ） |
+| `size.slider_tick` | 数 | 3 | 〃 | Slider（刻みの点の直径。TickCount > 0 のとき） |
 | `size.progress_bar` | 数 | 8 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
 | `size.ring_thickness` | 数 | 6 | 〃 | ProgressRing（輪の太さ。部品の Thickness が 0 のとき） |
 | `size.radio_dot` | 数 | 10 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
@@ -337,6 +339,9 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `size.dialog_actions_overflow_gap` | 数 | 0 | 〃 | Dialog（ボタンが幅に入らず縦に積むときの間） |
 | `size.dialog_item_height` | 数 | 48 | 〃 | Dialog・DialogItem（選択肢の一覧の 1 行の高さ） |
 | `size.dialog_items_inset` | 数 | 12 | 〃 | Dialog（選択肢の一覧の上下の空き） |
+| `size.popup_margin` | 数 | 16 | 〃 | Popup（札と画面の端の余白） |
+| `size.popup_max_width` | 数 | 560 | 〃 | Popup（札の幅の上限） |
+| `size.popup_padding` | 数 | 8 | 〃 | Popup（札の内側の余白） |
 | `size.handle_width` | 数 | 32 | 〃 | BottomSheet・TopSheet（つまみの幅） |
 | `size.handle_height` | 数 | 4 | 〃 | BottomSheet・TopSheet（つまみの太さ） |
 | `size.handle_area` | 数 | 24 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
@@ -425,6 +430,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `ratio.push_parallax` | 数 | 0.3 | 〃 | ScreenStack（押し込みの視差） |
 | `ratio.dialog_scale_from` | 数 | 0.9 | 〃 | Dialog（出るときの最初の大きさ） |
 | `ratio.sheet_max_height` | 数 | 0.9 | 〃 | BottomSheet（最大の高さ） |
+| `ratio.popup_max_height` | 数 | 0.8 | 〃 | Popup（札の高さの上限。安全領域の高さに対する割合） |
 | `ratio.back_preview_scale` | 数 | 0.9 | 〃 | BackDispatcher（予測型の戻るのプレビューのいちばん小さい倍率） |
 | `ratio.chart_bar_width` | 数 | 0.7 | 〃 | BarChart（棒の太さ） |
 | `ratio.chart_empty_bar` | 数 | 0.015 | 〃 | BarChart（合計 0 の棒の高さ） |

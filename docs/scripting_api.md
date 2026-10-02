@@ -1257,6 +1257,69 @@ public class IconPool : SEEDScript
 
 > **重要 — プーリングの要点**: 使い終わったアイコンは `Destroy` せず、透明化（`Sprite.Color` のアルファを 0 にする）や画面外への退避で「隠す」だけにします。`Instantiate` / `Destroy` はどちらもフレーム末尾の遅延適用で、毎フレーム作り直すとアクター構築（ファイル読み込み・ECS 挿入）のコストがそのまま積み上がるためです。2D アイコンの親は **Canvas を持つアクター**（または 2D アクター）である必要があります。
 
+### 動的ノード（子の列挙・兄弟の順番・空のアクタ・コンポーネントの追加と削除。2026-10-03）
+
+スクリプトから UI の木を組み立てる API。`Instantiate` / `SetParent` と同じ**フレーム末尾に遅延適用**するモデルで、読みはその場の木を返します。
+
+```csharp
+// ── 子の列挙と兄弟の順番（読みはその場の木。フォルダは透過＝FindChild・レイアウトと同じ）──
+int n               = go.ChildCount;          // int（論理の子の数）
+GameObject first    = go.GetChild(0);         // 範囲外は IsValid=false
+GameObject[] kids   = go.Children;            // その時点の写し（木の順＝CanvasStack 等が並べる順）
+int i               = go.SiblingIndex;        // int（論理の兄弟の中の順番。分からなければ -1）
+go.SetSiblingIndex(2);                        // 取り出した後の兄弟の 2 番目の直前へ（フレーム末尾。数以上なら末尾・負なら先頭）
+go.SetAsFirstSibling();                       // 先頭へ（フレーム末尾）
+go.SetAsLastSibling();                        // 末尾へ（フレーム末尾）
+
+// ── 空のアクタを作る（ルートは即座に予約・構築と親への取り付けはフレーム末尾）──
+GameObject row   = GameObject.Create("Row", list);     // 2D / 3D は親から推定（2D の親・Canvas を持つ 3D の親の下は 2D、それ以外と親なしは 3D）
+GameObject node  = GameObject.Create2D("Badge", row);  // 2D（CanvasTransform。親相対・pivot 0・anchor 0・大きさ 0）
+GameObject probe = GameObject.Create3D("Probe");       // 3D（Transform。原点）。親を省略するとシーンのルート
+
+// ── コンポーネントの追加と削除 ──
+Sprite? bg   = row.AddComponent<Sprite>();       // 既定値で足してハンドルを返す（その場で作るので同じフレームに値を書ける。足せない種別は null）
+Text? label  = row.AddComponent<Text>();
+bool removed = row.RemoveComponent<Sprite>();    // index 番目（既定 0。GetComponent<T>(index) と同じ数え方）を外す
+bool added   = row.AddScript<RowView>();         // スクリプトを足す（フレーム末尾にインスタンスを作り、次のフレームに OnStart）
+```
+
+```csharp
+// 例: 一覧の行をコードで組み立てる（同じフレームにすべて書ける）
+var list = GameObject.Create2D("List", gameObject);
+if (list.AddComponent<CanvasStack>() is { } stack) stack.Spacing = 8f;
+foreach (var item in items)
+{
+    var row = GameObject.Create(item.Id, list);                 // List が 2D なので 2D
+    if (row.GetComponent<CanvasTransform>() is { } ct) ct.Size = new Vector2(0f, 48f);   // 高さの指定（CanvasLayoutItem.PreferredSize）
+    if (row.AddComponent<Sprite>() is { } sp) { sp.Size = new Vector2(320f, 48f); sp.Color = Color.White; }
+    if (row.AddComponent<Text>() is { } tx) tx.Content = item.Title;
+}
+// 並べ替え（次のフレーム以降。Children / SiblingIndex で読める）
+list.GetChild(2).SetAsFirstSibling();
+```
+
+| 操作 | その場（同じフレーム） | フレーム末尾 | 次のフレームから |
+| --- | --- | --- | --- |
+| `Create` / `Create2D` / `Create3D` | ルートを予約。`Transform` / `CanvasTransform` の値・`Name`・`Visible`・`AddComponent`・`SetParent`・`SetSiblingIndex` を当てられる（発行した順に効く）| アクタの構築・親の末尾の子へ取り付け・`HIERARCHY` | 親の `ChildCount` / `Children` / 自分の `SiblingIndex` / `Parent` / `LayoutSize` が読める |
+| `AddComponent<T>()` | コンポーネントを World へ入れて**ハンドルを返す**（値を書ける）。`GetComponent<T>()` / `HasComponent` も返す | スロットの目録へ登録（描画・レイアウト・インスペクタに載る） | — |
+| `RemoveComponent<T>(index)` | `GetComponent<T>()` / `HasComponent` から**消える** | エディタの「コンポーネント削除」と同じ後始末（コンポーネントの除去・despawn・目録から外す） | — |
+| `AddScript<T>()` | 受けたかだけ（インスタンスはまだ無い） | スクリプトのスロットを足し、通常の構築経路で CLR のインスタンスを作る | `OnStart`（`gameObject` は足した先のアクタ） |
+| `SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling` | 受けたかだけ | 論理の兄弟の順番を変える（レイアウトは毎フレームの描画で木の順から測り直す） | `Children` / `SiblingIndex` に反映 |
+| `ChildCount` / `GetChild` / `Children` / `SiblingIndex` | その場の木（フレームの始めの木）を読む | — | — |
+
+| `AddComponent<T>()` で足せる種別（既定値はエディタの「コンポーネント追加」と同じ） |
+| --- |
+| `Sprite`・`SkinnedSprite`・`Text`・`CanvasClip`・`CanvasStack`・`CanvasWrap`・`CanvasGrid`・`CanvasLayoutItem`・`CanvasSafeArea`・`CanvasGesture`・`CanvasScroll`・`AudioSource`・`AudioDictionary`・`Animator`・`ParticleEmitter`・`LineRenderer` |
+| 足せない（null が返る）: `Transform`・`CanvasTransform`（アクタが最初から持つ）・`Model`・`Skybox`（GPU の資源・ファイルが要る）・`Camera`・`InputMap`・`WaterVolume`・`WaterLink`・`ControlPointPath`（エディタで設定する） |
+
+> **重要**: 子は**論理の子**です。フォルダノード（ヒエラルキーの整理用）はそれ自身を数えず、中の子をその位置へ展開します（`FindChild` の「フォルダは階層に存在しないものとして扱う」と同じ。CanvasStack 等のレイアウトもフォルダを透過して並べます）。フォルダの `SiblingIndex` は -1 で、フォルダ自身は並べ替えられません（`[Script] SetSiblingIndex 拒否`）。`SetSiblingIndex(i)` は「自分を取り出した後の論理の兄弟の i 番目の直前」へ入り、その兄弟がフォルダの中に居ればフォルダの中へ入ります（論理の親は変わらない。2D のフォルダは単位変換なので見た目の位置も変わらない）。ルートの兄弟は同じシーンのルートです。フォルダを使わない木（スクリプトで組み立てる木）では、論理の子＝直接の子で `GetChild(i).SiblingIndex == i` です。
+
+> **重要**: 読み（`ChildCount` / `GetChild` / `Children` / `SiblingIndex` / `Parent`）は**フレームの始めの木**です。同じフレームに発行した `Create` / `Instantiate` / `SetParent` / `SetSiblingIndex` / `Destroy` はまだ反映されていません（`OnStart` で作った子は、同じフレームの `Update` でも `ChildCount` に入りません）。並べ替え・取り付けはどれも発行した順にフレーム末尾で当たるので、同じフレームに「作る → 足す → 並べ替える」と書けばその順に効きます。
+
+> **重要**: `Create` で作ったアクタ・`AddComponent` で足したコンポーネントは、`Instantiate` と同じく**スクリプトが生成したもの**として扱われます（プレハブの Play 中の当て直しで消されず、書き戻しでファイルへ書かれない）。Undo は積まず、Play を止めると消えます（Play の世界は停止で Play 前の写しへ戻る）。OnDestroy の中からは使えません（無視される）。
+
+> **重要**: `AddScript<T>()` のインスタンスは**次のフレーム**にできます（同じフレームに値は渡せない）。足したスクリプトの `OnStart` で `gameObject`（足した先）・親・名前から自分で読んでください。型が見つからないときはフレーム末尾に `[Script] AddScript 失敗` が出ます。
+
 ### Transform（3D 位置・回転・スケール）
 
 ```csharp
@@ -1320,6 +1383,10 @@ if (gameObject.GetComponent<CanvasTransform>() is { } ct)   // CanvasTransform?�
     ct.HasLayout           // bool（前のフレームの描画のレイアウトの表にこのノードがあったか。false なら下の 2 つは Zero）
     ct.LayoutSize          // Vector2（レイアウトが決めたこのノードの大きさ。このノードのキャンバスの単位＝Sprite.Width/Height と同じ。dp のキャンバスなら dp）
     ct.LayoutRect          // Rect（その矩形の画面の上の外接矩形。画素・左上原点・Y 下向き＝ScreenPosition・Screen.SafeArea・Input.MousePos と同じ。dp は ÷ Screen.DpScale）
+
+    // ── 指定の大きさ（get/set。2026-10-03・動的ノード API）──
+    ct.Size                // Vector2（このノードの大きさの指定。実体は CanvasLayoutItem.PreferredSize。0 の軸は指定なし）
+                           //   get: CanvasLayoutItem が無ければ Zero。set: 無ければその場で足して（AddComponent と同じ既定値）書く
 }
 
 // 例: コンテナ（CanvasStack の Stretch・flex・親に合わせる）に伸ばされたノードの、描かれる大きさで描き直す
@@ -1333,6 +1400,8 @@ if (gameObject.GetComponent<CanvasTransform>() is { } node && node.HasLayout)
 > `Position` は**親 Canvas 相対**の座標ですが、`ScreenPosition` はアンカー・スケールモード・親チェーンをすべて反映した**画面上の絶対位置**（ピボット点）を返します。SEED の 3D `Transform.Position` は元々ワールド絶対座標で、書き込み時に子孫へ差分が伝播します（上記「親子の追従」参照）。
 
 > **重要**: `HasLayout` / `LayoutSize` / `LayoutRect` は **1 フレーム遅れ**です。レイアウトの表はスクリプトのフェーズの後（描画）で作るので、`Update` などで読む値は**前のフレームの描画**の値です（`CanvasScroll.ViewportSize` と同じ）。このフレームに `Position`・レイアウトの部品を書き換えても、結果が読めるのは次のフレームからです（レイアウトが大きさを決めていない軸の `LayoutSize` だけは、読んだ時点の `Sprite.Width` / `Height`・Text の枠そのもの）。`HasLayout` が false になるのは、まだ描画していないとき（Play の最初のフレーム・シーンを読み込んで最初の描画の前・このフレームに `Instantiate` したノード）と、表に無いノード（3D ワールドキャンバスや 3D アクターの下・フォルダ）です。非表示・非アクティブのノードも表にあるので true です。読むのは Play（エディタの Play・SEED.exe）のゲームの画面の表だけです。
+
+> **重要**: `ct.Size` と `CanvasLayoutItem.PreferredSize` は**同じ欄**です（CanvasTransform に大きさの欄は無く、レイアウトがノードの大きさを決める材料のうち、コンテナが伸ばした大きさの次に強いのが PreferredSize）。大きさだけを決めるなら `ct.Size`、伸ばす重み（Flex）・上下限・揃えの上書き・親に合わせる（FillWidth）も決めるなら `CanvasLayoutItem` を使います（混ぜてよい）。効くのは**レイアウトが測るノード**（CanvasStack・Wrap・Grid の子・親に合わせる子・コンテナ自身の箱）で、並べる矩形（場所取り）が変わります。**Sprite を持つノードの描く大きさと `LayoutSize` は Sprite の大きさのまま**です（伸ばされた軸だけ変わる。2026-10-03 の通し確認: 50×20 の Sprite の行に `Size = (120, 40)` → 縦の CanvasStack では次の行が 40 + 間隔の位置に来て、`LayoutSize` は 50,20）。コンテナの下に無い自由なノードの大きさは変わりません。
 
 > **重要**: `LayoutSize` の決め方（軸ごと）: CanvasComponent を持つノードは**キャンバス領域**（コンテナ・親に合わせる・安全領域・中身に合わせる・dp のルートを反映）。持たないノードは、レイアウトが大きさを決めた軸（コンテナが伸ばした・セルいっぱい・親に合わせた）ならその大きさ、それ以外は Sprite の大きさ → Text の枠 → レイアウトが割り当てた矩形 → 0 です。Sprite を持つノードでは **`LayoutSize` ＝ 描かれるスプライトの大きさ**（キャンバスの単位）で、`LayoutRect` は描かれるスプライトの 4 隅（自分の回転・Scale・pivot を含む。回転していれば外接矩形）と一致します。コンテナに伸ばされても `Sprite.Width` / `Height` は元の値のままなので、描く大きさには `LayoutSize` を使ってください。
 
@@ -2345,7 +2414,9 @@ public class FishingLine : SEEDScript
 | （アクター自身） | `gameObject.Visible` | アクターと全子孫の**描画だけ**を止める表示フラグ。スクリプト・物理は動き続ける |
 | （アクター自身） | `gameObject.Name` | アクター名（`Find` / `FindChild` の照合キー）。動的生成物へ一意な名前を付ける用途。既存アクターの改名は参照が追従しない |
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
-| `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー・前のフレームのレイアウトの結果（HasLayout・LayoutSize・LayoutRect。読み取り専用） |
+| `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー・前のフレームのレイアウトの結果（HasLayout・LayoutSize・LayoutRect。読み取り専用）・指定の大きさ（Size＝CanvasLayoutItem.PreferredSize） |
+| （アクター自身） | `gameObject.ChildCount` / `GetChild(i)` / `Children` / `SiblingIndex` | 論理の子（フォルダは透過）の列挙と兄弟の順番。`SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling` で並べ替え（フレーム末尾） |
+| （アクター自身） | `GameObject.Create` / `Create2D` / `Create3D`・`AddComponent<T>()` / `RemoveComponent<T>()` / `AddScript<T>()` | 空のアクタを作る・コンポーネントとスクリプトの追加と削除（動的ノード API） |
 | `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）・レイトレ除外（`RayTracingExcluded`）・描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |
 | `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget）・形と塗り（角丸・楕円・弧・縁・グラデーション・9 スライス・影。W2-4） |
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
@@ -4111,6 +4182,12 @@ slider.SetValue(30f)                  // 範囲・段階へ寄せる（同じ値
 slider.ValueChanged                   // event Action<Slider, float>
 slider.TrackLength                    // float（溝の長さ。2026-10-02: 溝はレイアウトの幅に追従する＝コンテナの fill_width・Stretch・flex で伸ばすと
                                       // 「幅 − プレハブの左右の余白」になり、画面の幅が変わるたびに置き直す。伸ばしていなければプレハブの長さのまま）
+slider.TickCount                      // int（2026-10-03。刻みの数＝Flutter の divisions。既定 0 = 点なし。1 以上で溝の上に両端を含めて TickCount + 1 個の点。
+                                      // 値の段階 Step とは独立〈点を描くだけ〉。上限 SliderTicks.MaxTickCount〈100〉・点の間隔 < 直径 × 2 なら描かない。
+                                      // 塗りの上の点は color.on_primary・外は color.on_surface_muted・直径 size.slider_tick〈3〉）
+slider.SetTickCount(4)                // 1〜5 分なら 4 刻み（値も寄せるなら slider.Step = 1f）。見た目もすぐ変える
+slider.TickPrefab                     // string（点のプレハブ。既定 Slider.DefaultTickPrefab = assets://ui/prefabs/slider_tick.actor）
+                                      // 点は子 Ticks〈Fill と Thumb の間〉の下に作る。Ticks の無い古い slider.actor では描かない（警告 1 度。templates/ui を取り込み直す）
 number.Min / number.Max / number.Step / number.Value / number.Format / number.Suffix   // 例 Format "0"・Suffix "分"
 number.SetValue(15f); number.StepBy(+1)
 number.TrySetText("42")               // bool: 数でない入力は捨てる・範囲の外は収める
@@ -4142,10 +4219,12 @@ ring.Thickness             // float（2026-10-02。輪の太さ。0 以下 = テ
 
 // 不定の進捗（終わりの分からない待ち。2026-10-02。プレハブ templates/ui/prefabs/progress_spinner.actor = Sprite〈弧〉＋ SEED.UI.ProgressSpinner）
 // 弧が伸び縮みしながら回る（Flutter の CircularProgressIndicator の不定の動き。色 color.primary）。回っている間（Spinning・押せる・
-// 自分と祖先が表示・画面と重なる）だけ描き続けを頼むので、隠す・止めると on_demand の描画は止まる
+// 自分と祖先が表示・画面と祖先の切り抜き〈CanvasClip。スクロールの窓など〉の積と重なる。切り抜きは 2026-10-03 から）だけ描き続けを頼むので、
+// 隠す・止める・窓の外へ流れると on_demand の描画は止まる
 var spinner = UiWidget.Of<ProgressSpinner>(gameObject.FindChild("Spinner"))!;
-spinner.Size = 48f;        // 大きさ（弧の外側の直径。0 以下 = テーマの size.spinner 36）。SetSize(48f)
-spinner.Thickness = 5f;    // 弧の太さ（0 以下 = size.spinner_thickness 4）。SetThickness(5f)
+spinner.SetSize(48f);      // 大きさ（弧の外側の直径。0 以下 = テーマの size.spinner 36。見た目もすぐ変える）。欄は spinner.Size
+spinner.SetThickness(5f);  // 弧の太さ（0 以下 = size.spinner_thickness 4。見た目もすぐ変える）。欄は spinner.Thickness
+                           // 欄（Size・Thickness）へ直に書くのはプレハブ・インスペクタの初めの値向け（動き始めた後に書いても次に見た目を作り直すまで反映されない）
 spinner.SetSpinning(false);// 止める（今の姿のまま）。true で回す（既定）
 float d = spinner.ResolvedSize, t = spinner.ResolvedThickness;
 SpinnerArc arc = SpinnerMotion.At(seconds, 1.333f, 2.222f);   // 時刻の弧（StartDegrees・SweepDegrees。純粋な計算）
@@ -4311,7 +4390,12 @@ wheel.RowPrefab                        // string（行のプレハブ。子に L
 | `motion.wheel`・`motion.wheel_correct` | 0.3・0.2 | タップ・キー・スクリプト・午前/午後の連動の動き（秒）・選べない行から戻る動き |
 
 純粋な計算（エディタのテストで検算）: `WheelLook.Resolve(距離, 窓の高さ, 行の高さ, WheelLookParams)`（行の見た目）・`WheelLook.DistanceAtOffset`（逆）・
-`WheelLoop`（循環の添字・近い向きの行・位置）・`TimeWheelMath`（12/24 時間・午前/午後の連動・分の刻み）。
+`WheelLoop`（循環の添字・近い向きの行・位置）・`TimeWheelMath`（12/24 時間・午前/午後の連動・分の刻み）・
+`WheelRowWindow`（2026-10-03。作って置く行の範囲: `CacheExtent(窓の高さ, 行の高さ, WheelLookParams)`〈描ける上限 − 窓の半分 ＋ 1 行〉・
+`MaxCreatedRows(…, 行の数)`〈作る行の数の上限。窓 190・行 32 で 12〉・`MaxDrawnRows`〈描く行の上限 9〉）。
+
+> **行の使い回し**: 列は全項目ぶんの行を作りません（W2-5 から。W2-3 の ListView が見えている行と前後の余白だけをプレハブから作り、範囲から外れた行を
+> 入ってきた行へ付け替える）。作る行の数は項目の数・周の数によらず列あたり 12 行まで（docs/ui_components.md §11.3）。
 
 > **重要**: ホイールの値の変化で他の部品は作り直されません（書くのはその列の行の文字だけ）。列が動いている間はエンジンが「動いている」を申告するので
 > `render_policy: on_demand` でも止まらず、止まって 10 フレームで描画が止まります。
@@ -4322,9 +4406,12 @@ wheel.RowPrefab                        // string（行のプレハブ。子に L
 
 1 つのシーンに画面をプレハブとして出し入れするための部品です（正典は docs/ui_navigation.md）。見本は `templates/ui/scenes/ui_navigation.scene`
 （テンプレートライブラリの「UI 部品」から取り込むと `assets/ui/...`）。部品のプレハブ: `screen_stack.actor`・`screen_frame.actor`・`tab_host.actor`・
-`modal_host.actor`・`dialog.actor`・`dialog_item.actor`（選択肢の一覧の行。2026-10-02）・`bottom_sheet.actor`・`top_sheet.actor`・`toast_host.actor`・`toast.actor`。
+`modal_host.actor`・`dialog.actor`・`dialog_item.actor`（選択肢の一覧の行。2026-10-02）・`bottom_sheet.actor`・`top_sheet.actor`・`popup.actor`（中央のポップアップ。2026-10-02）・
+`toast_host.actor`・`toast.actor`。
 2026-10-02 の拡充（危険のボタン・選択肢の一覧・ボタンの縦積み・進捗の札・長い本文のスクロール・アイコンつきのトースト）の見本は `templates/ui/scenes/ui_gallery.scene` の
-「画面の組み立て」の段の 2 行目のボタン。
+「画面の組み立て」の段の 2 行目のボタン。同日の画面の遷移・面の口（lane3: 作り置き `Prewarm`・渡された中身 `Push(GameObject)`・`ModalHost.CloseAll`・
+動きなしの開閉・覆いの高さいっぱい・任意の面のプレハブ `ShowPlane`・中央のポップアップ `Popup`・覆いを全画面の下に残す `ModalHost.Park`・
+`NavigatorRegistry` の公開）は下のコードの「2026-10-02（lane3）」の行（正典は docs/ui_navigation.md §2.8・§3.1・§3.3・§3.4・§3.6・§3.7・§5.2）。
 
 ```csharp
 using SEED.UI;
@@ -4345,6 +4432,20 @@ stack.SetRoot(prefab, NavTransition.Fade);  // 根からやり直す
 stack.Depth  stack.Top  stack.CanPop  stack.IsTransitioning
 stack.Changed += s => { };    // 落ち着いた（動きが終わった）後
 h.Closed += x => Debug.Log(x.Result);  var r = await h.WhenClosed;   // 閉じるのを待つ
+// ── 2026-10-02（lane3）: 中身の出所・作り置き・入れ替わりの順（docs/ui_navigation.md §2・§2.8）──
+bool started = stack.Prewarm("assets://alarm/prefabs/edit.actor", new PrewarmOptions   // 空いた時間に隠した枠で組み立てておく（次に積むと枠ごと借りる）
+{
+    Mode = PrewarmMode.Reuse,       // Once（既定。1 回だけ）/ Refill（使ったら空いた時間に作り直す）/ Reuse（外れたら隠して戻し使い回す。使うたびに OnScreenEnter）
+    WarmDrawFrames = 2,             // 温め描き（0 = しない）: 段 0 の画面より奥のレイヤーで描いて文字の字形を焼いておく（根が透けるスタックでは使わない）
+    SafeArea = true,                // 中身を枠の Body（安全領域の中）に作る
+});
+stack.IsPrewarmed(prefab)  stack.GetPrewarmStage(prefab)  stack.DiscardPrewarm(prefab)   // 貸せるか・段階（PrewarmStage: Waiting/Building/WarmDrawing/Ready/Lent/Discarded）・捨てる
+ScreenHandle? sh = stack.Push(body, NavTransition.Push, args, options,                    // 組み立て済みの中身（GameObject）を積む（無効なら null。KeepState は常に true）
+                              ScreenContentRelease.ReturnToParent);                       // 外れたら積んだときの親へ戻す（既定 Destroy = 画面と一緒に消す）
+stack.Replace(body, NavTransition.Fade);                                                  // 置き換えの版（GameObject の中身）
+int index = stack.IndexOf(h);                                                             // 段の添字（根 = 0。外れた画面は -1）
+// 入れ替わりの順（仕様）: 新しい画面の OnScreenEnter → 動き（古い画面は動きの間も生きて Update が回る）→ 古い画面の OnScreenExit / OnScreenHidden
+//   → 新しい画面の OnScreenShown → Changed。共有の頼み（画面を点けたまま等）を入りで取って出で返すなら数え上げにする
 
 // ── 画面のスクリプト（画面のプレハブの根に付ける。任意）──
 public class EditScreen : UiScreen
@@ -4363,6 +4464,7 @@ public class EditScreen : UiScreen
     protected override bool WouldConsumeBack() => dirty;       // 今戻るが来たら OnBackPressed が true か（副作用なしの問い。
                                                                // OnBackPressed を上書きしたら同じ条件で上書きする。上書きしないと
                                                                // 「受ける」とみなされ、根でも Android の予測型の戻る〈ホームへ戻る見た目〉が出ない）
+    protected override bool IsPrewarmReady => rowsBuilt;       // 2026-10-02: 作り置き（Prewarm）が温まったか（重い準備を Update で続ける画面。既定 true）
     // Close(result) で自分を下ろす・Navigator（積んだスタック）・Handle・Args
 }
 
@@ -4398,6 +4500,8 @@ menu!.Completed += r => { if (r == DialogResult.Selected) Edit(menu.SelectedInde
 var busy = Dialog.ShowProgress("購入の手続きをしています…", "購入");                  // スピナー（ProgressSpinner）＋本文
 busy!.SetMessage("もう少しで終わります");                                            // 本文を変える（札の高さも合わせ直す。開く前に呼んでもよい）
 busy.Close(DialogResult.Positive);                                                    // 外から結果つきで閉じる（Dismiss() は Dismissed）
+// 外から閉じてもボタンと同じ決め方を通る（2026-10-03）: 入力つきのダイアログを Close(DialogResult.Positive) で閉じると InputText が入る
+// （入力欄がまだできていなければ初めの文字）。外から Close(DialogResult.Selected) は番号が無いので Dismissed で閉じる（警告）
 // ボタンの行: 文字の幅の和 ＋ 間隔が札の中の幅に入らなければ縦に積む（右寄せ・上から中立・いいえ・はい。間 size.dialog_actions_overflow_gap = 0）
 // 本文・選択肢が札に入りきらない（画面の高さ − 安全領域 − size.dialog_margin × 2 を超える）ときは、選択肢 → 本文の窓を縮めてスクロール（題とボタンは見えたまま）
 // HideButtons = true でボタンの行を出さない（文字を指定していても）
@@ -4406,6 +4510,32 @@ ModalHandle? s = BottomSheet.Show(new SheetOptions { ContentPrefab = "assets://�
 ModalHandle? o = TopSheet.Show(new OverlayOptions { ContentPrefab = "assets://…/profile.actor" });
 s.Close(result);  await s.WhenClosed;           // 中身から閉じる（結果つき）。幕・戻る・つまみで閉じたら結果 null
 ModalHost.Current!.Count(ModalKind.Dialog)      // 開いている数
+// ── 2026-10-02（lane3）: 全部閉じる・動きなし・高さいっぱい・任意の面・中央のポップアップ・覆いを全画面の下に残す（docs/ui_navigation.md §3）──
+int closed = ModalHost.Current!.CloseAll(animate: false);   // ダイアログ → シート → 覆いの順・同じ種類は新しい順。ダイアログは Dismissed・ほかは null。
+                                                            // 閉じない設定の面も閉じる。false なら手札の Closed もこの中で届く。戻り値 = 閉じた数
+ModalHost.Current!.CloseAll(ModalKind.Dialog, animate: true);   // 種類を絞る
+o.Close(result, animate: false);                            // 出る動きを見せずにすぐ閉じる（DialogHandle.Close(DialogResult, false)・ModalPlane.RequestClose(結果, false) も）
+TopSheet.Show(new OverlayOptions { ContentPrefab = "assets://…/options.actor",
+                                   Animate = false,                       // 動きなしで開く（中身が落ち着いたら降りた姿で出る）
+                                   FillHeight = true, FillBottomMargin = -1f });   // 高さいっぱい（中身の根の CanvasLayoutItem の高さを合わせる。負 = space.m）
+BottomSheet.Show(new SheetOptions { ContentPrefab = "assets://…/list.actor", Animate = false });   // 開く段へすぐ移す
+ModalHost.Current!.ShowOverlay(options, "assets://app/prefabs/my_top_sheet.actor");    // 任意の面のプレハブで開く（ShowDialog・ShowSheet・ShowPopup も同じ形）
+ModalHost.Current!.ShowPlane(ModalKind.Overlay, "assets://app/prefabs/my_plane.actor", myOptions);   // 自前の ModalPlane の派生（OnPlaneStart の Options で受ける。
+                                                                                                     // 中身の UiScreen へは protected static DeliverEnter(中身の根, 値)）
+ModalHandle? p = Popup.Show(new PopupOptions                // 中央のポップアップ（templates/ui/prefabs/popup.actor。ModalHost.PopupPrefab・ShowPopup）
+{
+    ContentPrefab = "assets://profile/prefabs/profile.actor", Args = profileId,
+    DismissOnScrimTap = true, CancelableByBack = true, ShowCloseButton = true, Animate = true,
+    Width = 0f, ContentHeight = 0f,                         // 0 以下 = 画面の幅 − size.popup_margin × 2（上限 size.popup_max_width）・高さは中身から
+    Kind = ModalKind.Overlay,                               // 入れる帯と戻るの層（シートの上に出すなら Dialog）
+});
+public class ProfileContent : UiScreen, IPopupContentSize { public float PopupContentHeight => measured; }   // 札の高さを中身に合わせる（0 以下 = まだ分からない）
+ScreenHandle page = root.Push("assets://options/prefabs/cap_ceiling.actor");
+ModalHost.Current!.Park(p!, root, page);                    // 覆いを閉じずに全画面の下へ回す（全画面が閉じたら自動で戻る。戻るは全画面へ届く）
+ModalHost.Current!.IsParked(p!)  ModalHost.Current!.Unpark(p!)   // 回しているか・先に戻す。ModalPlane.IsParked
+NavigatorRegistry.IsActiveNode(gameObject)                  // 自分の画面が見えていて上の段の中にあるか（2026-10-02 に公開）
+NavigatorRegistry.DispatchBack()  NavigatorRegistry.WouldHandleBack()  NavigatorRegistry.BackPreviewTarget()   // 戻るの段の Navigation の層そのもの
+stack.HandleBack()  stack.WouldHandleBack()  stack.BackPreviewTarget                  // 特定のスタックへ戻るを渡す・問う・プレビューの相手（独自の戻るの層から）
 
 // ── トースト（シーンに ToastHost〈toast_host.actor〉を置く）──
 Toast.Show("保存しました");                       // ToastLength.Short（motion.toast_short）/ Long
@@ -4474,6 +4604,14 @@ Escape で確定すると縮んだ姿勢から閉じる・下ろす（閉じな�
 ボタンの横並び・縦積みは `DialogActionsLayout.Arrange`、選択肢の行の見た目は `DialogItemLooks`。**古いプレハブ**（2026-10-02 より前の dialog.actor）でも動きますが、
 本文はスクロールせず、進捗の札のスピナーは出ず（本文だけ）、選択肢の一覧は出せません（警告）。プレハブを取り込み直してください。
 
+**画面の遷移・面の口（2026-10-02。lane3。正典は docs/ui_navigation.md §2.8・§3）**: `ScreenStack.Prewarm` は空いた時間（出入りの動きの無い間）に
+隠した枠（`FramePrefab`）の中で画面を組み立てておき、次にそのプレハブを積むときに枠ごと貸す（プレハブの組み立ての重いフレームが無い。中身の出所は
+渡された中身 > 置いてある根 > 作り置き > プレハブ）。温まった = できあがって 2 フレーム経ち `UiScreen.IsPrewarmReady` が true（上限 300 フレーム）。
+`ModalHost.CloseAll` はダイアログ → シート → 覆いの順に閉じ、ダイアログの結果は `Dismissed`、シート・覆いは null（閉じない設定の面も閉じる。`animate: false` なら
+出る動きなしでこの中で閉じ、手札の知らせもこの中で届く。作りかけの面は見せずに取りやめる）。`ModalHost.Park(面, スタック, 全画面)` で回した面は戻るの層で数えず
+（戻るは全画面へ届く）、フォーカスの範囲も後ろへ回り、全画面が閉じると自動で戻る。中央のポップアップの札の大きさは `PopupCardMath`（幅 = 画面 − `size.popup_margin` × 2・
+上限 `size.popup_max_width`、高さ = 中身 ＋ `size.popup_padding` × 2・上限 = 安全領域 × `ratio.popup_max_height`）。
+
 **重なりと入力**: 画面のスタックの段 i は `LayerBias = i × LayerStep`（既定 `layer.stack_step` = 10,000。タブの中のスタックは 1,000）、
 覆い・シート・ダイアログ・トーストは帯（`layer.overlay`・`sheet`・`dialog`・`toast` = 100 万・200 万・300 万・400 万）。
 **画面の中の表示のレイヤーは段の値より小さく**（タブの中なら 1,000 未満）保ってください。積んだ画面の枠（`screen_frame.actor`）は遮る板を持ち、
@@ -4490,6 +4628,7 @@ Escape で確定すると縮んだ姿勢から閉じる・下ろす（閉じな�
 | `opacity.scrim`・`opacity.dialog_scrim` | 0.54・0.32 | 幕の濃さ |
 | `ratio.push_parallax`・`ratio.dialog_scale_from`・`ratio.sheet_max_height` | 0.3・0.9・0.9 | 視差・ダイアログの出始めの大きさ・シートの高さ |
 | `ratio.back_preview_scale`・`size.back_preview_shift`・`motion.back_preview_curve` | 0.9・8 dp・(0, 0, 0, 1) | 予測型の戻るのプレビュー（いちばん小さい倍率・画面のずらし・進み具合の曲線。3b。取り消しで戻る時間は `motion.short`） |
+| `size.popup_margin`・`size.popup_max_width`・`size.popup_padding`・`ratio.popup_max_height`・`radius.popup` | 16・560・8 dp・0.8・28 | 中央のポップアップ（札と画面の端の余白・幅の上限・札の内側の余白・高さの上限〈安全領域に対する割合〉・角丸。2026-10-02） |
 
 > **重要**: 画面のプレハブは次のフレームにできあがる（`Instantiate` の遅延）ので、画面の枠 → 中身の 2 フレームかけて作り、できあがるまで隠します。
 > 積み下ろしは並びをすぐ変え、動きは順に流します（動いている途中の次の操作は、今の動きを飛ばしてから始める）。
@@ -4600,6 +4739,7 @@ field.SetError(true);                          // エラーの見た目（枠と
 field.SetPadding(8f);                          // 欄ごとの左右の内側の余白（Padding。負 = テーマの size.field_padding〈既定〉・0 は余白なし。幅の狭い数値の欄）
 field.SetAllowSelection(false);                // 選択を許さない（AllowSelection。Flutter の enableInteractiveSelection: false）: 長押しは全選択にせず
                                                // カーソルを置くだけ・SelectAllOnFocus と SelectAll() も選ばない・キーボードや IME の選択はカーソルへ畳む
+                                               // 2026-10-03: フォーカスの場へコピー・切り取りの禁止も渡す（畳む前の Ctrl+A → Ctrl+C も写さない。次のフォーカスから）
 // 欄は自分のレイアウトの大きさの変化を見て中身を置き直す（コンテナが幅を伸ばした・ダイアログが入力の枠の幅〈札の中の幅〉に合わせた）
 
 string text = field.Text;                      // 本文（フォーカスの間はエンジンの本文に追従する）
@@ -4658,6 +4798,105 @@ scroll.EndInset = new Vector2(0f, 300f);
 
 > **重要**: 入力欄にフォーカスがある間も、キーの状態（`Input.GetKey` など）は従来どおり届く（入力欄が受けたキーもゲームの入力に残る）。ゲームのショートカットを
 > 打鍵で動かしたくない画面は `SEED.TextInput.ActiveSession != 0` の間は止める。エディタのショートカット（Play 中の Ctrl+Z など）は入力欄が受けたキーでは動かない。
+
+## 7.21 Localization（多言語：文字列の表・言語の切り替え・UI への結び付け。SEED.Localization）
+
+ゲーム・アプリの文字列を言語ごとに差し替える。データは `assets://locale/index.json`（言語の一覧）と `assets://locale/<言語>.json`（キー → 文。
+入れ子は `.` でつないだキー）。見本は `templates/locale`（テンプレートの取り込みで `assets/locale` へ入る）。正典は `docs/localization.md`。
+起動の言語は 保存した値（SaveData の `l10n.language`）→ 端末の言語 → index の `default` の順で決まる。
+
+```csharp
+using SEED.Localization;
+
+// 文を引く（無いキーは欠けの方針どおり: 開発中 "[key]"・配布用 "key"。キーごとに 1 回だけ警告）
+string s = L10n.Get("menu.start");                                   // 今の言語 → fallback → 既定の言語 の順に探す
+string g = L10n.Get("greeting", ("name", playerName));               // {name} の差し込み（params (string name, object? value)[]）
+string f = L10n.Format("score", 1200);                               // {0} の差し込み（params object?[]。名前つきの組は Get へ渡す）
+string m = L10n.Get("money", ("amount", 1234567));                   // 表の "{amount:N0}" → 今の言語の文化で "1,234,567"
+string c = L10n.Plural("coins", n);                                  // 複数形（0 は zero を先に → 言語の規則の形 → other → 普通のキー。数は {n}）
+string c2 = L10n.Plural("coins", n, ("who", name));                  // ほかの差し込みも渡せる（("n", …) を渡すとそちらが勝つ）
+bool has = L10n.Has("menu.start");                                   // あるか（警告しない）
+bool ok = L10n.TryGet("menu.start", out string text);                // 無ければ false（警告しない）
+
+// 言語
+string lang = L10n.Language;                                         // 今の言語のコード（"ja"。言語の一覧が無ければ空）
+LocaleLanguage? cur = L10n.CurrentLanguage;                          // 今の言語（Code・Name・Fallback・CultureName）
+IReadOnlyList<LocaleLanguage> all = L10n.Languages;                  // 言語の一覧（index.json の順。Name は言語を選ぶ画面に出す名前）
+string def = L10n.DefaultLanguage;                                   // 既定の言語（index の default）
+string? sys = L10n.SystemLanguage;                                   // 端末の言語（"ja-JP"。Android〈Invariant〉・取れない環境では null）
+bool known = L10n.SetLanguage("en");                                 // 切り替え（表を読み替えて Changed・SaveData の "l10n.language" へ保存。一覧に無ければ false）
+L10n.SetLanguage("en", save: false);                                 // この実行の間だけ切り替える
+L10n.FollowSystemLanguage();                                         // 保存を消して端末の言語（当たらなければ既定の言語）へ
+bool follows = L10n.IsFollowingSystem;                               // 保存していない（端末に従っている）か
+IReadOnlyList<string> chain = L10n.FallbackChain;                   // 探す順（例 ["en", "ja"]）
+
+// 知らせ（SEED.Events のイベント名 "l10n.changed"。引数は今の言語のコードの string）
+this.On(L10n.Changed, (string code) => Refresh());
+
+// 置き場・読み直し・欠け
+L10n.Configure("assets://mygame/locale");                            // 置き場（既定 L10n.DefaultRoot = "assets://locale"。読み込み済みなら読み直して Changed）
+bool reloaded = L10n.PollChanges();                                  // データファイルが書き換わっていたら読み直して Changed（既定では誰も呼ばない）
+L10n.Reload();                                                       // index.json と表を読み直して Changed（今の言語を保つ）
+L10n.MissingPolicy = MissingKeyPolicy.Key;                           // 欠けの方針（Key = "key"・Marked = "[key]"・Empty = ""。既定は IsDebugAllowed なら Marked、そうでなければ Key）
+IReadOnlyCollection<string> missing = L10n.MissingKeys;             // 欠けていたキー（翻訳の漏れの確かめ。言語の切り替え・読み直しで数え直す）
+
+// 数・日付・時刻（今の言語の文化。Android〈Invariant〉では不変文化 → 言語ごとの書式は表に書いて渡す）
+string num = L10n.FormatNumber(1234.5, 1);                           // "1,234.5"（en-US）/ "1.234,5"（de-DE）。小数の桁 0〜15（既定 0）
+string day = L10n.FormatDate(date, L10n.Get("format.date"));         // .NET の日付の書式（既定 "d"）
+string time = L10n.FormatTime(new TimeOnly(7, 5), "H:mm");           // .NET の時刻の書式（既定 "t"）
+System.Globalization.CultureInfo culture = L10n.Culture;             // 今の言語の文化（index の culture。Invariant では Name が空）
+```
+
+```csharp
+// UI への結び付け（アクタに ScriptComponent を付ける。型名は完全名で書く）
+//   SEED.Localization.LocalizedText        … 同じアクタの Text へ「キー」の文字を入れる（言語が替わると入れ直す）
+//   SEED.Localization.LocalizedLabel       … 部品の文字へ当てる。判定は Button → 選択のグループ（SegmentedControl・ChipGroup・RadioGroup。
+//                                            項目ごとに「キー.番号」）→ Toggle・Checkbox（子 Label の Text）→ アクタ自身の Text の順
+//   SEED.Localization.LocalizationReloader … 開発中（IsDebugAllowed）だけ IntervalSeconds ごとに L10n.PollChanges()
+public string Key;                          // LocalizedText・LocalizedLabel の欄: 言語の表のキー（空なら文字を変えない）
+public List<LocalizedArg> Args;             // 同: 差し込み（LocalizedArg { Name, Value }。値は文字列のまま）
+public float IntervalSeconds;               // LocalizationReloader の欄: 調べる間隔（秒・実時間・0.25〜60・既定 1）
+
+// スクリプトから（相手の OnStart の前は null）
+LocalizedText? label = LocalizedBinding.Of<LocalizedText>(actor);   // LocalizedLabel も同じ
+label.SetArg("amount", 1200);               // 実行中の差し込み（同じ名前はインスペクタの差し込みより勝つ。数は文化で書く）
+label.ClearArgs();                          // 実行中の差し込みを外す
+label.SetCount(3);                          // 複数形として引く（ClearCount() で戻す）
+label.SetKey("hud.money");                  // キーを変えて当て直す
+label.Apply();                              // 当て直す
+ILocalizedTarget? target = label.Target;    // 今の当てる先（KindName・IsAlive・Apply(LocalizedRequest)）
+
+// 当てる先を直接使う（ILocalizedTarget: TextLabelTarget・ButtonLabelTarget・ChildLabelTarget<T>（Toggle・Checkbox の子 Label）・SelectionLabelTarget）
+new TextLabelTarget(text).Apply(new LocalizedRequest("menu.start"));
+new ButtonLabelTarget(button).Apply(new LocalizedRequest("ui.dialog.ok"));
+string r1 = new LocalizedRequest("coins", args, count: 3).Resolve();   // 今の言語の文（count があれば複数形）
+string r2 = new LocalizedRequest("theme_mode").ResolveChild("0");      // "theme_mode.0" の文
+ILocalizedTarget? found = LocalizedTargetTable.Find(actor);           // 判定の表で当てる先を探す
+```
+
+| データ（`<言語>.json`） | 読み方 |
+|---|---|
+| `"menu": { "start": "…" }` | 入れ子は `.` でつないだキー（`menu.start`） |
+| `"_about": "…"` | `_` で始まる鍵は説明（読まない） |
+| `"coins": { "one": "{n} coin", "other": "{n} coins" }` | 子がすべて `zero`・`one`・`two`・`few`・`many`・`other` なら複数形のまとまり |
+| `"days": ["日", "月"]` | 配列は番号のキー（`days.0`） |
+| `"todo": null` | 訳していない（次の言語を探す） |
+| `{name}`・`{0}`・`{name:N0}`・`{{` `}}` | 差し込み・順・書式・波かっこそのもの。**渡していない `{…}` はそのまま残す**（Text の `{num}`・`{color}` などの記法と共存） |
+
+| 複数形の規則 | 言語 |
+|---|---|
+| other だけ | ja・zh・ko・th・vi・id など |
+| 1 = one | en・de・es・it・nl・pt-PT など（表に無い言語の既定） |
+| 0 と 1 = one | fr・pt（ブラジル）・hi など |
+| one / few / many | ru・uk・be・pl |
+| one / few / other | cs・sk |
+| zero / one / two / few / many / other | ar |
+
+> **重要**: `L10n.Changed` は今の言語のコードの **string で発火**する。購読は `this.On(L10n.Changed, (string code) => …)`。引数なしの `() => …` では呼ばれない（SEED.Events は引数の型が合う購読だけを呼ぶ）。
+
+> **重要**（Android）: Android の CoreCLR は Invariant（`runtime/android/dotnet_runtime.json` の `System.Globalization.Invariant=true`）なので、`L10n.SystemLanguage` は null（起動の言語は 保存した値 → 既定の言語）、数・日付の書式は不変文化（月・曜日の名前は英語）。言語ごとの書式（`"format.date": "M月d日"`）と曜日の名前は表に書いて引く。
+
+> **重要**: Edit（Play していないとき）はスクリプトが動かないので、LocalizedText のアクタはプレハブの文字のまま見える。SEED.UI の部品の既定の文字列（`DialogOptions.DefaultPositiveText` の "OK"・`TimeWheel` の午前/午後・`ChartView.EmptyText`）は L10n を読まない。`Dialog.Show` などへは `L10n.Get` で引いて渡す（対応表は `docs/localization.md` §10）。
 
 ---
 

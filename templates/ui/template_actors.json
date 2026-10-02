@@ -113,7 +113,7 @@
     {
       "path": "prefabs/slider.actor",
       "name": "スライダー",
-      "description": "つまみを動かして値を選ぶ（SEED.UI.Slider）。値が変わると ValueChanged が届く。",
+      "description": "つまみを動かして値を選ぶ（SEED.UI.Slider）。値が変わると ValueChanged が届く。TickCount で溝の上に刻みの点を描く（点の部品 ui/prefabs/slider_tick.actor がコピーされる）。",
       "category": "UI/入力",
       "tags": ["slider", "スライダー", "つまみ", "値", "音量", "volume", "range"],
       "thumbnail": "",
@@ -285,7 +285,7 @@
     {
       "path": "prefabs/modal_host.actor",
       "name": "ダイアログ・シートの受け皿",
-      "description": "ダイアログ・下からのシート・上からの覆いを開く所（SEED.UI.ModalHost。シーンに 1 つ）。スクリプトから開くと、ui/prefabs の dialog・bottom_sheet・top_sheet（とダイアログの入力欄 text_field・選択肢の一覧の行 dialog_item）を使う。それらがコピーされる。",
+      "description": "ダイアログ・下からのシート・上からの覆い・中央のポップアップを開く所（SEED.UI.ModalHost。シーンに 1 つ）。スクリプトから開くと、ui/prefabs の dialog・bottom_sheet・top_sheet・popup（とダイアログの入力欄 text_field・選択肢の一覧の行 dialog_item）を使う。それらがコピーされる。",
       "category": "UI/ナビゲーション",
       "tags": ["modal", "modal host", "dialog", "sheet", "bottom sheet", "overlay", "menu", "ダイアログ", "シート", "モーダル", "ポップアップ", "popup", "メニュー"],
       "thumbnail": "",
@@ -299,7 +299,7 @@
           "NegativeText": "破棄"
         }
       },
-      "requires": ["prefabs/dialog.actor", "prefabs/bottom_sheet.actor", "prefabs/top_sheet.actor", "prefabs/text_field.actor", "prefabs/dialog_item.actor"]
+      "requires": ["prefabs/dialog.actor", "prefabs/bottom_sheet.actor", "prefabs/top_sheet.actor", "prefabs/popup.actor", "prefabs/text_field.actor", "prefabs/dialog_item.actor"]
     },
     {
       "path": "prefabs/toast_host.actor",
@@ -374,6 +374,21 @@
         "stand_in": "prefabs/modal_host.actor",
         "placement": "fill",
         "script": {"Action": "overlay", "ContentPrefab": "assets://ui/prefabs/nav_overlay_content.actor"}
+      }
+    },
+    {
+      "path": "prefabs/popup.actor",
+      "name": "中央のポップアップ（見た目を作る用）",
+      "description": "画面の真ん中に札（カード）を出す面（SEED.UI.Popup。周りの幕のタップ・右上の ×・戻るで閉じる。拡大とフェードで出入りする）。受け皿が実行中に Popup.Show で作る部品なので、シーンに置いたままだと Play で消える。見た目を作ったらアクタファイル化して ModalHost の PopupPrefab に指定する。",
+      "category": "UI/重ねる面の見た目",
+      "tags": ["popup", "center popup", "card", "modal", "ポップアップ", "中央", "カード", "札", "プロフィール", "見た目"],
+      "thumbnail": "",
+      "thumbnail_sample": {
+        "stand_in": "prefabs/modal_host.actor",
+        "placement": "fill",
+        "frame": 320,
+        "script": {"Action": "popup", "ContentPrefab": "assets://ui/prefabs/nav_overlay_content.actor"},
+        "settle": 1.5
       }
     },
     {

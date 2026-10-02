@@ -172,6 +172,34 @@ public readonly struct CanvasTransform : IComponentHandle<CanvasTransform>
         => ScriptHost.TryGetVec2(_entity, Comp, FieldLayoutSize, out var v) ? v : Vector2.Zero;
 
     /// <summary>
+    /// このノードの<b>指定の大きさ</b>（get/set。動的ノード API）。レイアウトがノードの大きさを決める材料のうち、
+    /// コンテナが伸ばした大きさの次に強いもの（Sprite・Text の枠・CanvasComponent より優先する）。0 の軸は「指定なし」。
+    ///
+    /// <para><b>実体</b>：CanvasTransform に大きさの欄は無く、正典の欄は <see cref="CanvasLayoutItem.PreferredSize"/>
+    /// （レイアウトの測り方 runtime/src/engine/core/canvas_layout/measure.rs の 2 番目）。このプロパティはその近道で、
+    /// get は最初の CanvasLayoutItem の PreferredSize（無ければ Zero＝指定なし）、set は CanvasLayoutItem が無ければ
+    /// その場で足して（<see cref="GameObject.AddComponent{T}"/> と同じ既定値）PreferredSize に書く。</para>
+    ///
+    /// <para><b>書き分け</b>：大きさだけを決めるならこれ、伸ばす重み（Flex）・上下限・揃えの上書き・親に合わせる（FillWidth）も
+    /// 決めるなら <see cref="CanvasLayoutItem"/> を直接使う（同じ欄なので混ぜてよい）。レイアウトが<b>実際に決めた</b>大きさ
+    /// （伸ばされた後の大きさ）は <see cref="LayoutSize"/>（1 フレーム遅れ）。</para>
+    ///
+    /// <para><b>効くところ</b>：レイアウトが測るノード（CanvasStack・Wrap・Grid の子、親に合わせる子、コンテナ自身の箱）。
+    /// コンテナの下に無い自由なノードの描く大きさは Sprite の Width / Height・Text の枠のまま（この値では変わらない）。</para>
+    /// </summary>
+    public Vector2 Size
+    {
+        get => new GameObject(_entity).GetComponent<CanvasLayoutItem>() is { } item ? item.PreferredSize : Vector2.Zero;
+        set
+        {
+            var node = new GameObject(_entity);
+            // 無ければその場で足す（同じフレームに 2 回書いても 2 つ目は足さない: 足したものを GetComponent が返す）
+            if ((node.GetComponent<CanvasLayoutItem>() ?? node.AddComponent<CanvasLayoutItem>()) is { } item)
+                item.PreferredSize = value;
+        }
+    }
+
+    /// <summary>
     /// このノードの矩形の画面の上の外接矩形（get のみ。前のフレームの描画の値。<see cref="HasLayout"/> が false なら <see cref="Rect.Zero"/>）。
     ///
     /// <para><b>座標</b>：画面の画素・描画ターゲットの左上が原点・Y 下向き（<see cref="ScreenPosition"/>・<see cref="Screen.SafeArea"/>・

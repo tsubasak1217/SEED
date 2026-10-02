@@ -63,6 +63,13 @@ use super::input_bridge;
 // GameObject.Visible / GameObject.Name の set は遅延適用なので、保留値テーブルを併用する
 use super::name_pending;
 use super::visible_pending;
+// AddComponent / RemoveComponent の同じフレームの引き当て（スロットの目録への登録はフレーム末尾）
+use super::node_pending;
+
+// 動的ノード API（子の列挙・兄弟の順番・Create・AddComponent / RemoveComponent / AddScript）の FFI と、
+// AddComponent で足せる種別の表。host_api の非公開の公開ポインタ・待ち行列を使うので子モジュールにする。
+mod component_kinds;
+mod nodes;
 use super::path_query::{path_position_at, path_tangent_at};
 
 // ─── スレッドローカル World ポインタ ──────────────────────────
@@ -417,6 +424,22 @@ pub enum ScriptSceneCommand {
     /// 名前で他アクタを参照している側（参照フィールド等）の文字列は書き換えないので、
     /// **シーンに元からあるアクタの改名には使わない**こと。
     SetName { entity: Entity, name: String },
+    /// 空のアクタを作る（GameObject.Create / Create2D / Create3D。動的ノード API）。
+    /// entity は ffi_node_create が予約済みのルートエンティティ（Transform か CanvasTransform を挿入済みで、
+    /// スクリプトは同じフレームに位置などを書ける）。parent が Some ならその **末尾の子** として取り付ける
+    /// （親が無効・種別不整合ならルートへフォールバックし [Script] 警告。Instantiate と同じ）。
+    CreateActor { entity: Entity, name: String, parent: Option<Entity>, is_2d: bool },
+    /// 指定ルートエンティティの Actor の兄弟の順番を変える（GameObject.SetSiblingIndex 等）。
+    /// index = None は末尾。順番はフォルダを透過した「論理の兄弟」で数える（node_tree.rs）。
+    SetSiblingIndex { entity: Entity, index: Option<usize> },
+    /// ffi_node_component が World へ入れたスロットを、アクタのスロットの目録へ登録する（GameObject.AddComponent）。
+    /// 適用時にアクタが無ければスロットのエンティティを捨てる。
+    AttachSlot { root: Entity, slot: ComponentSlot },
+    /// スロットを外して後始末する（GameObject.RemoveComponent。エディタの「コンポーネント削除」と同じ後始末）。
+    RemoveSlot { root: Entity, slot_entity: Entity },
+    /// スクリプトのスロットを足し、通常の構築経路で CLR のインスタンスを作る（GameObject.AddScript）。
+    /// OnStart は次のフレームの BeginFrame で走る。
+    AddScript { root: Entity, type_name: String },
     /// 指定ルートエンティティの Actor とその子孫の、ジェスチャーの押下・ドラッグを取り消す（GameObject.CancelGestures。W2-3）。
     /// 一覧の行を使い回す前に呼ぶ（押している行が別のデータに変わっても、元の押下の Tap が新しい行へ届かないように。
     /// PressCancel・取り消しの DragEnd は次のフレームのジェスチャーの配達で行へ届く）。
@@ -440,6 +463,8 @@ pub fn take_scene_commands() -> Vec<ScriptSceneCommand> {
     visible_pending::clear();
     // 名前の保留値も同様に捨てる（ここから先は実ツリーが正）。
     name_pending::clear();
+    // 足した・外したスロットの保留も同様（ここから先はスロットの目録が正）。
+    node_pending::clear();
     SCENE_COMMANDS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
@@ -513,10 +538,19 @@ fn locate<T: crate::engine::ecs::Component>(world: &World, entity: Entity) -> Op
     }
     // 2. Actor ツリーからルートエンティティ一致のアクターを探し、スロットを走査する
     //    （索引引き当ては O(1)。旧実装はここで毎回ツリー全体を DFS していた）
-    let actor = actor_index_lookup(entity, true)?;
-    actor.slots().iter()
-        .map(|s| s.entity)
-        .find(|&se| world.get::<T>(se).is_some())
+    //    このフレームに RemoveComponent したスロットは除く（node_pending。何も保留していなければ空の判定 1 回）
+    let from_tree = actor_index_lookup(entity, true).and_then(|actor| {
+        actor.slots().iter()
+            .map(|s| s.entity)
+            .find(|&se| world.get::<T>(se).is_some() && !node_pending::is_removed(se))
+    });
+    // 3. このフレームに AddComponent したスロット（目録への登録はフレーム末尾）
+    from_tree.or_else(|| {
+        node_pending::added_slots_of(entity)
+            .into_iter()
+            .map(|(se, _)| se)
+            .find(|&se| world.get::<T>(se).is_some())
+    })
 }
 
 /// レイアウトの部品（W2-1b）のスロットを解決する（`locate` と同じ探索順。型を名前で選ぶ版）。
@@ -526,12 +560,20 @@ fn locate_canvas_layout(world: &World, entity: Entity, component: &str) -> Optio
     if canvas_layout_api::entity_has(world, entity, component) {
         return Some(entity);
     }
-    let actor = actor_index_lookup(entity, true)?;
-    actor
-        .slots()
-        .iter()
-        .map(|s| s.entity)
-        .find(|&se| canvas_layout_api::entity_has(world, se, component))
+    // 目録のスロット（このフレームに外したものを除く）→ このフレームに足したスロット（locate と同じ順）
+    let from_tree = actor_index_lookup(entity, true).and_then(|actor| {
+        actor
+            .slots()
+            .iter()
+            .map(|s| s.entity)
+            .find(|&se| canvas_layout_api::entity_has(world, se, component) && !node_pending::is_removed(se))
+    });
+    from_tree.or_else(|| {
+        node_pending::added_slots_of(entity)
+            .into_iter()
+            .map(|(se, _)| se)
+            .find(|&se| canvas_layout_api::entity_has(world, se, component))
+    })
 }
 
 /// ルートエンティティが `entity` と一致する Actor を Actor ツリーから探す。
@@ -542,12 +584,15 @@ fn locate_canvas_layout(world: &World, entity: Entity, component: &str) -> Optio
 ///
 /// 戻り値の参照はフェーズ内でのみ有効。呼び出し側は即座に使い切ること。
 /// ツリーが未公開（ポインタが null）の場合は None。
-/// このフレームにスクリプトが Instantiate したばかりで、まだ構築されていない（フレーム末尾に構築される）アクターか（W2-3）。
-fn is_pending_instantiate(entity: Entity) -> bool {
+/// このフレームにスクリプトが Instantiate / Create したばかりで、まだ構築されていない（フレーム末尾に構築される）アクターか
+/// （W2-3。Create は動的ノード API）。
+fn is_pending_spawn(entity: Entity) -> bool {
     SCENE_COMMANDS.with(|q| {
-        q.borrow()
-            .iter()
-            .any(|c| matches!(c, ScriptSceneCommand::Instantiate { entity: e, .. } if *e == entity))
+        q.borrow().iter().any(|c| match c {
+            ScriptSceneCommand::Instantiate { entity: e, .. } => *e == entity,
+            ScriptSceneCommand::CreateActor { entity: e, .. } => *e == entity,
+            _ => false,
+        })
     })
 }
 
@@ -612,28 +657,36 @@ const SHADER_PARAM_VEC3_PREFIX: &str = "shader_param_v3:";
 /// （`ComponentSlot::kind` に頼らず world 上の実データで判定するため、
 /// locate と同じ「実体があるか」の基準で一貫する）。
 fn slot_is_kind(world: &World, slot: &ComponentSlot, kind: &str) -> bool {
+    entity_is_kind(world, slot.entity, kind)
+}
+
+/// スロット専用のエンティティが指定コンポーネント種別（kind 文字列）の実体を持つかを判定する（`slot_is_kind` の本体）。
+///
+/// このフレームに AddComponent したスロット（目録に未登録。node_pending）もエンティティで判定できるよう、
+/// スロットの目録の行ではなくエンティティを受ける（腕は従来の slot_is_kind と同じ）。
+fn entity_is_kind(world: &World, slot_entity: Entity, kind: &str) -> bool {
     match kind {
         // レイアウトの部品（W2-1b の 5 種。種類ごとの判定は canvas_layout_api にまとめてある）
-        k if canvas_layout_api::is_layout_component(k) => canvas_layout_api::entity_has(world, slot.entity, k),
-        KIND_SPRITE => world.get::<SpriteComponent>(slot.entity).is_some(),
-        KIND_SKINNED_SPRITE => world.get::<SkinnedSpriteComponent>(slot.entity).is_some(),
-        KIND_CAMERA => world.get::<CameraComponent>(slot.entity).is_some(),
-        KIND_AUDIO => world.get::<AudioComponent>(slot.entity).is_some(),
-        KIND_AUDIO_DICTIONARY => world.get::<AudioDictionaryComponent>(slot.entity).is_some(),
-        KIND_ANIMATOR => world.get::<AnimatorComponent>(slot.entity).is_some(),
-        KIND_PARTICLE => world.get::<ParticleEmitterComponent>(slot.entity).is_some(),
-        KIND_INPUT_MAP => world.get::<InputMapComponent>(slot.entity).is_some(),
-        KIND_LINE_RENDERER => world.get::<LineRendererComponent>(slot.entity).is_some(),
-        KIND_CONTROL_POINT => world.get::<ControlPointComponent>(slot.entity).is_some(),
+        k if canvas_layout_api::is_layout_component(k) => canvas_layout_api::entity_has(world, slot_entity, k),
+        KIND_SPRITE => world.get::<SpriteComponent>(slot_entity).is_some(),
+        KIND_SKINNED_SPRITE => world.get::<SkinnedSpriteComponent>(slot_entity).is_some(),
+        KIND_CAMERA => world.get::<CameraComponent>(slot_entity).is_some(),
+        KIND_AUDIO => world.get::<AudioComponent>(slot_entity).is_some(),
+        KIND_AUDIO_DICTIONARY => world.get::<AudioDictionaryComponent>(slot_entity).is_some(),
+        KIND_ANIMATOR => world.get::<AnimatorComponent>(slot_entity).is_some(),
+        KIND_PARTICLE => world.get::<ParticleEmitterComponent>(slot_entity).is_some(),
+        KIND_INPUT_MAP => world.get::<InputMapComponent>(slot_entity).is_some(),
+        KIND_LINE_RENDERER => world.get::<LineRendererComponent>(slot_entity).is_some(),
+        KIND_CONTROL_POINT => world.get::<ControlPointComponent>(slot_entity).is_some(),
         // 【重要】ここの網羅範囲は `has_component`（IsValid の判定先）と一致させること。
         // 片方にしか無い種別は「IsValid では存在するのに GetComponent / 参照フィールドでは
         // 解決できない」という非対称な穴になる（実際に WaterVolume でこれが起きていた）。
-        KIND_MODEL => world.get::<ModelComponent>(slot.entity).is_some(),
-        KIND_SKYBOX => world.get::<SkyboxComponent>(slot.entity).is_some(),
-        KIND_TEXT => world.get::<TextComponent>(slot.entity).is_some(),
-        KIND_CANVAS_CLIP => world.get::<CanvasClipComponent>(slot.entity).is_some(),
-        KIND_WATER_LINK => world.get::<WaterLinkComponent>(slot.entity).is_some(),
-        KIND_WATER_VOLUME => world.get::<WaterVolumeComponent>(slot.entity).is_some(),
+        KIND_MODEL => world.get::<ModelComponent>(slot_entity).is_some(),
+        KIND_SKYBOX => world.get::<SkyboxComponent>(slot_entity).is_some(),
+        KIND_TEXT => world.get::<TextComponent>(slot_entity).is_some(),
+        KIND_CANVAS_CLIP => world.get::<CanvasClipComponent>(slot_entity).is_some(),
+        KIND_WATER_LINK => world.get::<WaterLinkComponent>(slot_entity).is_some(),
+        KIND_WATER_VOLUME => world.get::<WaterVolumeComponent>(slot_entity).is_some(),
         _ => false,
     }
 }
@@ -657,6 +710,11 @@ fn resolve_component_slot(
         _ => {}
     }
 
+    // ── このフレームに AddComponent / RemoveComponent したものがあれば、保留の表と合わせて引く ──
+    if node_pending::has_any() {
+        return resolve_component_slot_with_pending(world, root, kind, name, index);
+    }
+
     // ── スロット格納型: Actor ツリーからルート一致アクターのスロットを走査 ──
     let actor = actor_of_entity(root)?;
     match name {
@@ -675,6 +733,38 @@ fn resolve_component_slot(
                 .filter(|s| slot_is_kind(world, s, kind))
                 .nth(i)
                 .map(|s| s.entity)
+        }
+    }
+}
+
+/// `resolve_component_slot` の保留つきの版（このフレームに AddComponent / RemoveComponent したときだけ通る遅い道）。
+///
+/// 候補 = 目録のスロット（取り外し予約を除く。目録の順）＋このフレームに足したスロット（足した順）。
+/// 選び方（名前一致 / index 番目）は速い道と同じ。
+fn resolve_component_slot_with_pending(
+    world: &World, root: Entity, kind: &str, name: Option<&str>, index: i32,
+) -> Option<Entity> {
+    let mut candidates: Vec<(Entity, String)> = Vec::new();
+    if let Some(actor) = actor_of_entity(root) {
+        for s in actor.slots() {
+            if !node_pending::is_removed(s.entity) {
+                candidates.push((s.entity, s.name.clone()));
+            }
+        }
+    }
+    candidates.extend(node_pending::added_slots_of(root));
+    match name {
+        Some(n) => candidates
+            .iter()
+            .find(|(e, sn)| sn == n && entity_is_kind(world, *e, kind))
+            .map(|(e, _)| *e),
+        None => {
+            let i = if index < 0 { 0 } else { index as usize };
+            candidates
+                .iter()
+                .filter(|(e, _)| entity_is_kind(world, *e, kind))
+                .nth(i)
+                .map(|(e, _)| *e)
         }
     }
 }
@@ -1342,7 +1432,7 @@ fn write_floats(
                     // （スロット entity や破棄済みハンドルを黙って受理しない）。
                     // 同じフレームに Instantiate したばかりのアクター（構築はフレーム末尾）も受ける: コマンドは発行順に
                     // 当たるので、生成の後に表示フラグが当たる（一覧の行を隠したまま作る。W2-3）。
-                    if actor_of_entity(entity).is_none() && !is_pending_instantiate(entity) { return false; }
+                    if actor_of_entity(entity).is_none() && !is_pending_spawn(entity) { return false; }
                     let visible = a[0] != 0.0;
                     visible_pending::set(entity, visible);
                     SCENE_COMMANDS.with(|q| {
@@ -3942,6 +4032,16 @@ pub struct ScriptHostApi {
     // (op, font, fontLen, size, text, textLen, out, outCap) → op ごとの数（-1 = 知らない op・大きさが正でない）。
     // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
     text_measure:            unsafe extern "system" fn(i32, *const u8, i32, f32, *const u8, i32, *mut f32, i32) -> i32,
+    // 動的ノード API（子の列挙・兄弟の順番・Create・AddComponent / RemoveComponent / AddScript。実体は host_api/nodes.rs）。
+    // node_query: (op, idx, gen, arg, out, cap) → op ごとの値（0=子の数 / 1=arg 番目の子 / 2=子の一覧 / 3=兄弟の中の順番）。
+    // node_create: (name, nameLen, parentIdx, parentGen, hasParent, kind, out) → 1/0。
+    // node_set_sibling: (idx, gen, index) → 1/0（index -1 = 末尾）。
+    // node_component: (op, idx, gen, name, nameLen, index, out) → 1/0（0=AddComponent / 1=RemoveComponent / 2=AddScript）。
+    // 新カテゴリ API のため構造体末尾に追加した（C# ScriptHost.cs も末尾に同順で追加）。
+    node_query:              unsafe extern "system" fn(i32, u32, u32, i32, *mut u32, i32) -> i32,
+    node_create:             unsafe extern "system" fn(*const u8, i32, u32, u32, i32, i32, *mut u32) -> i32,
+    node_set_sibling:        unsafe extern "system" fn(u32, u32, i32) -> i32,
+    node_component:          unsafe extern "system" fn(i32, u32, u32, *const u8, i32, i32, *mut u32) -> i32,
 }
 
 // 関数ポインタは Sync。プロセス全体で 1 つの静的表を共有する。
@@ -3995,6 +4095,10 @@ static HOST_API: ScriptHostApi = ScriptHostApi {
     redraw:                  super::redraw_bridge::ffi_redraw,
     text_input:              super::text_input_bridge::ffi_text_input,
     text_measure:            super::text_measure_bridge::ffi_text_measure,
+    node_query:              nodes::ffi_node_query,
+    node_create:             nodes::ffi_node_create,
+    node_set_sibling:        nodes::ffi_node_set_sibling,
+    node_component:          nodes::ffi_node_component,
 };
 
 /// C# へ渡す関数ポインタ表へのポインタを返す（RegisterHostApi 用）。
