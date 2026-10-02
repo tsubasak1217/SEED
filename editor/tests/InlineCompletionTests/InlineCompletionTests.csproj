@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    AI インライン補完へ注入する API リファレンスの「節の選び方」の単体テスト
+    （docs/editor_inline_completion.md）。
+
+    対象: editor/src/Panels/ScriptEditor/InlineCompletion/Reference/ の全ファイル
+      - ApiReferenceCompactor        : Markdown の圧縮（見出し・コード・表・重要注記。メンテナ向け以降を捨てる）
+      - ApiReferenceSectionSplitter  : 節と切れ端への分割（フェンス・表の頭の補い）
+      - ApiReferenceIndex            : 語の索引・珍しさ・接頭辞の検索
+      - CompletionContextExtractor   : 編集中のファイルの文脈の語
+      - ApiReferenceSelector         : 点付けと予算内の選択
+      - ApiReferenceSelectionCache   : 選択結果の使い回し
+      - ApiReferenceSettings         : editor/config/inline_completion_reference.json
+
+    TextEditorLogicTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、Reference フォルダをワイルドカードでリンクする
+        （Reference のファイルが WPF 型・EditorLog を使い始めるとこのテストがビルドできなくなる＝分離の検知器）
+      - 外部の AI サービスは呼ばない（このフォルダは HTTP を持たない）
+
+    実際の docs/scripting_api.md と editor/config/inline_completion_reference.json は、実行時に
+    実行ファイルの場所から親を遡って探す（RepoFiles.cs）。
+
+    実行方法: dotnet run (project=editor/tests/InlineCompletionTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.InlineCompletion</RootNamespace>
+    <AssemblyName>InlineCompletionTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象: 節の選び方の一式（WPF 非依存） -->
+    <Compile Include="..\..\src\Panels\ScriptEditor\InlineCompletion\Reference\*.cs">
+      <Link>Linked\Reference\%(Filename)%(Extension)</Link>
+    </Compile>
+
+    <!-- テスト対象: 提供元からプロンプトまでのつなぎ目（WPF 非依存。EditorLog・EditorPreferences・EditorPaths は
+         EditorStubs.cs の代役を使う）。偽物の提供元から呼び、外部の AI サービスは呼ばない -->
+    <Compile Include="..\..\src\Panels\ScriptEditor\InlineCompletion\IInlineCompletionProvider.cs">
+      <Link>Linked\InlineCompletion\IInlineCompletionProvider.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\ScriptEditor\InlineCompletion\InlineCompletionSystemPrompt.cs">
+      <Link>Linked\InlineCompletion\InlineCompletionSystemPrompt.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Panels\ScriptEditor\InlineCompletion\ScriptApiReference.cs">
+      <Link>Linked\InlineCompletion\ScriptApiReference.cs</Link>
+    </Compile>
+
+    <!-- テストランナーと一時フォルダは既存テストのものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+    <Compile Include="..\ProjectSystemTests\TempDir.cs">
+      <Link>Linked\TempDir.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

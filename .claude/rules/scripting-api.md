@@ -9,7 +9,11 @@ paths:
 スクリプトAPI（Rust ECS レジストリ ⇔ FFI ⇔ C# ラッパー ⇔ docs）を触るときは以下を厳守する。
 
 - **`docs/scripting_api.md` が正典**であり、editor 側 `ScriptApiReference` が読み込んで AI インライン補完へ注入する情報源。
-  ここに書かれていない API は AI 補完が知らない。API を追加・変更したら**必ず** `docs/scripting_api.md` と
+  ここに書かれていない API は AI 補完が知らない。ただし全文は予算（既定 12000 字）に入らないので、**どの節を渡すかは
+  編集中のファイルの文脈による**（常に入れる §1・§2・§7 の先頭・コンポーネント一覧＋ファイルの識別子に当たる節。
+  正典は `docs/editor_inline_completion.md`）。節の見出しに API 名を入れ、コード例に型名・メソッド名を書くと選ばれやすい。
+  §1・§2・§7 の先頭・「利用可能なコンポーネント一覧」の見出しを変えたら `editor/config/inline_completion_reference.json` の
+  `always_include` も直す。API を追加・変更したら**必ず** `docs/scripting_api.md` と
   `docs/scripting_api.html` を同期する（html は自動生成ではないので手作業）。手順そのものが変わったら
   `.claude/skills/add-script-api` も更新する。
 - **Rust ⇔ C# の FFI 構造体は完全一致必須**。`runtime/src/engine/core/scripting/host_api.rs` の `ScriptHostApi` と
