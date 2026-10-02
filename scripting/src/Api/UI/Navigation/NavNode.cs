@@ -54,6 +54,29 @@ internal static class NavNode
     /// <summary>作ったノードができあがったか（2D のアクターは構築のとき CanvasTransform を持つ）。</summary>
     public static bool IsBuilt(GameObject node) => node.IsValid && node.GetComponent<CanvasTransform>() is not null;
 
+    /// <summary>祖先をたどる回数の上限（壊れた木で回り続けない）。</summary>
+    private const int MaxAncestorHops = 64;
+
+    /// <summary>ノード自身のレイヤーの底上げ（CanvasLayoutItem が無ければ 0。2026-10-02）。</summary>
+    public static int OwnBias(GameObject node) =>
+        node.IsValid && node.GetComponent<CanvasLayoutItem>() is { } item ? item.LayerBias : 0;
+
+    /// <summary>ノードの実効の底上げ（自分と祖先の底上げの和。描画・当たり判定が使う足し方と同じ。2026-10-02）。</summary>
+    public static int EffectiveBias(GameObject node)
+    {
+        int sum = 0;
+        var current = node;
+        for (int i = 0; i < MaxAncestorHops && current.IsValid; i++)
+        {
+            sum += OwnBias(current);
+            current = current.Parent;
+        }
+        return sum;
+    }
+
+    /// <summary>ノードの祖先の底上げの和（自分を含まない。2026-10-02）。</summary>
+    public static int AncestorsBias(GameObject node) => node.IsValid ? EffectiveBias(node.Parent) : 0;
+
     /// <summary>エンティティの鍵（登録簿の辞書の鍵）。</summary>
     public static (uint, uint) Key(GameObject node) => (node.Entity.Index, node.Entity.Generation);
 }

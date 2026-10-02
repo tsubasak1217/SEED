@@ -104,6 +104,16 @@ public static class UiFocus
         Notify();
     }
 
+    /// <summary>
+    /// 範囲を重ねる範囲にする・外す（2026-10-02。ModalHost.Park が、画面の下へ回した面の範囲を画面の範囲と同じ扱いにする）。
+    /// </summary>
+    internal static void SetOverlay(FocusScope? scope, bool overlay)
+    {
+        if (scope is null) return;
+        Model.SetOverlay(scope, overlay);
+        Notify();
+    }
+
     /// <summary>範囲を外す（画面を下ろした・ダイアログを閉じた）。</summary>
     public static void RemoveScope(FocusScope? scope)
     {

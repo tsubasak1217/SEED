@@ -20,6 +20,7 @@ Android の APK へ同梱する形は §10。
 | `editor/src/Packaging/Pak/AssetPathRewriter.cs` | 絶対パス → `assets://` の書き換え |
 | `editor/src/Packaging/Pak/AssetPakBuilder.cs` | **PAK 作りの手順**（収集 → 報告 → 書き出し → 報告）とログの書式。パッケージ化ウィンドウと SeedPak が共有する |
 | `editor/src/Packaging/Pak/PakBuildManifest.cs` | 開発用のビルドの印（pak の `.seed/build.json`）の書き手（§4）。読み手の正典は `runtime/src/engine/pak/build_manifest.rs` |
+| `editor/src/Packaging/DebugBuildMarkPolicy.cs`・`PackagingWindow.DebugBuildMark.cs` | 開発用のビルドの印を入れるかの決め方（ビルド種別に合わせる既定と `debug_build_mark` の上書き。§4）と、その画面（「開発用のビルド」のチェック） |
 | `editor/tools/SeedPak/` | エディタを起動せずに `assets.pak` を作るコンソールツール（§10） |
 | `editor/src/Packaging/Scripts/ScriptPackager.cs` | **ユーザースクリプトの事前コンパイル**とスクリプトホストの同梱 |
 | `editor/src/Packaging/Runtime/DotnetRuntimeBundler.cs` | **.NET ランタイムの同梱**（検出・バージョン選択・コピー） |
@@ -242,12 +243,17 @@ C# スクリプト（`.cs`）も走査対象なので、文字列リテラルに
 |---|---|
 | エントリ名 | `.seed/build.json`（予約の名前。エディタ `PackageLayout.BuildManifestEntryPath`・ランタイム `package_layout::BUILD_MANIFEST_ENTRY`。両側のテストで文字列を固定） |
 | 中身 | UTF-8 の JSON `{"format":1,"debug":true}`（書き手 `editor/src/Packaging/Pak/PakBuildManifest.cs`、読み手の正典 `runtime/src/engine/pak/build_manifest.rs`。知らない版・読めない・`debug` が true でない → 開発用ではない＝安全側） |
-| 入れるとき | **開発用のビルドだけ**: パッケージ化ウィンドウのビルド種別 **Debug**（Windows / macOS / iOS）・SeedPak `--debug-build`・SeedAndroid / エディタの Android 実行の開発用（debug）の APK |
-| 入れないとき | ビルド種別 Release・SeedPak の既定（`--debug-build` なし）・Android の配布用（release）の APK / AAB。Android の配布前の検査（[android.md](android.md) §24.8 の `debug_build_mark`）は印のある配布物を不合格にする |
+| 入れるとき | **開発用のビルドだけ**: パッケージ化ウィンドウの「開発用のビルド」にチェックが入っているとき（Windows / macOS / iOS。既定はビルド種別 **Debug** で入る）・SeedPak `--debug-build`・SeedAndroid / エディタの Android 実行の開発用（debug）の APK |
+| 入れないとき | 「開発用のビルド」のチェックが外れているとき（既定はビルド種別 Release）・SeedPak の既定（`--debug-build` なし）・Android の配布用（release）の APK / AAB。Android の配布前の検査（[android.md](android.md) §24.8 の `debug_build_mark`）は印のある配布物を不合格にする |
 | 予約の名前 | 利用者が `assets/.seed/build.json` を置いていても pak に入れない（`AssetPakBuilder` が警告を出して収録一覧から外す。配布用のビルドに印として紛れ込ませないため） |
 
 - **Windows のビルド種別 Debug のパッケージは、2026-10-01 から pak 実行でも `IsDebugAllowed` が true になる**（以前は false）。
   配布するものは Release で作ること。印を入れたかはビルドのログの `開発用のビルドの印: 入れる／入れない` の行で分かる。
+- **2026-10-02 から、パッケージ化ウィンドウの「ビルド設定」に「開発用のビルド」のチェックを出す**（Windows / macOS / iOS。画面の正典は
+  [editor_project_settings.md](editor_project_settings.md) §4）。既定は今までどおりビルド種別に合わせる（Debug なら入れる・Release なら入れない）。
+  ビルド種別の既定と違う値にしたときだけ `packaging_settings.json` の `<platform>.debug_build_mark`（true / false）に上書きを保存し、
+  ビルド種別を選び直すと自動に戻る。Release で入れる設定にすると黄色の注意を出す（配布するパッケージでは外す）。
+  Android はビルドの種類で決まる（チェックは押せない・見せるだけ）。決め方は `editor/src/Packaging/DebugBuildMarkPolicy.cs`。
 
 ### 書き換え後のパス表記について
 
@@ -548,7 +554,8 @@ dotnet run --project editor/tests/PackagingCollectorTests
 | `target_fps` | `60` | フレームレート上限（`0` で無制限）。CPU・GPU の空回りを止めて発熱を抑える |
 | `render_policy` | `"continuous"` | `"on_demand"` で、描く理由（入力・アニメーション・イベント・スクリプトの `SEED.Redraw` の要求など）の無いフレームが続いたら描画を止める（止まっている画面の多いアプリ向け。W2-10a）。既定の `"continuous"` は毎フレーム描く（ゲーム）。エディタの画面に欄は無い（JSON を直接書く）。起動ログ `[SEED INIT] render_policy=…`。[redraw_policy.md](redraw_policy.md) |
 | `render_idle_frames` | `10` | `render_policy` が `"on_demand"` のとき、描く理由の無いフレームがこの回数（1〜600）続いたら止める。[redraw_policy.md](redraw_policy.md) §2 |
-| `render` | （無し＝`full`） | 描画の構成。`{"profile": "ui"}` で 2D/UI だけのアプリ向けに 3D の描画資源（bindless・影・GI・レイトレーシング・G-Buffer・Play のピッキング）を作らず、GPU メモリを小さな塊で確保する（Wake or Pay の PC の計測でプロセスの GPU メモリ 1307 → 285 MiB）。節の中の `profile` 以外のキーは旗の上書き。既定の `full` は従来どおり。エディタの画面に欄は無い（JSON を直接書く）。起動ログ `[SEED RENDER PROFILE]`。Android は pak に入るので書き換えたら APK を作り直す。[rendering_profiles.md](rendering_profiles.md) |
+| `render` | （無し＝`full`） | 描画の構成。`{"profile": "ui"}` で 2D/UI だけのアプリ向けに 3D の描画資源（bindless・影・GI・レイトレーシング・G-Buffer・Play のピッキング）を作らず、GPU メモリを小さな塊で確保する（Wake or Pay の PC の計測でプロセスの GPU メモリ 1307 → 285 MiB）。節の中の `profile` 以外のキーは旗の上書き。既定の `full` は従来どおり。エディタでは「プロジェクト設定 → グラフィックス → 描画の構成」（2026-10-02）。起動ログ `[SEED RENDER PROFILE]`。Android は pak に入るので書き換えたら APK を作り直す。[rendering_profiles.md](rendering_profiles.md) |
+| `font` | （無し＝`mtsdf`・`ink_trap`） | キャンバスの文字の距離場。`{"distance_field": "sdf"}` で従来の 1 チャネルの SDF、`msdf_coloring` で MTSDF の辺の色分け（`ink_trap` / `simple`）。エディタでは「プロジェクト設定 → グラフィックス → 文字の描画」（2026-10-02）。起動ログ `[SEED FONT]`。Android は pak に入るので書き換えたら APK を作り直す。[ui_components.md](ui_components.md) §12.10 |
 | `vsync` | `"auto"` | 垂直同期。`"auto"` はパッケージ版＝有効／エディタ埋め込み＝無効。`"on"` / `"off"` で固定 |
 | `game_name` | 空 | ウィンドウタイトル（未設定なら `"SEED"`） |
 | `streaming` | （省略可） | モデルの非同期ロード（ワーカースレッド・先読み・GPU アップロード予算・バッチ常駐時間）。キーの一覧と既定値は [docs/model_streaming.md](model_streaming.md) 6 章 |

@@ -33,8 +33,13 @@ internal interface INavigator
     IBackPreviewTarget? BackPreviewTarget { get; }
 }
 
-/// <summary>ナビゲーターの登録簿（静的）。</summary>
-internal static class NavigatorRegistry
+/// <summary>
+/// ナビゲーターの登録簿（静的）。2026-10-02 に公開した（lane3。backlog W3-7 (2)・W4 (1)）: 「ノードが見えていて上の段の中にあるか」の問い
+/// （<see cref="IsActiveNode"/>）と、戻るの段の Navigation の層の口（<see cref="DispatchBack"/>・<see cref="WouldHandleBack"/>・
+/// <see cref="BackPreviewTarget"/>）。独自の戻るの層（BackDispatcher.AddLayer）から画面のスタック・タブへ戻るを回すときに使う。
+/// 登録・枠の記録は部品だけが行う（internal）。
+/// </summary>
+public static class NavigatorRegistry
 {
     /// <summary>祖先をたどる深さの上限（壊れた木で回り続けない）。</summary>
     private const int MaxAncestorDepth = 64;
@@ -45,19 +50,19 @@ internal static class NavigatorRegistry
     private static readonly Dictionary<(uint, uint), (ScreenStack Stack, int EntryId)> Frames = new();
 
     /// <summary>登録する。</summary>
-    public static void Register(INavigator navigator)
+    internal static void Register(INavigator navigator)
     {
         if (!Navigators.Contains(navigator)) Navigators.Add(navigator);
     }
 
     /// <summary>外す。</summary>
-    public static void Unregister(INavigator navigator) => Navigators.Remove(navigator);
+    internal static void Unregister(INavigator navigator) => Navigators.Remove(navigator);
 
-    /// <summary>画面の枠を登録する。</summary>
-    public static void RegisterFrame(GameObject frame, ScreenStack stack, int entryId) => Frames[NavNode.Key(frame)] = (stack, entryId);
+    /// <summary>画面の枠を登録する（作り置きの隠した枠は、どの段でもない番号で載せる＝中の入れ子のスタックは上の段の中にならない）。</summary>
+    internal static void RegisterFrame(GameObject frame, ScreenStack stack, int entryId) => Frames[NavNode.Key(frame)] = (stack, entryId);
 
     /// <summary>画面の枠を外す。</summary>
-    public static void UnregisterFrame(GameObject frame) => Frames.Remove(NavNode.Key(frame));
+    internal static void UnregisterFrame(GameObject frame) => Frames.Remove(NavNode.Key(frame));
 
     /// <summary>
     /// 見えていて上の段の中にあるナビゲーターへ、内側から戻るを尋ねる（最初に受けた物で止める）。
@@ -108,14 +113,19 @@ internal static class NavigatorRegistry
         return NavigatorOrder.InnermostFirst(candidates);
     }
 
-    /// <summary>ノードが見えていて、祖先の画面のスタックの上の段の中にあるか（フォーカスの範囲を前へ出すか決める）。</summary>
+    /// <summary>
+    /// ノードが見えていて、祖先の画面のスタックの上の段の中にあるか（フォーカスの範囲を前へ出すか決める。2026-10-02 に公開:
+    /// 画面のスクリプトが「自分の画面が今見えているか」を問うのに使える。祖先〈自分を含む〉に隠れたノードがある・祖先の画面の枠がその
+    /// スタックのいちばん上でない〈覆われた・透ける画面の下〉なら false。覆い・シート・ダイアログに隠れているかは見ない）。
+    /// </summary>
+    /// <param name="node">ノード（画面の中の部品・画面の根など）。</param>
     public static bool IsActiveNode(GameObject node) => Inspect(node).Active;
 
     /// <summary>
     /// 画面の枠の中にある入れ子のスタック（見えていて上の段の中にあるもの）の上の画面の範囲を、外側から順に前へ出す
     /// （いちばん内側のスタックの範囲がいちばん前になる。シェルに戻ったとき、選んでいるタブの画面の範囲を前へ）。
     /// </summary>
-    public static void BringNestedToFront(GameObject frame)
+    internal static void BringNestedToFront(GameObject frame)
     {
         if (!frame.IsValid) return;
         var nested = new List<(ScreenStack Stack, int Depth)>();
@@ -143,7 +153,7 @@ internal static class NavigatorRegistry
     }
 
     /// <summary>ナビゲーターの状態（診断・ログ用。名前・深さ・尋ねるか）。</summary>
-    public static IEnumerable<(string Name, int Depth, bool Active)> Describe()
+    internal static IEnumerable<(string Name, int Depth, bool Active)> Describe()
     {
         foreach (var navigator in Navigators)
         {

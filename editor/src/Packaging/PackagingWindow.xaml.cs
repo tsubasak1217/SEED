@@ -424,11 +424,10 @@ public partial class PackagingWindow : Window
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
 
-        // ビルド種別
-        SettingsPane.Children.Add(BuildComboRow("ビルド種別",
-            ["Release", "Debug"],
-            _data.Windows.BuildType == BuildType.Debug ? "Debug" : "Release",
-            v => _data.Windows.BuildType = v == "Debug" ? BuildType.Debug : BuildType.Release));
+        // ビルド種別と開発用のビルドの印（PackagingWindow.DebugBuildMark.cs）
+        AddBuildTypeAndDebugMarkRows(
+            () => _data.Windows.BuildType, v => _data.Windows.BuildType = v,
+            () => _data.Windows.DebugBuildMark, v => _data.Windows.DebugBuildMark = v);
 
         // アーキテクチャ
         SettingsPane.Children.Add(BuildComboRow("アーキテクチャ",
@@ -452,10 +451,9 @@ public partial class PackagingWindow : Window
             path => _data.MacOs.OutputPath = path);
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
-        SettingsPane.Children.Add(BuildComboRow("ビルド種別",
-            ["Release", "Debug"],
-            _data.MacOs.BuildType == BuildType.Debug ? "Debug" : "Release",
-            v => _data.MacOs.BuildType = v == "Debug" ? BuildType.Debug : BuildType.Release));
+        AddBuildTypeAndDebugMarkRows(
+            () => _data.MacOs.BuildType, v => _data.MacOs.BuildType = v,
+            () => _data.MacOs.DebugBuildMark, v => _data.MacOs.DebugBuildMark = v);
         SettingsPane.Children.Add(BuildComboRow("アーキテクチャ",
             ["Arm64 (Apple Silicon)", "x64 (Intel)", "Universal Binary"],
             _data.MacOs.Arch switch
@@ -533,6 +531,8 @@ public partial class PackagingWindow : Window
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
         AddAndroidVariantRows();
+        // 開発用のビルドの印（Android はビルドの種類で決まる。見せるだけ。PackagingWindow.DebugBuildMark.cs）
+        AddAndroidDebugMarkRows();
         SettingsPane.Children.Add(BuildComboRow("ABI",
             AndroidApkOutput.ArchChoices.Select(choice => choice.Label).ToArray(),
             AndroidApkOutput.LabelFor(_data.Android.Arch),
@@ -579,10 +579,9 @@ public partial class PackagingWindow : Window
             path => _data.Ios.OutputPath = path);
 
         SettingsPane.Children.Add(BuildSectionSubHeader("ビルド設定"));
-        SettingsPane.Children.Add(BuildComboRow("ビルド種別",
-            ["Release", "Debug"],
-            _data.Ios.BuildType == BuildType.Debug ? "Debug" : "Release",
-            v => _data.Ios.BuildType = v == "Debug" ? BuildType.Debug : BuildType.Release));
+        AddBuildTypeAndDebugMarkRows(
+            () => _data.Ios.BuildType, v => _data.Ios.BuildType = v,
+            () => _data.Ios.DebugBuildMark, v => _data.Ios.DebugBuildMark = v);
 
         SettingsPane.Children.Add(BuildSectionSubHeader("CI ビルドについて"));
         SettingsPane.Children.Add(BuildInfoBlock(
@@ -1450,25 +1449,23 @@ public partial class PackagingWindow : Window
     }
 
     /// <summary>
-    /// デスクトップ（Windows・macOS・iOS）のパッケージに開発用のビルドの印を入れるか（そのプラットフォームのビルド種別が
-    /// Debug のときだけ。Release は必ず入れない）。印のある pak では、ランタイムが pak 実行でも
-    /// SEED.Application.IsDebugAllowed を true にする（デバッグの命令・開発用の機能が配布物で動く）。
+    /// デスクトップ（Windows・macOS・iOS）のパッケージに開発用のビルドの印を入れるか。
+    /// 設定ペインの「開発用のビルド」のチェック（packaging_settings.json の debug_build_mark）があればそれ、
+    /// 無ければビルド種別に合わせる（Debug なら入れる・Release なら入れない。決め方は <see cref="DebugBuildMarkPolicy"/>）。
+    /// 印のある pak では、ランタイムが pak 実行でも SEED.Application.IsDebugAllowed を true にする
+    /// （デバッグの命令・開発用の機能が配布物で動く）。
     /// Android は中核が開発用 / 配布用（AndroidRunRequest.MarksDebugBuild）で決めるのでここは通らない。
     /// </summary>
     /// <param name="platform">ビルド対象。</param>
     /// <returns>印を入れるなら true。</returns>
-    private bool MarksDebugBuild(TargetPlatform platform)
+    private bool MarksDebugBuild(TargetPlatform platform) => platform switch
     {
-        var buildType = platform switch
-        {
-            TargetPlatform.Windows => _data.Windows.BuildType,
-            TargetPlatform.macOS   => _data.MacOs.BuildType,
-            TargetPlatform.iOS     => _data.Ios.BuildType,
-            // 該当しないプラットフォームは配布用として扱う（印を入れない側が安全）
-            _                      => BuildType.Release,
-        };
-        return buildType == BuildType.Debug;
-    }
+        TargetPlatform.Windows => DebugBuildMarkPolicy.Resolve(_data.Windows.BuildType, _data.Windows.DebugBuildMark),
+        TargetPlatform.macOS   => DebugBuildMarkPolicy.Resolve(_data.MacOs.BuildType, _data.MacOs.DebugBuildMark),
+        TargetPlatform.iOS     => DebugBuildMarkPolicy.Resolve(_data.Ios.BuildType, _data.Ios.DebugBuildMark),
+        // 該当しないプラットフォームは配布用として扱う（印を入れない側が安全）
+        _                      => false,
+    };
 
     /// <summary>
     /// 収録アセットを決定し、assets.pak にまとめて出力先へ書き出す。

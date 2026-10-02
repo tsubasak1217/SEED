@@ -7,7 +7,7 @@ namespace SEED;
 /// デバッグ表示・当たり判定の可視化・チートコマンドなどを
 /// <see cref="IsDebugAllowed"/> で囲っておけば、配布用（release）のパッケージ（assets.pak 同梱）の
 /// 実行ファイルではそれらが自動的に無効になる。開発用のビルド（SeedAndroid の debug の APK・
-/// パッケージ化ウィンドウの Debug のビルド）は pak 実行でも有効のまま（<see cref="IsDebugBuild"/>）。
+/// パッケージ化ウィンドウで「開発用のビルド」にチェックを入れたビルド〈既定はビルド種別 Debug〉）は pak 実行でも有効のまま（<see cref="IsDebugBuild"/>）。
 ///
 /// <para><b>値は実行中に変化しない</b><br/>
 /// いずれのプロパティも起動時に確定し、ゲーム実行中に変わることはない。
@@ -82,7 +82,7 @@ public static class Application
     ///
     /// <para>
     /// 印を入れるのは開発用のビルドだけ: SeedAndroid の debug の APK（<c>--variant debug</c>。Rust の最適化
-    /// <c>--release</c> には依らない）・SeedPak の <c>--debug-build</c>・パッケージ化ウィンドウのビルド種別 Debug。
+    /// <c>--release</c> には依らない）・SeedPak の <c>--debug-build</c>・パッケージ化ウィンドウの「開発用のビルド」のチェック（既定はビルド種別 Debug で入る）。
     /// <b>配布用（release）のビルドでは必ず false</b>（印を入れない。Android の配布前の検査は印のある配布物を不合格にする）。
     /// pak を使わない実行（エディタの Play・Edit、pak の無い開発用の APK）も false
     /// （その実行は <see cref="IsPackaged"/> が false なので <see cref="IsDebugAllowed"/> は true になる）。

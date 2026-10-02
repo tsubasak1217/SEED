@@ -3628,6 +3628,11 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (6) **PC の 1 倍で「−」（U+2212）が消える**（「スヌーズ（−50 コイン）」が「（ 50 コイン）」に見える。書体に字形はある）。上の「PC の 1 倍で小さな文字の横線が欠けて別の字に見える」と同じ見立て。
   → **2026-10-01 に済**（同じ直し。docs/ui_components.md §12。鳴動画面の「スヌーズ（−50 コイン）」で「−」が見えることを確かめた）。
   (7) **SeedPak の「参照先が見つからないパス」が説明のコメントの中の例の文字列を拾う**（Wake or Pay で 2 件の誤検出。W3-0 から）。
+  → **(1) は 2026-10-02 に済（lane3）**: `ModalHost.CloseAll(animate = true)`・`CloseAll(ModalKind, animate)`（ダイアログ → シート → 覆いの順・同じ種類は新しい順。
+  ダイアログは `Dismissed`・シートと覆いは null。閉じない設定の面も閉じる。`animate: false` なら出る動きなしでこの中で閉じ、手札の知らせもこの中で届く。作りかけの面は
+  見せずに取りやめる。docs/ui_navigation.md §3.1・`Model/ModalCloseOrder.cs`）。**(4) は 2026-10-02 に docs/ui_navigation.md §2 の「入れ替わりの知らせの順」へ仕様として書いた（lane3）**
+  （順そのものは変えていない＝新しい画面の Enter → 動き〈古い画面は Update が回る〉→ 古い画面の Exit/Hidden → 新しい画面の Shown）。(2)(3)(7) は残り。
+  Wake or Pay の `AppNavigator.DismissModals`（戻るの繰り返し）は `CloseAll(animate: false)` に替えられる（アプリ側は未着手）。
 - [ ] **W2-6 の実機の確認（2026-09-30・Pixel 6a・Simeji）の結果と残り** — 2026-09-30（W2-6 の実機の確認で発見）。手順 1〜10 は期待どおり、手順 11（根の画面の欄で戻る 2 回）が NG
   （2 回目でアプリが背面へ）。原因は (a) 戻るのジェスチャーが奪った指（`Cancelled`）を欄の外のタップと数えていた、(b) `TextField.HandleBack` がキーボードを閉じた後の戻るを
   根でも後ろへ回していた。ログからもう 1 点、Simeji は `set_text_input_state` の返りを送らない（キーボードが隠れている間の差し替え）ので、500 ms 以内の最初の打鍵を
@@ -3714,6 +3719,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (6) `Text.Measure`（W2-6c）が無いので幅は見積もり（既出）。
   → **(1)(2) は 2026-10-02 の UI 部品の拡充（lane2）で済**: (1) ダイアログの入力欄を札の中の幅（264）にそろえる（入力欄のスクリプトが始まったときに当てる。入力欄は自分の大きさの変化で置き直す。
   PC の撮影で枠が 138〜418 → 138〜402）、(2) `Button.FitLabel`（既定 true。ボタンのレイアウトの大きさが変わるたびに文字の枠を合わせる。`ButtonLabelFit`）。(3)〜(6) は残り。
+  → **(5) は 2026-10-02 に済（lane3）**: `OverlayOptions.FillHeight`・`FillBottomMargin`（負 = space.m 12。中身の根の `CanvasLayoutItem.PreferredSize.y` を
+  `SheetMath.OverlayFillHeight` に毎フレーム合わせ、落ち着くまで見せない。docs/ui_navigation.md §3.4）。Wake or Pay の `TopSheetFit` を外せる（アプリ側は未着手）。(3)(4)(6) は残り。
 - [ ] **W3-4（ショップ・オプション）で見つかった UI 部品の制限** — 2026-10-01（Wake or Pay の W3-4 で発見。プロジェクト側で回避済み）。
   (1) **Dialog にボタンの無い札（進捗用）と、ボタンの縦並び（OverflowBar 相当）が無い**（長い文字のボタン 3 つが幅 312 に入らない。Wake or Pay は「鳴らないときは」を全画面にした）。既出の P2-1 (2) と同じ根。
   (2) **不定の進捗（回る輪・スピナー）の部品が無い**（`ProgressRing` は値の輪で、太さのトークンが起床確認と共有）。
@@ -3733,6 +3740,8 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **PC の Play のスクリプトのコンパイルで `Uri`（System.Private.Uri）が参照に無い**（CS0103。System.Text.Json の件と同じ根: 参照の集合が「読み込み済み」だけ）。
   (5) トーストの札が下の押す場所を覆う（仕様どおり。庭の下のボタンが押せない間がある）。
   (6) `Time` は描画を止めている間は進まない（設計どおり）ので、実時間の計時は `Stopwatch` を使う必要がある → docs/redraw_policy.md に明記する。
+  → **(1) の前半は 2026-10-02 に済（lane3）**: `NavigatorRegistry.IsActiveNode` を公開した（docs/ui_navigation.md §5.2）。「シェルが全画面に覆われてもタブの中の画面に
+  `OnScreenHidden` が届かない」（覆われたときの知らせ）は残り。
 - [x] **W3-5（オンボーディング S-10）で見つかったプラットフォーム API の不足** — 2026-10-01（Wake or Pay の W3-5 で発見。プロジェクト側で回避済み）。
   (1) **`SEED.Platform.App` に OS の版（SDK_INT）を取る API が無い**（権限の段の出し分けを、権限の状態〈「その版では要らない」〉で代用している）。
   (2) **スクリプトへ「前面へ戻った（onResume）」を知らせるイベントが無い**（`platform.permission_changed` は変わったときだけ、`platform.launch` は開き直しだけ。
@@ -3802,12 +3811,26 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) **TopSheet に動きなしで開く口が無い**（見えないまま開き、全画面が抜けたら見せて回避）。`NavTransition.None` 相当の引数。
   (5) `GameObject.IsValid` ではエンティティが消えたかを判別できない。
   (6) 隠した文字の字形を前もって焼く口が無い（2 フレーム描いて回避）。`Text.Warm(文字列)` のような API。
+  → **(1)(3)(4) は 2026-10-02 に済（lane3。docs/ui_navigation.md §2.8・§3.1・§3.3・§3.4・§3.6）**:
+  (1) `ScreenStack.Prewarm(prefab, PrewarmOptions)`（空いた時間に隠した枠の中で組み立て、次に積むときに枠ごと貸す。`PrewarmMode.Once`/`Refill`/`Reuse`・
+  温め描き `WarmDrawFrames`〈(6) の作り置きの画面の分はこれで焼ける〉・`UiScreen.IsPrewarmReady`。純粋な段階は `Model/PrewarmSlot.cs`）と
+  `Push(GameObject 中身, …, ScreenContentRelease)`・`Replace(GameObject …)`（組み立て済みの中身を積む。外れたら消すか元の親へ戻す）。中身の出所は
+  渡された中身 > 置いてある根 > 作り置き > プレハブ（`ScreenContentPlan`）。`WheelPicker`/`TimeWheel` の行の使い回し（仮想化）は残り。
+  (3) `ModalHost.ShowOverlay/ShowSheet/ShowDialog/ShowPopup(options, 面のプレハブ)`・`ShowPlane(種類, 面のプレハブ, 指定)`・`ModalPlane.DeliverEnter`（自前の面から
+  中身の UiScreen へ値を届ける）と中央のポップアップ `SEED.UI.Popup`（`Popup.Show(PopupOptions)`・templates/ui/prefabs/popup.actor・`IPopupContentSize`・
+  トークン size.popup_margin・size.popup_max_width・size.popup_padding・ratio.popup_max_height・radius.popup）。
+  (4) `OverlayOptions.Animate`・`SheetOptions.Animate`・`PopupOptions.Animate`（動きなしで開く）と `ModalHandle.Close(結果, animate: false)`（動きなしで閉じる）。
+  (2)(5)(6)〈作り置き以外の文字〉は残り。Wake or Pay の `PrebuiltContent`・`PopupPlane`・`OverlayPrefab` の一時の差し替えは、SEED.UI へ乗り換えれば外せる（アプリ側は未着手）。
 - [ ] **W3-7（Wake or Pay の磨き 2）で見つかった UI 部品の不具合・制限** — 2026-10-02（プロジェクト側で回避済み）。
   (1) **【不具合】隠れた `CanvasScroll`（中身の大きさが自動）は見えている子だけで中身を測る**（`canvas_layout/pass.rs` の `accumulate_far_edge`）ため、画面が覆われている間に
   中身が 0 になりスクロール位置が 0 へ戻る（編集画面のサブ画面から戻ると一番上へ。アクティビティのタブでも 123 → 0）。Wake or Pay は編集画面だけ範囲を固定して回避（`HiddenScrollKeeper`）。
   隠れている間は測り直さない（前回の値を保つ）か、非表示の子も数える。
   (2) **ScreenStack・ModalHost に「覆いを全画面の下に残す」口が無い**（オプションのサブ画面の間、覆いを閉じずに下に置くのに、レイヤーの付け替え・戻るの層・フォーカスの後ろ回しを
   アプリ側で組んだ〈`ModalParking`〉）。`StackPreview`（予測型の戻るのプレビュー）と `NavigatorRegistry` の戻るの口が internal で使えない。
+  → **(2) は 2026-10-02 に済（lane3。docs/ui_navigation.md §3.7・§5.2）**: `ModalHost.Park(面の手札, スタック, 全画面の手札)`・`Unpark`・`IsParked`（面の根の底上げを
+  全画面の枠 − 半段へ〈`ParkedPlaneLayers`〉・回した面は戻るの層で数えずプレビューの相手にもならない〈`ModalPlane.IsParked`〉・フォーカスの範囲を重ねる範囲から外して後ろへ
+  〈`FocusModel.SetOverlay`〉・全画面の手札が閉じたら自動で戻す）。`NavigatorRegistry` を公開（`IsActiveNode`・`DispatchBack`・`WouldHandleBack`・`BackPreviewTarget`。
+  登録は internal のまま）、`ScreenStack.HandleBack()`・`WouldHandleBack()`・`BackPreviewTarget`・`IndexOf(ScreenHandle)` を公開。(1) は残り。
 
 - [ ] **2026-10-02 の UI 部品の拡充（lane2）で残したもの** — 2026-10-02（docs/ui_components.md §13.7・docs/ui_navigation.md §13）。
   (1) **Wake or Pay の `assets/ui` の写しは古いプレハブのまま**（dialog.actor に Body・Progress・Items が無く、dialog_item.actor・progress_spinner.actor が無い。toast.actor に Icon が無い）。
@@ -3818,6 +3841,21 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (4) ダイアログの札の幅は `size.dialog_width` で一定（Flutter の insetPadding の横 40 のような狭い画面での縮めが無い）・中の幅より長いボタンの文字は折り返さない・
   選択肢の一覧の行は開いた後に増減できない・`ButtonVariant.Tonal` の危険は Filled と同じ（errorContainer のトークンが無い）。
   (5) 実機（Pixel 6a）では未確認（PC の Play の撮影と単体テストまで。選択肢の行のタップ・スクロールの指の手触り・スピナーの滑らかさ）。
+
+- [ ] **2026-10-02 の画面の遷移・面の口（lane3）で残したもの** — 2026-10-02（docs/ui_navigation.md §2.8・§3.1・§3.3・§3.4・§3.6・§3.7・§5.2・§13）。
+  (1) **Play での目視が未確認**（単体テスト〈純粋な計算 18 件〉と C# のビルドまで。エディタ・実機は使っていない）: 作り置きの貸し借りで右から入る動きが重いフレーム無しで始まるか、
+  温め描きが利用者に見えないか（根の画面が不透明な前提）、`Reuse` で戻した画面の 2 回目の `OnScreenEnter`、動きなしの覆い・シートの開閉、覆いの高さいっぱい、
+  ポップアップの見た目（札の大きさ・× の位置・出入り）、`Park` した覆いの上を全画面が出入りする見え方・戻る・フォーカス、`CloseAll(false)` の直後に全画面を積む流れ。
+  (2) **ポップアップのテンプレートのサムネイルを撮り直す**（`templates/ui/thumbnails/popup.png` が無い。`template_actors.json` の `thumbnail_sample` は `Action: popup` で書いた。
+  editor/tools/SeedTemplateThumbnails で撮る）。
+  (3) 作り置きはプレハブ 1 つにつき 1 つ（同じ画面を 2 つ積むと 2 つ目はプレハブから作る）。隠した作り置きの部分木も毎フレームの走査に乗る（W3-6 (2) と同じ根）。
+  温め描きは根の画面が透ける（`Opaque = false`）スタックでは見える。
+  (4) `Park` は覆いの帯の面を想定して作った（シート・ダイアログを回すのも同じ規則で動く見込み〈推論・未確認〉）。全画面を `Replace` で替えると古い手札が閉じた時点で戻る
+  （残すなら新しい手札で `Park` し直す）。`PopToRoot` で覆いを見せたくなければ先に閉じる（自動では閉じない）。
+  (5) 下からのシートの「動きなし」は時間 0 の `CanvasScroll.ScrollTo`（Rust）に頼る（開く段へすぐ移す。同じフレームの描画に間に合うかは未確認）。
+  (6) Wake or Pay の回避コード（`PrebuiltContent`・`PopupPlane`・`OverlayPrefab` の一時の差し替え・`TopSheetFit`・`ModalParking`/`ModalUnderPage`/`ParkedPagePreview`・
+  `DismissModals`）はまだ外していない（プロジェクト側の作業。templates/ui の popup.actor の取り込みも要る）。
+  (7) `ProgressSpinner` の切り抜きの件（lane2 残件 (3)）と `Slider` の刻みの点（lane2 残件 (2)）は時間が足りず手を付けていない。
 
 ## 描画の構成（render.profile）と GPU メモリの計測 — 2026-10-02 実装時の残件（正典: docs/rendering_profiles.md）
 
@@ -3853,13 +3891,29 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 - [ ] **ui の構成で止めていないもの** — 2026-10-02（docs/rendering_profiles.md §10）。(1) 3D のパーティクル（ParticleEmitter）と LineRenderer は `scene_3d=false` でも描く
   （2D の粒子と同じ系で 3D だけを分けていない）。(2) ModelComponent の GPU への読み込み・地形のメッシュの組み立ては止めていない（描かないだけ）。(3) 3D のパイプライン
   （メッシュ・G-Buffer・デファード・反射・AO・水…）は作る（起動時間は変わらない。実機の DrawContext 約 1 秒）。(4) クラスタの資源 3.4 MiB。(5) UI を重ねる post_ldr は
-  Rgba16Float（1080x2400 で 19.8 MiB）。スワップチェインへ直接重ねれば減るが合成の精度が変わり full と画素が一致しなくなる。(6) エディタのプロジェクト設定の画面に欄が無い（JSON を直接書く）。
+  Rgba16Float（1080x2400 で 19.8 MiB）。スワップチェインへ直接重ねれば減るが合成の精度が変わり full と画素が一致しなくなる。(6) ~~エディタのプロジェクト設定の画面に欄が無い（JSON を直接書く）~~ → 2026-10-02 に済（lane2。「プロジェクト設定 → グラフィックス → 描画の構成」。docs/editor_project_settings.md §2）。
 - [ ] **GPU メモリの計測の残り** — 2026-10-02。(1) 生存は推定（同じ場所・同じラベルで後の世代に作り直したら前のものは捨てた、とみなす）。資産ごとに作る場所（スプライトの画像・モデル）は
   作った累計で、シーンを切り替えるゲームでは多めに出る（`gpu_mem/category.rs` の `ACCUMULATING_SITES`）。(2) 新しく GPU 資源を作るコードは `GpuMemDeviceExt` の `*_tracked` を
   使わないと計測から漏れる（素の `create_texture` を検出する仕組みは無い。テストか clippy の禁止で守る案）。(3) BLAS / TLAS は追跡していない（wgpu-hal の「加速構造」の行には出る）。
   (4) MCP のツールにはしていない（IPC `GPU_MEM_REPORT` だけ。要れば `seed_batch` の enum とツール表へ）。(5) Mali の VK_EXT_memory_budget の heapUsage が GL mtrack と同じ数え方かは未確認。
 - [ ] **PC（NVIDIA・Windows）でスワップチェインを作るとヒープの使用量が約 156 MiB 増える** — 2026-10-02（低）。1080x2400 の 3 枚の論理値は 29.7 MiB。提示の仕組みの分と見る（推論）。
   Android には関係しない（EGL mtrack）。PC の配布物でメモリが問題になったら、フレーム遅延・提示モードを変えて測る。
+
+## プロジェクト設定の拡充（描画の構成・文字の描画・開発用のビルドの欄）— 2026-10-02 実装時の残件（正典: docs/editor_project_settings.md）
+
+- [ ] **起動時にしか読まない設定を保存しても、使い回しているランタイムには効かない** — 2026-10-02（lane2 の「描画の構成」「文字の描画」を足したときに確認）。
+  `render`・`font`・`shadow.resolution`・`vsync` などはランタイムの起動時に 1 回だけ読む。エディタの Edit のランタイムは開いている間ずっと同じプロセスで、
+  Play も 2 回目以降は常駐の Play プロセスへ LOAD_SCENE を送ってシーンだけ差し替える（`editor/src/Runtime/RuntimeManager.cs` の冒頭の説明）ので、保存しても
+  次の Play には効かない見込み（推論。実機の GUI では未確認）。画面には「エディタを開き直すと確実」と出しているだけ。案: 起動時の設定が変わったら常駐の Play を捨てる
+  （保存の前後で該当キーを比べる）か、保存時に「ランタイムを起動し直す」ボタンを出す。関連: `ProjectSettingsWindow.OnSave`・`RuntimeManager`（常駐の Play）。
+- [ ] **Android の開発用のビルドの印は画面から変えられない** — 2026-10-02（低）。パッケージ化ウィンドウは決まり方（開発用の APK は入れる・配布用は入れない）を
+  見せるだけ。開発用の APK から印を外して配布版の振る舞いを試すには、今は SeedPak を `--debug-build` なしで回すしかない。要れば `AndroidRunRequest` に上書きを足す
+  （配布用に入れるのは配布前の検査が止めるので足さない）。関連: `editor/src/Packaging/DebugBuildMarkPolicy.cs`・`AndroidRunRequest.MarksDebugBuild`。
+- [ ] **パッケージ化ウィンドウの Windows の「ビルド手順」の説明がビルド種別に追従しない** — 2026-10-02（低。見つけただけ）。ビルド種別が Debug でも
+  「1. cargo build --release でランタイムをコンパイル」と出る（実際の引数は `BuildArgs` が種別で決める）。関連: `PackagingWindow.xaml.cs::BuildWindowsSettings`。
+- [ ] **`editor/tests/AndroidRunUiTests` の「写し（§20.17）: 段取り — PAUSE を送れたら同じ通信路で取り出す…」が時々落ちる** — 2026-10-02（lane2 の確認中に
+  3 回中 1 回。失敗の表示は「取り出しの行:」が空）。変更の無い所のテストで、続けて 2 回は通った。時間に依る待ちの疑い（推論）。関連:
+  `editor/tests/AndroidRunUiTests/PauseSnapshotTests.cs::ControllerFetchesAfterPause`。
 
 ## full の GPU メモリの無駄の削減 — 2026-10-02（2 回目）の残件（正典: docs/rendering_profiles.md §14）
 

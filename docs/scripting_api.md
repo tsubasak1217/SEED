@@ -3110,7 +3110,7 @@ int n = SEED.Events.SubscriberCount("Bite");  // 現在の購読件数（デバ�
 主な用途は **デバッグ機能を配布版で自動的に無効化する** こと。
 デバッグ表示・当たり判定の可視化・チートコマンドを `SEED.Application.IsDebugAllowed` で囲っておけば、
 配布用（release）のパッケージ（`assets.pak` 同梱）ではそれらが動かなくなります。
-開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウのビルド種別 Debug）は pak 実行でも動きます（`IsDebugBuild`）。
+開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウで「開発用のビルド」にチェックを入れたビルド〈既定はビルド種別 Debug〉）は pak 実行でも動きます（`IsDebugBuild`）。
 
 ```csharp
 public static bool IsPackaged;      // パッケージ実行（assets.pak 同梱）なら true（開発用のビルドの pak 実行も true）
@@ -3127,7 +3127,7 @@ public static bool VsyncEnabled;    // 垂直同期が実際に有効か（設�
 |---|---|---|---|---|
 | エディタで Play | false | **true** | false | **true** |
 | エディタの編集中ビュー（Edit モード） | false | false | false | **true** |
-| 開発用のビルド（SeedAndroid の debug の APK・SeedPak `--debug-build`・パッケージ化ウィンドウの Debug）の pak 実行 | **true** | false | **true** | **true** |
+| 開発用のビルド（SeedAndroid の debug の APK・SeedPak `--debug-build`・パッケージ化ウィンドウの「開発用のビルド」〈既定は Debug〉）の pak 実行 | **true** | false | **true** | **true** |
 | 配布用（release）のビルド（`assets.pak` あり）を単体起動 | **true** | false | false | false |
 | 実ファイルの assets を隣に置いた単体起動・pak の無い開発用の APK（`--assets-dir`） | false | false | false | **true** |
 
@@ -3136,8 +3136,8 @@ public static bool VsyncEnabled;    // 垂直同期が実際に有効か（設�
 | 項目 | 内容 |
 |---|---|
 | 印の正体 | pak の中の予約のエントリ `.seed/build.json`（中身 `{"format":1,"debug":true}`）。パッケージ化が**開発用のビルドのときだけ**入れる |
-| 入れるビルド | SeedAndroid / エディタの Android 実行の開発用（debug）の APK（`--variant debug`。Rust の最適化 `--release` には依らない）・SeedPak `--debug-build`・パッケージ化ウィンドウのビルド種別 Debug（Windows / macOS / iOS） |
-| 入れないビルド | 配布用（release）の APK / AAB・パッケージ化ウィンドウのビルド種別 Release。Android の配布前の検査は、印のある配布物を不合格にする |
+| 入れるビルド | SeedAndroid / エディタの Android 実行の開発用（debug）の APK（`--variant debug`。Rust の最適化 `--release` には依らない）・SeedPak `--debug-build`・パッケージ化ウィンドウの「開発用のビルド」にチェックが入ったビルド（Windows / macOS / iOS。既定はビルド種別 Debug で入る。2026-10-02 から Release でも手で入れられる＝そのパッケージは配布しない） |
+| 入れないビルド | 配布用（release）の APK / AAB・パッケージ化ウィンドウの「開発用のビルド」のチェックを外したビルド（既定はビルド種別 Release）。Android の配布前の検査は、印のある配布物を不合格にする |
 | 読むとき | 起動時に pak を開いた直後に 1 回（印が無い・読めない・知らない版なら false＝安全側）。pak の外のファイル・端末の上書き層からは読まない |
 
 ### 例: デバッグ表示・デバッグコマンドを配布版で無効化する
@@ -4321,9 +4321,12 @@ wheel.RowPrefab                        // string（行のプレハブ。子に L
 
 1 つのシーンに画面をプレハブとして出し入れするための部品です（正典は docs/ui_navigation.md）。見本は `templates/ui/scenes/ui_navigation.scene`
 （テンプレートライブラリの「UI 部品」から取り込むと `assets/ui/...`）。部品のプレハブ: `screen_stack.actor`・`screen_frame.actor`・`tab_host.actor`・
-`modal_host.actor`・`dialog.actor`・`dialog_item.actor`（選択肢の一覧の行。2026-10-02）・`bottom_sheet.actor`・`top_sheet.actor`・`toast_host.actor`・`toast.actor`。
+`modal_host.actor`・`dialog.actor`・`dialog_item.actor`（選択肢の一覧の行。2026-10-02）・`bottom_sheet.actor`・`top_sheet.actor`・`popup.actor`（中央のポップアップ。2026-10-02）・
+`toast_host.actor`・`toast.actor`。
 2026-10-02 の拡充（危険のボタン・選択肢の一覧・ボタンの縦積み・進捗の札・長い本文のスクロール・アイコンつきのトースト）の見本は `templates/ui/scenes/ui_gallery.scene` の
-「画面の組み立て」の段の 2 行目のボタン。
+「画面の組み立て」の段の 2 行目のボタン。同日の画面の遷移・面の口（lane3: 作り置き `Prewarm`・渡された中身 `Push(GameObject)`・`ModalHost.CloseAll`・
+動きなしの開閉・覆いの高さいっぱい・任意の面のプレハブ `ShowPlane`・中央のポップアップ `Popup`・覆いを全画面の下に残す `ModalHost.Park`・
+`NavigatorRegistry` の公開）は下のコードの「2026-10-02（lane3）」の行（正典は docs/ui_navigation.md §2.8・§3.1・§3.3・§3.4・§3.6・§3.7・§5.2）。
 
 ```csharp
 using SEED.UI;
@@ -4344,6 +4347,20 @@ stack.SetRoot(prefab, NavTransition.Fade);  // 根からやり直す
 stack.Depth  stack.Top  stack.CanPop  stack.IsTransitioning
 stack.Changed += s => { };    // 落ち着いた（動きが終わった）後
 h.Closed += x => Debug.Log(x.Result);  var r = await h.WhenClosed;   // 閉じるのを待つ
+// ── 2026-10-02（lane3）: 中身の出所・作り置き・入れ替わりの順（docs/ui_navigation.md §2・§2.8）──
+bool started = stack.Prewarm("assets://alarm/prefabs/edit.actor", new PrewarmOptions   // 空いた時間に隠した枠で組み立てておく（次に積むと枠ごと借りる）
+{
+    Mode = PrewarmMode.Reuse,       // Once（既定。1 回だけ）/ Refill（使ったら空いた時間に作り直す）/ Reuse（外れたら隠して戻し使い回す。使うたびに OnScreenEnter）
+    WarmDrawFrames = 2,             // 温め描き（0 = しない）: 段 0 の画面より奥のレイヤーで描いて文字の字形を焼いておく（根が透けるスタックでは使わない）
+    SafeArea = true,                // 中身を枠の Body（安全領域の中）に作る
+});
+stack.IsPrewarmed(prefab)  stack.GetPrewarmStage(prefab)  stack.DiscardPrewarm(prefab)   // 貸せるか・段階（PrewarmStage: Waiting/Building/WarmDrawing/Ready/Lent/Discarded）・捨てる
+ScreenHandle? sh = stack.Push(body, NavTransition.Push, args, options,                    // 組み立て済みの中身（GameObject）を積む（無効なら null。KeepState は常に true）
+                              ScreenContentRelease.ReturnToParent);                       // 外れたら積んだときの親へ戻す（既定 Destroy = 画面と一緒に消す）
+stack.Replace(body, NavTransition.Fade);                                                  // 置き換えの版（GameObject の中身）
+int index = stack.IndexOf(h);                                                             // 段の添字（根 = 0。外れた画面は -1）
+// 入れ替わりの順（仕様）: 新しい画面の OnScreenEnter → 動き（古い画面は動きの間も生きて Update が回る）→ 古い画面の OnScreenExit / OnScreenHidden
+//   → 新しい画面の OnScreenShown → Changed。共有の頼み（画面を点けたまま等）を入りで取って出で返すなら数え上げにする
 
 // ── 画面のスクリプト（画面のプレハブの根に付ける。任意）──
 public class EditScreen : UiScreen
@@ -4362,6 +4379,7 @@ public class EditScreen : UiScreen
     protected override bool WouldConsumeBack() => dirty;       // 今戻るが来たら OnBackPressed が true か（副作用なしの問い。
                                                                // OnBackPressed を上書きしたら同じ条件で上書きする。上書きしないと
                                                                // 「受ける」とみなされ、根でも Android の予測型の戻る〈ホームへ戻る見た目〉が出ない）
+    protected override bool IsPrewarmReady => rowsBuilt;       // 2026-10-02: 作り置き（Prewarm）が温まったか（重い準備を Update で続ける画面。既定 true）
     // Close(result) で自分を下ろす・Navigator（積んだスタック）・Handle・Args
 }
 
@@ -4405,6 +4423,32 @@ ModalHandle? s = BottomSheet.Show(new SheetOptions { ContentPrefab = "assets://�
 ModalHandle? o = TopSheet.Show(new OverlayOptions { ContentPrefab = "assets://…/profile.actor" });
 s.Close(result);  await s.WhenClosed;           // 中身から閉じる（結果つき）。幕・戻る・つまみで閉じたら結果 null
 ModalHost.Current!.Count(ModalKind.Dialog)      // 開いている数
+// ── 2026-10-02（lane3）: 全部閉じる・動きなし・高さいっぱい・任意の面・中央のポップアップ・覆いを全画面の下に残す（docs/ui_navigation.md §3）──
+int closed = ModalHost.Current!.CloseAll(animate: false);   // ダイアログ → シート → 覆いの順・同じ種類は新しい順。ダイアログは Dismissed・ほかは null。
+                                                            // 閉じない設定の面も閉じる。false なら手札の Closed もこの中で届く。戻り値 = 閉じた数
+ModalHost.Current!.CloseAll(ModalKind.Dialog, animate: true);   // 種類を絞る
+o.Close(result, animate: false);                            // 出る動きを見せずにすぐ閉じる（DialogHandle.Close(DialogResult, false)・ModalPlane.RequestClose(結果, false) も）
+TopSheet.Show(new OverlayOptions { ContentPrefab = "assets://…/options.actor",
+                                   Animate = false,                       // 動きなしで開く（中身が落ち着いたら降りた姿で出る）
+                                   FillHeight = true, FillBottomMargin = -1f });   // 高さいっぱい（中身の根の CanvasLayoutItem の高さを合わせる。負 = space.m）
+BottomSheet.Show(new SheetOptions { ContentPrefab = "assets://…/list.actor", Animate = false });   // 開く段へすぐ移す
+ModalHost.Current!.ShowOverlay(options, "assets://app/prefabs/my_top_sheet.actor");    // 任意の面のプレハブで開く（ShowDialog・ShowSheet・ShowPopup も同じ形）
+ModalHost.Current!.ShowPlane(ModalKind.Overlay, "assets://app/prefabs/my_plane.actor", myOptions);   // 自前の ModalPlane の派生（OnPlaneStart の Options で受ける。
+                                                                                                     // 中身の UiScreen へは protected static DeliverEnter(中身の根, 値)）
+ModalHandle? p = Popup.Show(new PopupOptions                // 中央のポップアップ（templates/ui/prefabs/popup.actor。ModalHost.PopupPrefab・ShowPopup）
+{
+    ContentPrefab = "assets://profile/prefabs/profile.actor", Args = profileId,
+    DismissOnScrimTap = true, CancelableByBack = true, ShowCloseButton = true, Animate = true,
+    Width = 0f, ContentHeight = 0f,                         // 0 以下 = 画面の幅 − size.popup_margin × 2（上限 size.popup_max_width）・高さは中身から
+    Kind = ModalKind.Overlay,                               // 入れる帯と戻るの層（シートの上に出すなら Dialog）
+});
+public class ProfileContent : UiScreen, IPopupContentSize { public float PopupContentHeight => measured; }   // 札の高さを中身に合わせる（0 以下 = まだ分からない）
+ScreenHandle page = root.Push("assets://options/prefabs/cap_ceiling.actor");
+ModalHost.Current!.Park(p!, root, page);                    // 覆いを閉じずに全画面の下へ回す（全画面が閉じたら自動で戻る。戻るは全画面へ届く）
+ModalHost.Current!.IsParked(p!)  ModalHost.Current!.Unpark(p!)   // 回しているか・先に戻す。ModalPlane.IsParked
+NavigatorRegistry.IsActiveNode(gameObject)                  // 自分の画面が見えていて上の段の中にあるか（2026-10-02 に公開）
+NavigatorRegistry.DispatchBack()  NavigatorRegistry.WouldHandleBack()  NavigatorRegistry.BackPreviewTarget()   // 戻るの段の Navigation の層そのもの
+stack.HandleBack()  stack.WouldHandleBack()  stack.BackPreviewTarget                  // 特定のスタックへ戻るを渡す・問う・プレビューの相手（独自の戻るの層から）
 
 // ── トースト（シーンに ToastHost〈toast_host.actor〉を置く）──
 Toast.Show("保存しました");                       // ToastLength.Short（motion.toast_short）/ Long
@@ -4473,6 +4517,14 @@ Escape で確定すると縮んだ姿勢から閉じる・下ろす（閉じな�
 ボタンの横並び・縦積みは `DialogActionsLayout.Arrange`、選択肢の行の見た目は `DialogItemLooks`。**古いプレハブ**（2026-10-02 より前の dialog.actor）でも動きますが、
 本文はスクロールせず、進捗の札のスピナーは出ず（本文だけ）、選択肢の一覧は出せません（警告）。プレハブを取り込み直してください。
 
+**画面の遷移・面の口（2026-10-02。lane3。正典は docs/ui_navigation.md §2.8・§3）**: `ScreenStack.Prewarm` は空いた時間（出入りの動きの無い間）に
+隠した枠（`FramePrefab`）の中で画面を組み立てておき、次にそのプレハブを積むときに枠ごと貸す（プレハブの組み立ての重いフレームが無い。中身の出所は
+渡された中身 > 置いてある根 > 作り置き > プレハブ）。温まった = できあがって 2 フレーム経ち `UiScreen.IsPrewarmReady` が true（上限 300 フレーム）。
+`ModalHost.CloseAll` はダイアログ → シート → 覆いの順に閉じ、ダイアログの結果は `Dismissed`、シート・覆いは null（閉じない設定の面も閉じる。`animate: false` なら
+出る動きなしでこの中で閉じ、手札の知らせもこの中で届く。作りかけの面は見せずに取りやめる）。`ModalHost.Park(面, スタック, 全画面)` で回した面は戻るの層で数えず
+（戻るは全画面へ届く）、フォーカスの範囲も後ろへ回り、全画面が閉じると自動で戻る。中央のポップアップの札の大きさは `PopupCardMath`（幅 = 画面 − `size.popup_margin` × 2・
+上限 `size.popup_max_width`、高さ = 中身 ＋ `size.popup_padding` × 2・上限 = 安全領域 × `ratio.popup_max_height`）。
+
 **重なりと入力**: 画面のスタックの段 i は `LayerBias = i × LayerStep`（既定 `layer.stack_step` = 10,000。タブの中のスタックは 1,000）、
 覆い・シート・ダイアログ・トーストは帯（`layer.overlay`・`sheet`・`dialog`・`toast` = 100 万・200 万・300 万・400 万）。
 **画面の中の表示のレイヤーは段の値より小さく**（タブの中なら 1,000 未満）保ってください。積んだ画面の枠（`screen_frame.actor`）は遮る板を持ち、
@@ -4489,6 +4541,7 @@ Escape で確定すると縮んだ姿勢から閉じる・下ろす（閉じな�
 | `opacity.scrim`・`opacity.dialog_scrim` | 0.54・0.32 | 幕の濃さ |
 | `ratio.push_parallax`・`ratio.dialog_scale_from`・`ratio.sheet_max_height` | 0.3・0.9・0.9 | 視差・ダイアログの出始めの大きさ・シートの高さ |
 | `ratio.back_preview_scale`・`size.back_preview_shift`・`motion.back_preview_curve` | 0.9・8 dp・(0, 0, 0, 1) | 予測型の戻るのプレビュー（いちばん小さい倍率・画面のずらし・進み具合の曲線。3b。取り消しで戻る時間は `motion.short`） |
+| `size.popup_margin`・`size.popup_max_width`・`size.popup_padding`・`ratio.popup_max_height`・`radius.popup` | 16・560・8 dp・0.8・28 | 中央のポップアップ（札と画面の端の余白・幅の上限・札の内側の余白・高さの上限〈安全領域に対する割合〉・角丸。2026-10-02） |
 
 > **重要**: 画面のプレハブは次のフレームにできあがる（`Instantiate` の遅延）ので、画面の枠 → 中身の 2 フレームかけて作り、できあがるまで隠します。
 > 積み下ろしは並びをすぐ変え、動きは順に流します（動いている途中の次の操作は、今の動きを飛ばしてから始める）。

@@ -62,6 +62,10 @@ public partial class ProjectSettingsWindow : Window
             new("resolution",     "解像度設定", IsImplemented: true),
             // 描画品質プリセット（プラットフォームごと。Android 段階D-2。中身は ProjectSettingsWindow.RenderQuality.cs）
             new("render_quality", "レンダリング品質", IsImplemented: true),
+            // 描画の構成（render.profile。full / ui と旗の上書き。中身は ProjectSettingsWindow.Render.cs）
+            new("render_profile", "描画の構成", IsImplemented: true),
+            // 文字の距離場（font.distance_field / msdf_coloring。中身は ProjectSettingsWindow.Font.cs）
+            new("font_field",     "文字の描画", IsImplemented: true),
             new("rt_shadows",     "RTシャドウ", IsImplemented: true),
             new("shadow_quality", "シャドウマップ品質", IsImplemented: true),
         }),
@@ -354,6 +358,8 @@ public partial class ProjectSettingsWindow : Window
             "scene_manager"  => BuildSceneManagerPanel(),
             "resolution"     => BuildResolutionPanel(),
             "render_quality" => BuildRenderQualityPanel(),
+            "render_profile" => BuildRenderProfilePanel(),
+            "font_field"     => BuildFontFieldPanel(),
             "rt_shadows"     => BuildRtShadowsPanel(),
             "shadow_quality" => BuildShadowQualityPanel(),
             "plugin_manage"  => BuildPluginManagePanel(),
@@ -1564,6 +1570,9 @@ public partial class ProjectSettingsWindow : Window
         // 「レンダリング品質」の選択値を収集する（プラットフォームごとのプリセット・描画スケール・影。
         // 表示していなければ何もしない。ProjectSettingsWindow.RenderQuality.cs）
         CollectRenderQualitySettings();
+
+        // 「描画の構成」「文字の描画」は、利用者が選び直した瞬間に _data.Render / _data.Font へ書く
+        // （選び直さなかった欄は読んだ値のまま残すため。ProjectSettingsWindow.Render.cs / .Font.cs）。ここで集めるものは無い。
 
         // 「RTシャドウ」パネルのチェック状態を収集する
         if (_rtShadowsCheckBox is not null)

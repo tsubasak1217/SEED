@@ -17,8 +17,8 @@ public class ModalHandle
     private readonly TaskCompletionSource<object?> _closed = new();
     /// <summary>面の部品（開いた後。閉じる動きを始めさせる）。</summary>
     internal ModalPlane? Plane { get; set; }
-    /// <summary>面ができる前に Close が呼ばれたときの結果（できたらすぐ閉じる）。</summary>
-    internal (bool Requested, object? Result) EarlyClose { get; private set; }
+    /// <summary>面ができる前に Close が呼ばれたときの結果と動きの有無（できたらすぐ閉じる）。</summary>
+    internal (bool Requested, object? Result, bool Animate) EarlyClose { get; private set; }
 
     /// <summary>面の種類。</summary>
     public ModalKind Kind { get; }
@@ -41,11 +41,19 @@ public class ModalHandle
     }
 
     /// <summary>閉じる（閉じる動きの後に Closed）。</summary>
-    public void Close(object? result = null)
+    public void Close(object? result = null) => Close(result, animate: true);
+
+    /// <summary>
+    /// 閉じる（2026-10-02: 動きの有無を選べる。animate = false なら出る動きを見せずにすぐ閉じ、Closed もこの呼び出しの中で届く）。
+    /// 面ができる前に呼んだら、できたときに見せずに閉じる。
+    /// </summary>
+    /// <param name="result">結果。</param>
+    /// <param name="animate">出る動きを見せるか。</param>
+    public void Close(object? result, bool animate)
     {
         if (IsClosed) return;
-        if (Plane is { } plane) plane.RequestClose(result);
-        else EarlyClose = (true, result);
+        if (Plane is { } plane) plane.RequestClose(result, animate);
+        else EarlyClose = (true, result, animate);
     }
 
     /// <summary>閉じたことを知らせる（1 回だけ）。</summary>
@@ -112,6 +120,11 @@ public sealed class DialogHandle : ModalHandle
     /// </summary>
     /// <param name="result">結果。</param>
     public void Close(DialogResult result) => base.Close(result);
+
+    /// <summary>外から結果つきで閉じる（2026-10-02: animate = false なら出る動きを見せずにすぐ閉じる）。</summary>
+    /// <param name="result">結果。</param>
+    /// <param name="animate">出る動きを見せるか。</param>
+    public void Close(DialogResult result, bool animate) => base.Close(result, animate);
 
     /// <summary>
     /// 本文を変える（2026-10-02。進捗の札の「ダウンロード中 40%」など。札の高さは本文の行の数に合わせて割り付け直す）。

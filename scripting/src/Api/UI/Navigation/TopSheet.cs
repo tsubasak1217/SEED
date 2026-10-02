@@ -18,6 +18,9 @@ namespace SEED.UI;
 //    FlickDown（既定。Flutter 版の top_sheet.dart と同じ）… 板を下へ speed.fling_dismiss（300 dp/秒）超で払うと閉じる（板は動かない）
 //    DragUp … 板を上へ引く（指に付いてくる）。size.drag_dismiss 以上か上へ速く払うと閉じ、足りなければ戻る（下へは抵抗つきで少しだけ）
 //  板の上の余白 = ステータスバーの高さ（SafeInsets.TopUnits。背景は画面の上端まで）。
+//  【動きなし】（2026-10-02）OverlayOptions.Animate = false なら、中身が落ち着いたら降りた姿で出す（閉じる動きなしは ModalHandle.Close(結果, false)）。
+//  【高さいっぱい】（2026-10-02）OverlayOptions.FillHeight なら、中身の根の CanvasLayoutItem の高さを毎フレーム SheetMath.OverlayFillHeight に合わせ
+//  （板の下端 = 画面の下 − 下の安全領域 − FillBottomMargin）、合わせた高さが 1 フレーム落ち着くまで見せない。
 // ============================================================
 
 /// <summary>上からの覆い。</summary>
@@ -28,6 +31,13 @@ public sealed class TopSheet : ModalPlane
     private const string PanelChild = "Panel";
     private const string ContentChild = "Panel/Content";
     private const string HandleChild = "Panel/HandleRow/Handle";
+    private const string HandleRowChild = "Panel/HandleRow";
+    /// <summary>高さいっぱいの高さが変わったとみなす差（キャンバスの単位）。</summary>
+    private const float FillEpsilon = 0.5f;
+    /// <summary>高さいっぱいの高さが落ち着いたとみなすフレーム数（書いたフレームの次のフレームのレイアウトから効く）。</summary>
+    private const int FillStableFrames = 1;
+    /// <summary>降りた・上に隠れたの開き具合。</summary>
+    private const float Opened = 1f;
     /// <summary>閉じる向きと逆（下）へ引いたときの抵抗（引いた分の何割だけ動くか。DragUp）。</summary>
     private const float BackwardResistance = 0.3f;
     /// <summary>閉じる向きと逆へ動ける最大（キャンバスの単位。DragUp）。</summary>
@@ -74,6 +84,10 @@ public sealed class TopSheet : ModalPlane
     private MotionStep _step;
     /// <summary>予測型の戻るのプレビューで上の辺を留めるずらし（キャンバスの単位・下が正。3b。引いたずらしと足して当てる）。</summary>
     private float _previewOffset;
+    /// <summary>高さいっぱいの高さが変わらずに続いたフレーム（2026-10-02）。</summary>
+    private int _fillFrames;
+    /// <summary>高さいっぱいにできない（中身の根に CanvasLayoutItem が無い。警告を出した）。</summary>
+    private bool _fillUnavailable;
 
     /// <inheritdoc />
     protected override void OnPlaneStart()
@@ -98,6 +112,7 @@ public sealed class TopSheet : ModalPlane
         // 中身ができあがった後のフレームを、Enter を届けるより前に数える（ContentSettleGate の約束の順）
         if (_contentRoot.IsValid && NavNode.IsBuilt(_contentRoot)) _contentSettle.Frame();
         EnterContent();
+        FitHeight();
         switch (Phase)
         {
             case ModalPhase.Preparing:
@@ -121,10 +136,48 @@ public sealed class TopSheet : ModalPlane
     {
         Redraw.Request();
         bool contentReady = !_contentRoot.IsValid || (NavNode.IsBuilt(_contentRoot) && _contentSettle.IsSettled);
-        if (!contentReady && ++_prepareFrames <= MaxPrepareFrames) return;
+        // 高さいっぱいなら、合わせた高さが 1 フレーム落ち着いてから（伸びる前の板を見せない）
+        bool filled = !_options.FillHeight || !_contentRoot.IsValid || _fillUnavailable || _fillFrames >= FillStableFrames;
+        if (!(contentReady && filled) && ++_prepareFrames <= MaxPrepareFrames) return;
         NavNode.SetVisible(Owner, true);
         BeginEnter();
-        _open.Retarget(1f, Theme.Number(NavTokens.MotionOverlay));
+        if (!_options.Animate)
+        {
+            // 動きなし（2026-10-02）: 降りた姿で出す
+            _open.Jump(Opened);
+            ApplyOpen(Opened);
+            EndEnter();
+            return;
+        }
+        _open.Retarget(Opened, Theme.Number(NavTokens.MotionOverlay));
+    }
+
+    /// <summary>
+    /// 高さいっぱい（OverlayOptions.FillHeight。2026-10-02）: 中身の根の CanvasLayoutItem の高さを、板の下端が「画面の下 − 下の安全領域 − 余白」
+    /// に来る高さ（SheetMath.OverlayFillHeight）に合わせる（変わったときだけ書く。回転・窓の大きさにも追従）。
+    /// </summary>
+    private void FitHeight()
+    {
+        if (!_options.FillHeight || _fillUnavailable || !NavNode.IsBuilt(_contentRoot)) return;
+        if (Owner.GetComponent<CanvasTransform>() is not { HasLayout: true } root || root.LayoutSize.y <= 0f) return;
+        if (_contentRoot.GetComponent<CanvasLayoutItem>() is not { } item)
+        {
+            _fillUnavailable = true;
+            Debug.LogWarning($"{LogPrefix} 高さいっぱいにできません（中身の根に CanvasLayoutItem がありません）: {_options.ContentPrefab}");
+            return;
+        }
+        float handle = gameObject.FindChild(HandleRowChild).GetComponent<CanvasTransform>() is { HasLayout: true } row ? row.LayoutSize.y : 0f;
+        float margin = _options.FillBottomMargin >= 0f ? _options.FillBottomMargin : Theme.Number(UiTokens.SpaceM);
+        float height = SheetMath.OverlayFillHeight(root.LayoutSize.y, SafeInsets.TopUnits(), handle, margin, SafeInsets.BottomUnits());
+        if (MathF.Abs(item.PreferredSize.y - height) <= FillEpsilon)
+        {
+            // 落ち着いた数は上限で止める（長く開いている覆いで数が溢れない）
+            if (_fillFrames < FillStableFrames) _fillFrames++;
+            return;
+        }
+        _fillFrames = 0;
+        item.PreferredSize = new Vector2(item.PreferredSize.x, height);
+        Redraw.Request();
     }
 
     /// <summary>降りる・上がる動き。</summary>

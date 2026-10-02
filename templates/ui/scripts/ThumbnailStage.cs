@@ -13,6 +13,7 @@
 //       progress   … 進捗の札を開く
 //       sheet      … 下からのシートを開く（中身は ContentPrefab）
 //       overlay    … 上からの覆いを開く（中身は ContentPrefab）
+//       popup      … 中央のポップアップを開く（中身は ContentPrefab。2026-10-02）
 //       toast      … トーストを出す（受け皿 ToastHost が要る）
 //       line_chart … 折れ線グラフ（Target のノード）へ値を入れる（Values = 分。空の値は記録の無い日）
 //       bar_chart  … 棒グラフ（Target のノード）へ値を入れる（Values = ',' で棒、';' で積み上げ）
@@ -52,6 +53,7 @@ public class ThumbnailStage : SEEDScript
     private const string ActionProgress = "progress";
     private const string ActionSheet = "sheet";
     private const string ActionOverlay = "overlay";
+    private const string ActionPopup = "popup";
     private const string ActionToast = "toast";
     private const string ActionLineChart = "line_chart";
     private const string ActionBarChart = "bar_chart";
@@ -83,7 +85,7 @@ public class ThumbnailStage : SEEDScript
 
     // ── 欄（ツールが thumbnail_sample.script から書き込む）──────────
 
-    /// <summary>見本の操作（none・dialog・menu・progress・sheet・overlay・toast・line_chart・bar_chart）。</summary>
+    /// <summary>見本の操作（none・dialog・menu・progress・sheet・overlay・popup・toast・line_chart・bar_chart）。</summary>
     [SerializeField(Label = "見本の操作")]
     public string Action = ActionNone;
 
@@ -201,6 +203,8 @@ public class ThumbnailStage : SEEDScript
                 return Opened(BottomSheet.Show(new SheetOptions { ContentPrefab = ContentPrefab }), "ModalHost", out reason);
             case ActionOverlay:
                 return Opened(TopSheet.Show(new OverlayOptions { ContentPrefab = ContentPrefab }), "ModalHost", out reason);
+            case ActionPopup:
+                return Opened(Popup.Show(new PopupOptions { ContentPrefab = ContentPrefab }), "ModalHost", out reason);
             case ActionToast:
                 return Opened(Toast.Show(Message, UiIcon.Ring(), ToastLength.Long), "ToastHost", out reason);
             case ActionLineChart:

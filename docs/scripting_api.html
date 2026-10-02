@@ -2163,7 +2163,7 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     「今このゲームがどういう立場で動いているか」を調べる API です。主な用途は
     <b>デバッグ機能を配布版で自動的に無効化する</b>こと。デバッグ表示・当たり判定の可視化・チートコマンドを
     <code>Application.IsDebugAllowed</code> で囲っておけば、配布用（release）のパッケージ（<code>assets.pak</code> 同梱）では
-    それらが動かなくなります。開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウのビルド種別 Debug）は
+    それらが動かなくなります。開発用のビルド（SeedAndroid の debug の APK・パッケージ化ウィンドウで「開発用のビルド」にチェックを入れたビルド〈既定はビルド種別 Debug〉）は
     pak 実行でも動きます（<code>IsDebugBuild</code>）。
   </p>
   <div class="api"><code class="sig">Application.IsPackaged</code><span class="desc">bool。パッケージ実行（assets.pak 同梱）なら true（開発用のビルドの pak 実行も true）</span></div>
@@ -2194,15 +2194,15 @@ sub.Dispose();                          <span class="c">// 解除（二重解除
     <tr><th>実行のしかた</th><th>IsPackaged</th><th>IsEditorPlay</th><th>IsDebugBuild</th><th>IsDebugAllowed</th></tr>
     <tr><td>エディタで Play</td><td>false</td><td><b>true</b></td><td>false</td><td><b>true</b></td></tr>
     <tr><td>エディタの編集中ビュー（Edit モード）</td><td>false</td><td>false</td><td>false</td><td><b>true</b></td></tr>
-    <tr><td>開発用のビルド（SeedAndroid の debug の APK・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウの Debug）の pak 実行</td><td><b>true</b></td><td>false</td><td><b>true</b></td><td><b>true</b></td></tr>
+    <tr><td>開発用のビルド（SeedAndroid の debug の APK・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウの「開発用のビルド」〈既定は Debug〉）の pak 実行</td><td><b>true</b></td><td>false</td><td><b>true</b></td><td><b>true</b></td></tr>
     <tr><td>配布用（release）のビルド（<code>assets.pak</code> あり）を単体起動</td><td><b>true</b></td><td>false</td><td>false</td><td>false</td></tr>
     <tr><td>実ファイルの assets を隣に置いた単体起動・pak の無い開発用の APK（<code>--assets-dir</code>）</td><td>false</td><td>false</td><td>false</td><td><b>true</b></td></tr>
   </table>
   <table>
     <tr><th>開発用のビルドの印</th><th>内容</th></tr>
     <tr><td>印の正体</td><td>pak の中の予約のエントリ <code>.seed/build.json</code>（中身 <code>{"format":1,"debug":true}</code>）。パッケージ化が<b>開発用のビルドのときだけ</b>入れる</td></tr>
-    <tr><td>入れるビルド</td><td>SeedAndroid / エディタの Android 実行の開発用（debug）の APK（<code>--variant debug</code>。Rust の最適化 <code>--release</code> には依らない）・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウのビルド種別 Debug（Windows / macOS / iOS）</td></tr>
-    <tr><td>入れないビルド</td><td>配布用（release）の APK / AAB・パッケージ化ウィンドウのビルド種別 Release。Android の配布前の検査は、印のある配布物を不合格にする</td></tr>
+    <tr><td>入れるビルド</td><td>SeedAndroid / エディタの Android 実行の開発用（debug）の APK（<code>--variant debug</code>。Rust の最適化 <code>--release</code> には依らない）・SeedPak <code>--debug-build</code>・パッケージ化ウィンドウの「開発用のビルド」にチェックが入ったビルド（Windows / macOS / iOS。既定はビルド種別 Debug で入る。2026-10-02 から Release でも手で入れられる＝そのパッケージは配布しない）</td></tr>
+    <tr><td>入れないビルド</td><td>配布用（release）の APK / AAB・パッケージ化ウィンドウの「開発用のビルド」のチェックを外したビルド（既定はビルド種別 Release）。Android の配布前の検査は、印のある配布物を不合格にする</td></tr>
     <tr><td>読むとき</td><td>起動時に pak を開いた直後に 1 回（印が無い・読めない・知らない版なら false＝安全側）。pak の外のファイル・端末の上書き層からは読まない</td></tr>
   </table>
   <table>
@@ -2839,7 +2839,7 @@ swipe = <span class="k">new</span> <span class="t">SwipeActions</span>(gameObjec
   <p>12 時間表記で時の列が 11 ↔ 12・23 ↔ 0 を越えると午前/午後の列が動き、午前/午後の列を指で変えると時が 12 ずれます（Flutter の CupertinoDatePicker と同じ）。<code>Loop</code>（既定 true）が true なら分の 59 → 00・時の 23 → 0 はそれぞれの列の中でつながります。<code>Loop = false</code> にすると時 0〜23・分 0〜（60 − 刻み）の両端で止まり（CanvasScroll の端の跳ね返り）、23 と 0 は隣り合いません（12 時間表記の時の列は 24 行のまま。11 ↔ 12 の連動は変わりません）。値の変化で他の部品は作り直されず、列が動いている間はエンジンが「動いている」を申告するので <code>render_policy: on_demand</code> でも止まりません。</p>
 
   <h2>7.18 画面の組み立て（SEED.UI：画面のスタック・タブ・ダイアログ・シート・覆い・トースト・戻るの段・フォーカス。W2-7）</h2>
-  <p>1 つのシーンに画面をプレハブとして出し入れする部品。見本は <code>templates/ui/scenes/ui_navigation.scene</code>、部品のプレハブは <code>screen_stack.actor</code>・<code>screen_frame.actor</code>・<code>tab_host.actor</code>・<code>modal_host.actor</code>・<code>dialog.actor</code>・<code>dialog_item.actor</code>（選択肢の行。2026-10-02）・<code>bottom_sheet.actor</code>・<code>top_sheet.actor</code>・<code>toast_host.actor</code>・<code>toast.actor</code>。正典は docs/ui_navigation.md。</p>
+  <p>1 つのシーンに画面をプレハブとして出し入れする部品。見本は <code>templates/ui/scenes/ui_navigation.scene</code>、部品のプレハブは <code>screen_stack.actor</code>・<code>screen_frame.actor</code>・<code>tab_host.actor</code>・<code>modal_host.actor</code>・<code>dialog.actor</code>・<code>dialog_item.actor</code>（選択肢の行。2026-10-02）・<code>bottom_sheet.actor</code>・<code>top_sheet.actor</code>・<code>popup.actor</code>（中央のポップアップ。2026-10-02）・<code>toast_host.actor</code>・<code>toast.actor</code>。正典は docs/ui_navigation.md。</p>
   <div class="api"><code class="sig">stack.Push(prefab, transition, args, options) / Pop(result) / Replace / PopToRoot / SetRoot</code><span class="desc">ScreenStack。出入りは NavTransition.Push（右から）/ Cover（上から）/ Fade（幕を通して）/ None。ScreenOptions: Opaque・KeepState（false = 覆われたら手放して戻ったら作り直す）・IgnoreBack・SafeArea。ScreenHandle（Closed・WhenClosed・Result）を返す。出入りの時計（2026-09-30）: 入ってくる画面が OnScreenEnter を受けて 1 フレーム描いてから動き始め（None の入れ替えも同じ）、動き始めたフレームは数えず、1 フレームの進めは MotionStep.MaxFrameSeconds（1/30 秒）まで（重いフレームで飛ばずに長くかかる。ダイアログ・覆い・トーストも上限つき。下からのシートは対象外）。背面へ回ると動きはその姿で止まる（docs/ui_navigation.md §2）</span></div>
   <div class="api"><code class="sig">stack.Depth / Top / CanPop / IsTransitioning / Changed</code><span class="desc">段の数・いちばん上の手札・下ろせるか・動いているか・落ち着いた後の知らせ</span></div>
   <div class="api"><code class="sig">class X : UiScreen — OnScreenEnter(args) / OnScreenShown / OnScreenHidden / OnScreenExit / OnBackPressed() / Close(result)</code><span class="desc">画面のスクリプトの土台（任意）。OnBackPressed が true なら戻るを受けてスタックは下ろさない（未保存の確認・鳴動の画面）</span></div>
@@ -2860,6 +2860,17 @@ swipe = <span class="k">new</span> <span class="t">SwipeActions</span>(gameObjec
   <div class="api"><code class="sig">BackDispatcher.WouldHandleAfterFocus()</code><span class="desc">W2-6 の実機の直し。Focus の層より後ろの層（ダイアログ・シート・覆い・画面のスタック）が今の戻るを受けるか（副作用なし。背面へ回すのは数えない）。IBackConsumer の入力欄が、根の画面ではキーボードを閉じた後の戻るも受ける（アプリを背面へ回さない）ために読む</span></div>
   <div class="api"><code class="sig">IBackPreviewTarget: IsBackPreviewValid / IsBackPreviewExiting / ApplyBackPreview(BackPreviewPose) / ClearBackPreview()</code><span class="desc">W2 の手直し 3b。プレビューの相手の口（ScreenStack の上の画面・Dialog・BottomSheet・TopSheet が実装済み）。BackPreviewPose = Scale（1 → ratio.back_preview_scale 0.9）・ShiftX（画面だけ。size.back_preview_shift 8 dp まで指の向きへ）。取り消しは motion.short で元へ戻る</span></div>
   <div class="api"><code class="sig">UiFocus.Request(item) / Release / Current / TopScope / Changed — IFocusable・IBackConsumer</code><span class="desc">キーボードで動かす相手と画面ごとの範囲（上の画面・開いている面の範囲だけが今のフォーカス。WheelFocus もここへ寄せた）</span></div>
+  <div class="api"><code class="sig">stack.Prewarm(prefab, PrewarmOptions) / IsPrewarmed(prefab) / GetPrewarmStage(prefab) / DiscardPrewarm(prefab)</code><span class="desc">2026-10-02（lane3）。作り置き: 空いた時間（出入りの動きの無い間）に隠した枠（FramePrefab）の中で画面を組み立てておき、次にそのプレハブを積む（Push・Replace・SetRoot・作り直し）ときに枠ごと貸す（組み立ての重いフレームが無い）。PrewarmOptions: Mode = PrewarmMode.Once（既定）/ Refill（使ったら空いた時間に作り直す）/ Reuse（外れたら隠して戻し使い回す。使うたびに OnScreenEnter）・WarmDrawFrames（温め描き。段 0 より奥のレイヤーで描いて字形を焼く。0 = しない）・SafeArea。温まった = できあがって 2 フレーム経ち UiScreen.IsPrewarmReady（既定 true）が true（上限 300 フレーム）。段階は PrewarmStage（Waiting・Building・WarmDrawing・Ready・Lent・Discarded）</span></div>
+  <div class="api"><code class="sig">stack.Push(GameObject content, transition, args, options, ScreenContentRelease release) / Replace(GameObject content, …) → ScreenHandle?</code><span class="desc">2026-10-02（lane3）。組み立て済みの中身を画面として積む・置き換える（枠の Body へ付け替え、自分を隠していても見せる。無効なら null。KeepState は常に true）。外れたとき release = Destroy（既定・画面と一緒に消す）/ ReturnToParent（OnScreenExit の後・枠を消す前に、押下を取り消して積んだときの親へ戻す）。中身の出所は 渡された中身 &gt; 置いてある根 &gt; 作り置き &gt; プレハブ（ScreenContentPlan）</span></div>
+  <div class="api"><code class="sig">stack.IndexOf(ScreenHandle) / HandleBack() / WouldHandleBack() / BackPreviewTarget</code><span class="desc">2026-10-02 に公開。段の添字（根 = 0・外れた画面は -1）・このスタックへ戻るを渡す・問う（副作用なし）・予測型の戻るのプレビューの相手（独自の戻るの層から使う）</span></div>
+  <div class="api"><code class="sig">入れ替わりの知らせの順（仕様）</code><span class="desc">積む・置き換える・やり直しでは、新しい画面の OnScreenEnter → 動き（古い画面は動きの間も生きて Update が回る）→ 古い画面の OnScreenExit（外れた）/ OnScreenHidden（覆われた）→ 新しい画面の OnScreenShown → Changed。共有の頼み（画面を点けたまま等）を入りで取って出で返すなら数え上げにする（docs/ui_navigation.md §2）</span></div>
+  <div class="api"><code class="sig">ModalHost.Current.CloseAll(animate = true) / CloseAll(ModalKind kind, animate = true) → int</code><span class="desc">2026-10-02（lane3）。開いている面を全部閉じる: ダイアログ → シート → 覆い（ポップアップを含む）の順・同じ種類は新しい順（戻るを 1 回ずつ押したのと同じ）。結果はダイアログが DialogResult.Dismissed・シートと覆いは null。閉じない設定の面・進捗の札・画面の下へ回した面も閉じる。animate = false なら出る動きなしでこの中で閉じ、手札の Closed・Completed も閉じる順にこの中で届く。作りかけの面は見せずに取りやめる。戻り値 = 閉じ始めた・閉じた数</span></div>
+  <div class="api"><code class="sig">handle.Close(result, bool animate) / DialogHandle.Close(DialogResult, bool animate) / ModalPlane.RequestClose(result, bool animate)</code><span class="desc">2026-10-02。animate = false で出る動きを見せずにその場で閉じる（後片付けは同じ。面ができる前なら見せずに閉じる）</span></div>
+  <div class="api"><code class="sig">OverlayOptions.Animate / FillHeight / FillBottomMargin・SheetOptions.Animate</code><span class="desc">2026-10-02。Animate = false で動きなしで開く（覆いは中身が落ち着いたら降りた姿で・シートは開く段へすぐ移す）。FillHeight = 覆いの高さいっぱい（板の下端 = 画面の下 − 下の安全領域 − FillBottomMargin〈負 = space.m〉になるよう、中身の根の CanvasLayoutItem.PreferredSize.y を SheetMath.OverlayFillHeight に毎フレーム合わせる）</span></div>
+  <div class="api"><code class="sig">ModalHost.ShowOverlay(options, planePrefab) / ShowSheet / ShowDialog / ShowPopup(options, planePrefab) / ShowPlane(ModalKind kind, string planePrefab, object options)</code><span class="desc">2026-10-02。任意の面のプレハブで開く（欄を一時的に替えなくてよい）。ShowPlane は自前の ModalPlane の派生を開く（OnPlaneStart の Options で指定を受け、中身の UiScreen へは protected static DeliverEnter(中身の根, 値) で値を届ける）。種類は面の Kind と合わせる</span></div>
+  <div class="api"><code class="sig">Popup.Show(PopupOptions) / ModalHost.ShowPopup(PopupOptions) → ModalHandle</code><span class="desc">2026-10-02（lane3）。中央のポップアップ（popup.actor・ModalHost.PopupPrefab）。札が真ん中に出て、幕のタップ・右上の ×・戻るで閉じる（ダイアログと同じ拡大と幕のフェード）。PopupOptions: ContentPrefab・Args・DismissOnScrimTap・CancelableByBack・Animate・ShowCloseButton・Width・ContentHeight・Kind（既定 Overlay）。札の幅 = 画面 − size.popup_margin × 2（上限 size.popup_max_width）、高さ = 中身 ＋ size.popup_padding × 2（上限 安全領域 × ratio.popup_max_height。PopupCardMath）。中身の高さは ContentHeight → 中身の UiScreen の IPopupContentSize.PopupContentHeight → 中身の根のレイアウトの高さ</span></div>
+  <div class="api"><code class="sig">ModalHost.Park(ModalHandle, ScreenStack, ScreenHandle page) / Unpark(handle) / IsParked(handle) — ModalPlane.IsParked</code><span class="desc">2026-10-02（lane3）。覆いを閉じずに全画面 page の下（その下の画面より手前）へ回す（面の根の底上げ = 全画面の枠 − 半段。ParkedPlaneLayers）。回した面は戻るの層で数えず（戻るは全画面へ届く）、予測型の戻るの相手にもならず、フォーカスの範囲も後ろへ回る。全画面が閉じたら自動で戻す（置き換えて残すなら新しい手札で Park し直す）</span></div>
+  <div class="api"><code class="sig">NavigatorRegistry.IsActiveNode(node) / DispatchBack() / WouldHandleBack() / BackPreviewTarget()</code><span class="desc">2026-10-02 に公開。ノードが見えていて祖先のスタックの上の段の中にあるか（自分の画面が見えているかの問い）と、戻るの段の Navigation の層そのもの</span></div>
   <table>
     <tr><th>トークン</th><th>既定</th><th>使う所</th></tr>
     <tr><td><code>motion.push</code>・<code>cover</code>・<code>fade</code>（と <code>*_curve</code>）</td><td>0.3 秒</td><td>画面の出入り（曲線は x1・y1・x2・y2）</td></tr>
@@ -2869,6 +2880,7 @@ swipe = <span class="k">new</span> <span class="t">SwipeActions</span>(gameObjec
     <tr><td><code>opacity.scrim</code>・<code>opacity.dialog_scrim</code></td><td>0.54・0.32</td><td>幕の濃さ</td></tr>
     <tr><td><code>layer.stack_step</code>・<code>overlay</code>・<code>sheet</code>・<code>dialog</code>・<code>toast</code></td><td>1 万・100〜400 万</td><td>重なりのレイヤーの底上げ（画面の中の表示のレイヤーは段の値より小さく）</td></tr>
     <tr><td><code>ratio.back_preview_scale</code>・<code>size.back_preview_shift</code>・<code>motion.back_preview_curve</code></td><td>0.9・8 dp・(0, 0, 0, 1)</td><td>予測型の戻るのプレビュー（いちばん小さい倍率・画面のずらし・進み具合の曲線。3b）</td></tr>
+    <tr><td><code>size.popup_margin</code>・<code>popup_max_width</code>・<code>popup_padding</code>・<code>ratio.popup_max_height</code>・<code>radius.popup</code></td><td>16・560・8 dp・0.8・28</td><td>中央のポップアップ（札と画面の端の余白・幅の上限・内側の余白・高さの上限・角丸。2026-10-02）</td></tr>
   </table>
 <pre><span class="k">var</span> stack = <span class="t">UiWidget</span>.Of&lt;<span class="t">ScreenStack</span>&gt;(<span class="t">GameObject</span>.Find(<span class="s">"RootStack"</span>));
 <span class="k">var</span> h = stack.Push(<span class="s">"assets://ui/prefabs/edit.actor"</span>, <span class="t">NavTransition</span>.Push, args: alarmId);

@@ -324,6 +324,9 @@ public static class Program
         // ── 2026-10-02 の部品の拡充: ダイアログ（危険・選択肢の一覧・縦積み・進捗の札・長い本文のスクロール）とトーストのアイコン ──
         DialogExtensionTests.Register(h, theme);
 
+        // ── 2026-10-02 の画面の遷移・面の口（lane3）: 作り置き・中身の出所・全部閉じる・動きなし・高さいっぱい・ポップアップ・覆いを下に残す ──
+        NavigationExtensionTests.Register(h, theme);
+
         return h.Run();
     }
 }

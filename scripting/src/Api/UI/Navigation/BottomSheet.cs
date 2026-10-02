@@ -18,6 +18,8 @@ namespace SEED.UI;
 //  残りは Track へ渡る（W2-3 の入れ子の受け渡し）。止まった位置が 0 なら閉じる。
 //  【安全領域】板の下の余白 = 画面の下端から安全領域までの高さ（dp。Screen.DpScale で換算）。板の背景は画面の端まで。
 //  スクロールの窓の中の位置は安全領域の計算に入れない（CanvasSafeArea を板に付けると動かしている間に縮み直すため、C# で余白を当てる）。
+//  【動きなし】（2026-10-02）SheetOptions.Animate = false なら、大きさが測れたら開く段へすぐ移す（時間 0 の ScrollTo）。
+//  閉じる動きなしは ModalHandle.Close(結果, false)・ModalHost.CloseAll(false)（ModalPlane.RequestClose がその場で閉じ終える）。
 // ============================================================
 
 /// <summary>下からのシート。</summary>
@@ -34,6 +36,8 @@ public sealed class BottomSheet : ModalPlane
     private const float MetricsEpsilon = 0.5f;
     /// <summary>準備（大きさの測り・中身の作成）を待つフレームの上限。</summary>
     private const int MaxPrepareFrames = 120;
+    /// <summary>すぐ移す ScrollTo の時間（0 秒。動きなしで開く。2026-10-02）。</summary>
+    private const float InstantSeconds = 0f;
 
     /// <inheritdoc />
     public override ModalKind Kind => ModalKind.Sheet;
@@ -180,7 +184,8 @@ public sealed class BottomSheet : ModalPlane
         if (!_sizesApplied || _track.GetComponent<CanvasScroll>() is not { } scroll) return;
         if (MathF.Abs(scroll.MaxPosition.y - _panelHeight) > MetricsEpsilon) return;
         BeginEnter();
-        ScrollTo(SheetMath.DetentPosition(SheetMath.OpenDetent(_options), _panelHeight));
+        // 動きなし（SheetOptions.Animate = false。2026-10-02）なら開く段へすぐ移す（止まっているので次の UpdateOpen で開いた状態になる）
+        ScrollTo(SheetMath.DetentPosition(SheetMath.OpenDetent(_options), _panelHeight), _options.Animate);
     }
 
     /// <summary>開いている間: 幕の濃さを位置に合わせ、止まったら段を確かめる（0 なら閉じる）。</summary>
@@ -237,11 +242,12 @@ public sealed class BottomSheet : ModalPlane
         NavNode.SetTranslate(_panel, new Vector2(0f, BackPreviewMath.AnchorOffset(_panelHeight, pose.Scale, BackPreviewAnchor.Bottom)));
     }
 
-    /// <summary>位置へ motion.sheet 秒で動かす（曲線は CanvasScroll の ScrollTo の easeInOut）。</summary>
-    private void ScrollTo(float position)
+    /// <summary>位置へ motion.sheet 秒で動かす（曲線は CanvasScroll の ScrollTo の easeInOut。animate = false ならすぐ移す）。</summary>
+    private void ScrollTo(float position, bool animate = true)
     {
         if (_track.GetComponent<CanvasScroll>() is not { } scroll) return;
-        scroll.ScrollTo(new Vector2(0f, position), Theme.Number(NavTokens.MotionSheet));
+        // 時間 0 の ScrollTo はすぐ移す（CanvasScroll.JumpTo と同じ）
+        scroll.ScrollTo(new Vector2(0f, position), animate ? Theme.Number(NavTokens.MotionSheet) : InstantSeconds);
         if (Phase == ModalPhase.Exiting) _exitScrolled = true;
         Redraw.Request();
     }
