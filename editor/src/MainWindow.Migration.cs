@@ -71,6 +71,18 @@ public partial class MainWindow
             return;
         }
 
+        // ── アクタータブ表示中は始めない（2026-10-03 のレビュー #6）──
+        //   DoQuickSave はアクタータブ表示中はアクターだけを保存し、_isDirty はシーンとタブで 1 つなので、
+        //   「保存してから」でもシーンの未保存の編集は保存されず、実行後の読み直しで消える。
+        if (_activeActorPath != null)
+        {
+            SEEDEditor.Headless.EditorDialogs.Show(
+                MigrationMessages.UPGRADE_ACTOR_TAB_OPEN,
+                MigrationMessages.UPGRADE_WINDOW_TITLE,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         // ── 未保存の編集があるなら、先に保存か破棄を選ばせる（レビュー #8。判定は UpgradeUnsavedPolicy.cs）──
         //   アップグレードはディスクの .scene の prefab_hash も貼り直す。未保存のまま実行して後で保存すると、
         //   メモリの古い prefab_hash で上書きされ、次に開いたとき偽の「プレハブが更新されています」が出る。
