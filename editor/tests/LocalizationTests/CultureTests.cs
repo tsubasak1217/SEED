@@ -66,6 +66,28 @@ internal static class CultureTests
             Check.Equal("07:05", LocaleCulture.FormatTime(new TimeOnly(7, 5), "", Inv), "既定は短い時刻");
         });
 
+        // 2 回目のレビュー（docs/reviews/2026-10-03_code_review.md）#33（3 件目）: グレゴリオ暦でない文化（ar-SA の UmAlQura など）で
+        // 暦の範囲の外の日付を書くと ArgumentOutOfRangeException が呼び手へ飛んだ（FormatException しか捕まえていなかった）
+        h.Add("文化: 暦の範囲の外の日付（グレゴリオ暦でない文化）でも例外にせず書く・差し込みの {date:書式} も（レビュー #33）", () =>
+        {
+            // 既定の暦の範囲が DateTime より狭い文化を探す（ICU の環境なら ar-SA などがある。無ければ確かめられないので失敗にする）
+            CultureInfo? narrow = null;
+            foreach (var culture in CultureInfo.GetCultures(CultureTypes.SpecificCultures))
+            {
+                if (culture.Calendar.MaxSupportedDateTime >= DateTime.MaxValue.Date) continue;
+                narrow = culture;
+                break;
+            }
+            Check.True(narrow is not null, "暦の範囲が狭い文化がある（このプロセスは Invariant ではない）");
+            var beyond = narrow!.Calendar.MaxSupportedDateTime.AddDays(1);
+            string date = LocaleCulture.FormatDate(beyond, null, narrow);
+            Check.True(date.Length > 0, $"{narrow.Name}: 範囲の外の日付も書ける（{date}）");
+            string withPattern = LocaleCulture.FormatDate(beyond, "yyyy/M/d", narrow);
+            Check.Equal(beyond.ToString("yyyy/M/d", Inv), withPattern, $"{narrow.Name}: 書式つきは不変文化（グレゴリオ暦）で書く");
+            string inserted = LocaleFormatter.Format("期限 {when:yyyy/M/d}", new (string, object?)[] { ("when", beyond) }, narrow);
+            Check.Equal("期限 " + beyond.ToString("yyyy/M/d", Inv), inserted, $"{narrow.Name}: 差し込みも例外にしない");
+        });
+
         h.Add("文化: 端末の言語（このプロセスは Invariant ではないので CurrentUICulture の名前か、不変文化なら null）", () =>
         {
             string? system = LocaleCulture.DetectSystemLanguage();

@@ -4174,3 +4174,62 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   上下は外へ移る（指示どおり）。Unity の Explicit のような「この向きはこの部品へ」の上書き（IUiNavigable に向きごとの相手）や、グループの並びの向きで軸を決める案は未実装。
 - [ ] **【低】`UiNavigationDemo.cs` の名前** — 2026-10-03。指示の見本の名前 `templates/ui/scripts/UiNavigationDemo.cs` は画面の組み立ての見本（W2-7）が既に使っているので、
   `UiKeyNavigationDemo.cs` にした。見本のシーン（`ui_key_navigation.scene`）は作っていない（画面いっぱいの Canvas に付ければ子を作る）。
+
+## 2 回目のレビュー（docs/reviews/2026-10-03_code_review.md）の SEED.UI・SEED.Binding の項目 — 2026-10-03（lane3。L3-7）
+
+- [x] **#20【中】ModalHost: 面のプレハブが読めないと作りかけの数が減らず、その種類の戻るを永久に飲み込む** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 作りかけを帳面（`Navigation/Model/ModalOpeningBook.cs`）で数え、種類ごとの数は帳面の中身から数える（別の数を持たない）。
+  `ModalOpeningBook.MaxClaimWaitFrames`（60）フレームのうちに面のスクリプトが受け取らなければ、エラーを出して根を消し、手札を閉じる（`DialogHandle` は Dismissed・ほかは null）。
+  作りかけがある間は `Redraw.Request`。取りやめた鍵は上限のフレーム数で忘れる。`ModalHost` の破棄でも残った作りかけの手札を閉じる。docs/ui_navigation.md §3.1「作りかけの上限」。
+  単体テスト `NavigationReviewTests.cs`（帳面の上限・受け取り・取りやめた鍵・全部閉じるの再入）。**Play での目視は未確認**（無いプレハブの `Popup.Show` で 60 フレーム後に
+  エラーが出て戻るが画面のスタックへ届くこと）。
+- [x] **#21【中】`Push(GameObject, …, ReturnToParent)` を中身を作ったのと同じフレームに呼ぶと、下ろしたとき中身がシーンの根へ見えたまま出る** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 元の親は `TakeContent`（枠ができたフレーム）で読む。元の親が無い（シーンの根にあった）・消えたなら、シーンの根へ移して**隠す**（警告）。
+  レビューの案は「根へ移さず、隠して警告」だが、根へ移さないと枠と一緒に消え（`ReturnToParent` の「消さない」約束が破れ、アプリの参照も死ぬ）ので、根へ移して隠すにした。
+  決め方は `Navigation/Model/SuppliedContentRules.cs`（`ReleaseAction`）。親を読む時機はエンジンの上でしか確かめられない（**Play 未確認**）。
+- [x] **#22【中】同じ中身を 2 回積んでも防がず、上の段を下ろすと下の段が空の枠になる** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: ほかの段が持っている中身は `Push`・`Replace` が null を返して警告（`SuppliedContentRules.CheckSupplied`）。外れた段が `ReturnToParent` で持っているときだけ積める
+  （下ろす動きの途中の積み直し）。外れた段が `Destroy` で持っているなら断る。手放すとき、中身がもうこの枠の下に無ければ触らない（引き戻さない・消さない）。
+  枠へ移す前に外れた段の中身は忘れる（`ForgetUntakenSupplied`）。**挙動の変化**: 以前は受け付けていた 2 回目の `Push(同じ中身)` が null になる。
+- [x] **#23【中】`CloseAll` の結果を種類だけで決める** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 手札が `DialogHandle` なら Dismissed、それ以外は null（`ModalCloseOrder.ResultForHandle`）。全部閉じる・作りかけの取りやめ・受け取りの上限・
+  `ModalHost` の破棄・作れなかった面で共通（`ModalHost.CancelResult`）。旧い `ResultFor(ModalKind)` は公開のまま残す（CloseAll は使わない）。
+  **挙動の変化**: 帯が Dialog のポップアップ・`ShowPlane(ModalKind.Dialog, …)` の手札は、全部閉じるで null が入る（以前は箱入りの `DialogResult.Dismissed`）。
+- [x] **#24【中】`PrewarmMode.Reuse` を `KeepState=false` の画面で使うと OnScreenExit なしで OnScreenEnter が 2 回届く** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 作り置きへ戻して使い回すときは `notifyExit` によらず `OnScreenExit` を届ける（`ScreenContentPlan.NotifiesExit`・`PrewarmSlot.KeepsContentOnReturn`・
+  `ScreenStack.KeepsPrewarmContent`）。**挙動の変化**: Reuse の画面は覆われて手放されるとき `OnScreenHidden` の後に `OnScreenExit` を受ける。
+- [x] **#25【中】双方向の留め金が、購読側の補正を部品へ返さない** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: 留め金を外した後で観測値の今の値と部品の値を観測値の比べ方（`Observable<T>.Comparer`、internal）で比べ、違えば観測値から来た変化と同じ道で部品へ書く
+  （`TwoWayBinding.OnTargetChanged`）。購読の中で結び付けを外したら書かない。BindingTests 50 → 52 件。docs/ui_binding.md §4.3「購読の直しは部品へ返す」。
+  本体の `Activate(inFrame)` の変更（レビュー #7）とは別の関数なので、合流で重ならない見込み。
+- [ ] **【低】作り置きでない `KeepState = false` の画面も OnScreenExit なしで消える（#24 と同じ種類の漏れ。直していない）** — 2026-10-03（#24 を直すときに気付いた）。
+  覆われて手放す画面は `OnScreenHidden` の後、`OnScreenExit` を受けずに実体ごと消え、戻ると作り直した画面が `OnScreenEnter` を受ける。docs/ui_navigation.md §2 は
+  「入りで取り出で返す数え上げ」を勧めているので、手放す画面ではその数が 1 回ずつ漏れる。手放すときにも Exit を届けるか（Exit の意味が「下ろされる」から広がる）、
+  docs に「KeepState = false の画面は OnDestroy でも返す」と書くかを決める（今は docs に制限として書いた）。
+- [ ] **【低】同じスタックの残っている段の中身をアプリが付け替えて出しても、その段が外れるまでは使用中** — 2026-10-03（#22 の直しの範囲）。
+  使用中の判定は「中身を持つ段がスタックに残っているか」で、中身が今どこにあるかは見ない（FFI を呼ばない）。付け替えて別のスタックへ積むのは受け付ける。
+- [ ] **#31（低・まとめ）SEED.UI の細部** — 2026-10-03。
+  → **2 件目の後半（CloseAll の知らせの中の呼び直しで作りかけの数を二重に減らす）は 2026-10-03 に済（lane3）**: #20 の帳面で、取りやめる面を先に全部外してから手札を閉じる
+  （数は帳面の中身から数えるので二重に減らない。単体テストあり）。2 件目の前半（知らせの中で開いた面は閉じずに残る）は仕様として docs/ui_navigation.md §3.1 に書いた。
+  **残り（直していない）**: (1) 面のスクリプトが始まる前のダイアログを `Close()`（動きあり）で閉じると、札が 0.9 倍・幕なしで 0.2 秒見える（`ModalPlane.OnWidgetStart` で
+  `EarlyClose` を `OnPlaneStart` の前に見て、準備中のまま閉じる。Dialog の `Choose` は `OnPlaneStart` の後でないと入力欄の文字を読めないので、`BeginEnter` を止める形にする）。
+  (2) `ModalPlane.RequestClose` でダイアログを閉じる口だけ `Choose` を通らず `InputText` が null（public の `RequestClose` を外から閉じる入口へ回し、派生の内側の閉じは
+  別の protected の口にする。`Dialog.CloseFromOutside` が `RequestClose` を呼ぶので、そのままでは再帰する）。(3) 何も積まれていないスタックで `SetRoot` より先に
+  温め描きをすると、作り置きの画面が 1〜2 フレーム見えて押せる（`PrewarmSlot.Tick` に「温め描きしてよいか」〈段 0 があり不透明〉を渡し、根が無ければ待つ・透ける根なら飛ばす）。
+  どれもエンジンの上の振る舞い（(3) は純粋な段階に足せる）。
+- [ ] **#32（低・まとめ）データバインディングの細部** — 2026-10-03。
+  → **1 件目は 2026-10-03 に済（lane3）**: 作った時点の当てで変換（・当てる先の書き込み）が例外を投げたら、購読を外してから投げ直す（`ValueBinding` のコンストラクタ。
+  BindingTests 52 → 53 件）。双方向（`TwoWayBinding`）・一覧（`ListBinding`）の最初の当ては利用者の変換を通さないので同じ形にしていない（自作の当てる先の `Write` が投げれば同じく残る）。
+  → **2 件目は 2026-10-03 に済（lane3）**: `VisibleTarget` は読み戻しではなく最後に書いた値と比べ、最初の 1 回は必ず書く（Instantiate 直後の隠したプレハブの根へ `Bind.Visible(true)` が
+  書かれずに残った）。**Play 未確認**（構築の前に積んだ Visible の命令が構築の後に当たることは、ModalHost・ScreenStack が既に頼っている振る舞い）。
+  → **4 件目は 2026-10-03 に docs を直した（lane3）**: owner なしの L10n 版 `Bind.Text` は `L10n.Changed` の購読で次の言語の切り替えまで残る（docs/ui_binding.md §6）。
+  **残り（直していない）**: (3) 当てる先が無効・部品の付かないノードでも警告が出ず、owner なしだと毎フレーム待ち続ける（`BindingBase` で待ったフレームを数え、
+  `LocalizedLabel.MissingTargetGraceFrames` と同じ 30 フレームで 1 回警告する案。当てる先の説明の口が要る）。(5) フレームに 1 回の判定の f32 の時間（既存の項目
+  「フレームに 1 回の判定が `UnscaledElapsedTime` の float の比較」と同じ。144 Hz で約 36 時間で `BindingFrame.Tick` が止まる）: runtime から `NativeFrameContext` に
+  フレームの番号を渡すのが確実。C# だけで直すなら「Update の後の最初の LateUpdate で 1 回」の段の旗にする案（ScriptBridge。デバッグコマンド・プラットフォームの知らせも同じ）。
+- [x] **#33（低・まとめ）ローカライズの細部** — 2026-10-03。
+  → **2026-10-03 に済（lane3）**: (1) 表のファイル名は書きそろえた後のコード（`"pt_BR"` は `pt-BR.json`）とコメント（`LocaleLanguage.Code`・`LocalePaths.TablePath`）と
+  docs/localization.md §2.1・§2.3 に書いた（振る舞いは変えていない）。(2) `L10n.Configure` の説明を実際に合わせた（OnStart の順は決まっていないので、先に `Get` した文字は
+  古いまま。`Changed` を受けて引き直す）。(3) `LocaleCulture.FormatDate` と差し込みの `{name:書式}`（`LocaleFormatter.Render`）は、文化の暦で表せない日付
+  （ar-SA の UmAlQura は 1900〜2077 年）で `ArgumentOutOfRangeException` を捕まえて不変文化（グレゴリオ暦）で書く（レビューは推測だったが、実行で例外を確かめた。
+  LocalizationTests 61 → 62 件）。

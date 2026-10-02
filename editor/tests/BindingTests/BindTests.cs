@@ -44,6 +44,28 @@ public static class BindTests
             Check.Equal("1,200 円|1,234,567 円", string.Join("|", label.Writes), "変換した文字");
         });
 
+        // 2 回目のレビュー #32（1 件目）: 作った時点の当てで変換が例外を投げると、呼び手は結び付けを受け取れず（owner にも預けられない）、
+        // 観測値の購読だけが残って、その後も書き続けた
+        h.Add("一方向: 作った時点の当てで変換が例外を投げたら、購読を残さずに外してから投げ直す（レビュー #32）", () =>
+        {
+            BindingFrame.ResetForReload();
+            var count = new Observable<int>(0);
+            var label = new FakeTarget<string>();
+            bool threw = false;
+            try
+            {
+                Bind.OneWay(label, count, n => n == 0 ? throw new InvalidOperationException("最初の変換") : $"{n} 回");
+            }
+            catch (InvalidOperationException)
+            {
+                threw = true;
+            }
+            Check.True(threw, "例外は呼び手へ届く（握り潰さない）");
+            Check.Equal(0, count.SubscriberCount, "観測値の購読は残らない");
+            count.Value = 1;
+            Check.Equal(0, label.Writes.Count, "受け取れなかった結び付けは書き続けない");
+        });
+
         h.Add("一方向: 当てる先が消えたら（IsAlive が false）書かずに自分を外す", () =>
         {
             BindingFrame.ResetForReload();
@@ -206,6 +228,78 @@ public static class BindTests
             Check.Equal(1, gone.Writes.Count, "消えた部品へは書かない");
             Check.Equal(0, other.SubscriberCount, "外れる");
             Check.Equal(0, gone.ActiveListeners, "部品の口も外れる");
+        });
+
+        // 2 回目のレビュー（docs/reviews/2026-10-03_code_review.md）#25: 部品 → 値の留め金の間に購読が値を直すと、直した値が部品へ返らず
+        // 表示と値が食い違ったまま残った（トグルは ON の見た目・観測値は false）
+        h.Add("双方向: 購読が直した値（拒否して戻す・範囲に収める）は留め金を外した後で部品へ書き戻す（レビュー #25）", () =>
+        {
+            BindingFrame.ResetForReload();
+            using var log = new LogCapture();
+
+            // 拒否して戻す: 許可が無ければ ON を OFF へ戻す
+            var notify = new Observable<bool>(false);
+            var toggle = new FakeWidget<bool>();
+            Bind.TwoWay(toggle, notify);
+            bool granted = false;
+            notify.Subscribe(on => { if (on && !granted) notify.Value = false; });
+            toggle.UserChange(true);
+            Check.Equal(false, notify.Value, "観測値は購読が戻した値");
+            Check.Equal(false, toggle.Current, "部品も戻る（ON の見た目のまま残らない）");
+            Check.Equal("False,False", string.Join(",", toggle.Writes), "書き戻しは 1 回（最初の当て ＋ 戻した値）");
+
+            // 直さなければ書き戻さない（利用者の操作はそのまま）
+            granted = true;
+            toggle.UserChange(true);
+            Check.Equal(true, notify.Value, "受け入れた値");
+            Check.Equal(2, toggle.Writes.Count, "直していなければ部品へ書かない");
+
+            // 範囲に収める: スライダの上限
+            var volume = new Observable<float>(0.5f);
+            var slider = new FakeWidget<float>();
+            Bind.TwoWay(slider, volume);
+            const float Limit = 0.8f;
+            volume.Subscribe(v => { if (v > Limit) volume.Value = Limit; });
+            slider.UserChange(0.95f);
+            Check.Equal(Limit, volume.Value, "観測値は上限");
+            Check.Equal(Limit, slider.Current, "部品も上限へ");
+
+            // 書くと必ず知らせる部品（選択のグループ）でも往復しない: 選べない項目を前の項目へ戻す
+            var index = new Observable<int>(1);
+            var group = new FakeWidget<int> { RaiseOnWrite = true };
+            Bind.TwoWay(group, index);
+            const int Forbidden = 3;
+            index.Subscribe(i => { if (i == Forbidden) index.Value = 1; });
+            group.UserChange(Forbidden);
+            Check.Equal(1, index.Value, "観測値は戻した項目");
+            Check.Equal(1, group.Current, "部品も戻した項目");
+            Check.Equal(0, log.Count, "警告なし（再入の上限に当たらない）");
+        });
+
+        h.Add("双方向: 書き戻しの比べ方は観測値の比べ方（等しいとみなす値なら部品の文字を書き換えない）・購読の中で外したら書き戻さない（レビュー #25）", () =>
+        {
+            BindingFrame.ResetForReload();
+            // 大文字小文字を区別しない観測値: 部品の "ABC" は "abc" と等しいので観測値は変わらず、部品の打った文字も書き換えない
+            var name = new Observable<string>("abc", StringComparer.OrdinalIgnoreCase);
+            var field = new FakeWidget<string>();
+            Bind.TwoWay(field, name);
+            field.UserChange("ABC");
+            Check.Equal("abc", name.Value, "観測値は変わらない（等しい）");
+            Check.Equal("ABC", field.Current, "部品の文字はそのまま");
+            Check.Equal("abc", string.Join(",", field.Writes), "書き戻さない（最初の当てだけ）");
+
+            // 購読の中で結び付けを外した: 直した値があっても外した部品へは書かない
+            var on = new Observable<bool>(false);
+            var check = new FakeWidget<bool>();
+            var binding = Bind.TwoWay(check, on);
+            on.Subscribe(v =>
+            {
+                binding.Dispose();
+                if (v) on.Value = false;
+            });
+            check.UserChange(true);
+            Check.Equal(false, on.Value, "観測値は戻した値");
+            Check.Equal(1, check.Writes.Count, "外した後は書かない（最初の当てだけ）");
         });
 
         // ── 一覧 ──────────────────────────────────────────────

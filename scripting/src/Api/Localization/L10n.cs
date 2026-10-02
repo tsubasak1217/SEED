@@ -100,7 +100,9 @@ public static class L10n
 
     /// <summary>
     /// 置き場を変える（"assets://mygame/locale"。空なら既定）。読み込み済みなら読み直して <see cref="Changed"/> を知らせる。
-    /// 起動のスクリプトの OnStart で、ほかのスクリプトが文を引く前に呼ぶとよい。
+    /// スクリプトの OnStart の順は決まっていないので、起動のスクリプトの OnStart で呼んでも、ほかのスクリプトが先に文を引くことがある
+    /// （2026-10-03。2 回目のレビュー #33）。Changed を受ける LocalizedText・LocalizedLabel・Bind.Text の L10n 版は読み直しで直るが、
+    /// それより前に Get で引いて自分で持った文字は古いまま（置き場に表が無ければ "[key]"）なので、Changed を受けて引き直すこと。
     /// </summary>
     /// <param name="root">置き場。</param>
     public static void Configure(string root)

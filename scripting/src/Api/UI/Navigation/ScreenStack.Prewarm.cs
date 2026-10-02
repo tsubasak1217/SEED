@@ -12,7 +12,9 @@ namespace SEED.UI;
 //  段階の移り変わりは純粋な PrewarmSlot（Model/PrewarmSlot.cs）が決め、ここはエンジンの操作（作る・見せる・隠す・付け替える）に置き換えるだけ。
 //  - 温まった: できあがって PrewarmSlot.SettleFrames 経ち、画面のスクリプトの IsPrewarmReady が true（上限 MaxWaitFrames）
 //  - 温め描き（PrewarmOptions.WarmDrawFrames > 0）: 枠をスタックの段 0 より奥のレイヤー（−1 段）で見せて、文字の字形を焼いておく
-//  - 使い終わった後（PrewarmMode）: Once は画面と一緒に消える・Refill は空いた時間に作り直す・Reuse は枠ごと隠して戻す（作り直さない）
+//  - 使い終わった後（PrewarmMode）: Once は画面と一緒に消える・Refill は空いた時間に作り直す・Reuse は枠ごと隠して戻す（作り直さない）。
+//    Reuse へ戻すときは、覆われて手放すだけ（KeepState = false）の画面にも OnScreenExit を届ける（次に貸すとまた OnScreenEnter が届く。
+//    2026-10-03。2 回目のレビュー #24。KeepsPrewarmContent）
 //  - 隠した枠は戻るの登録簿に「どの段でもない枠」として載せる（中の入れ子のスタックが戻るを受けない）
 // ============================================================
 
@@ -242,6 +244,18 @@ public sealed partial class ScreenStack
         entry.Content.SetParent(inBody ? body : entry.Frame);
         entry.ContentInBody = inBody;
     }
+
+    /// <summary>
+    /// 段の実体が外れたとき、中身を消さずに作り置きへ戻して使い回すか（<see cref="ReturnPrewarm"/> が枠を残す条件の先読み。
+    /// 貸している Reuse で、今も同じ作り置きで、枠がある）。DestroyEntry が OnScreenExit を届けるかを決めるのに使う（2026-10-03。レビュー #24）。
+    /// </summary>
+    /// <param name="instance">外れる段の実体。</param>
+    /// <returns>使い回すなら true。</returns>
+    private bool KeepsPrewarmContent(Instance instance) =>
+        instance.Prewarm is { } entry
+        && entry.Slot.KeepsContentOnReturn
+        && _prewarm.TryGetValue(entry.Slot.Prefab, out var now) && ReferenceEquals(now, entry)
+        && instance.Frame.IsValid;
 
     /// <summary>
     /// 借りた作り置きの画面が外れた（DestroyEntry の ReleaseContent から）。Reuse で今も同じ作り置きなら、枠を隠して見た目の上書きを戻し、

@@ -8,7 +8,7 @@
 
 | 置き場 | 役割 |
 |---|---|
-| `scripting/src/Api/UI/Navigation/Model/` | 純粋な計算（エンジンに触れない。`editor/tests/UiComponentsTests` で検算）: 出入りの置き方（`NavTransition.cs`）・スタック（`ScreenStackModel.cs`）・タブ（`TabModel.cs`）・戻るの段（`BackChain.cs`）・ダイアログ（`DialogModel.cs`）・シート（`SheetMath.cs`）・トースト（`ToastQueue.cs`）・フォーカス（`FocusModel.cs`）・重なりのレイヤー（`UiLayers.cs`）・トークンの名前（`NavTokens.cs`）・覆いの指定（`OverlayOptions.cs`）。2026-10-02（lane3）: 作り置き（`PrewarmOptions.cs`・`PrewarmSlot.cs`）・中身の出所（`ScreenContentSource.cs`）・全部閉じる順（`ModalCloseOrder.cs`）・ポップアップ（`PopupOptions.cs`・`PopupCardMath.cs`）・画面の下へ回す面の底上げ（`ParkedPlaneLayers.cs`） |
+| `scripting/src/Api/UI/Navigation/Model/` | 純粋な計算（エンジンに触れない。`editor/tests/UiComponentsTests` で検算）: 出入りの置き方（`NavTransition.cs`）・スタック（`ScreenStackModel.cs`）・タブ（`TabModel.cs`）・戻るの段（`BackChain.cs`）・ダイアログ（`DialogModel.cs`）・シート（`SheetMath.cs`）・トースト（`ToastQueue.cs`）・フォーカス（`FocusModel.cs`）・重なりのレイヤー（`UiLayers.cs`）・トークンの名前（`NavTokens.cs`）・覆いの指定（`OverlayOptions.cs`）。2026-10-02（lane3）: 作り置き（`PrewarmOptions.cs`・`PrewarmSlot.cs`）・中身の出所（`ScreenContentSource.cs`）・全部閉じる順（`ModalCloseOrder.cs`）・ポップアップ（`PopupOptions.cs`・`PopupCardMath.cs`）・画面の下へ回す面の底上げ（`ParkedPlaneLayers.cs`）。2026-10-03（lane3。2 回目のレビュー）: 作りかけの面の帳面（`ModalOpeningBook.cs`）・渡された中身の受け付けと手放し方（`SuppliedContentRules.cs`） |
 | `scripting/src/Api/UI/Navigation/` | 部品のスクリプト: `ScreenStack`（`.Content`・`.Prewarm`・`.BackPreview` の部分クラス）・`UiScreen`（画面の土台と手札 `ScreenHandle`）・`TabHost`・`TabBar`・`TabItem`・`ModalHost`（`.CloseAll`・`.Parking`）・`ModalPlane`（面の土台）・`ModalHandle`（`DialogHandle`）・`Dialog`・`BottomSheet`・`TopSheet`・`Popup`（`IPopupContentSize`）・`ToastHost`・`Toast`・`BackDispatcher`・`UiFocus`・`NavigatorRegistry`・`GestureRelay`・`SafeInsets`・`NavNode` |
 | `scripting/src/Api/UI/Looks/UiCurve.cs`・`TabLook.cs` | 動きの曲線（3 次ベジェ）・タブの項目の見た目 |
 | `scripting/src/Api/UI/Theme/default_theme.json` | 画面の組み立てのトークン（§9） |
@@ -50,7 +50,7 @@ UiNavigation（Canvas・単位 dp）
 | `SetRoot(prefab, transition = None, …)` | 根からやり直す（旧いいちばん上が動いて退き、残りは動かさずに外す） |
 | `RootPrefab`（フィールド） | 最初の根（空なら積まない）。`RootSafeArea` = false で根を安全領域の外（シェルが自分で扱う） |
 | `RootAdoptChild`（フィールド） | **置いてある根**: `Screens` の下にあらかじめ置いたこの名前の子を、`RootPrefab` から作る代わりに根として引き取る（1 回だけ・根の段だけ。無ければ従来どおり作り警告）。シーンにプレハブのインスタンスを置いておけば Edit でも実行時と同じ見た目になる（2026-10-02。Wake or Pay の App.scene: RootStack の `Shell`、シェルの各タブの `AlarmList`・`ActivityTab`・`GardenTab`・`ShopTab`） |
-| `Push(GameObject 中身, …, release)`・`Replace(GameObject 中身, …)` | **渡された中身**（2026-10-02。§2.8）: 組み立て済みの中身を画面として積む・置き換える（中身が無効なら null）。外れたときは `ScreenContentRelease.Destroy`（既定・画面と一緒に消す）か `ReturnToParent`（積んだときの親へ戻す） |
+| `Push(GameObject 中身, …, release)`・`Replace(GameObject 中身, …)` | **渡された中身**（2026-10-02。§2.8）: 組み立て済みの中身を画面として積む・置き換える（中身が無効なら null。2026-10-03 から、同じ中身をほかの段が持っていても null・警告）。外れたときは `ScreenContentRelease.Destroy`（既定・画面と一緒に消す）か `ReturnToParent`（枠へ移したときの親へ戻す） |
 | `Prewarm(prefab, PrewarmOptions?)`・`IsPrewarmed`・`GetPrewarmStage`・`DiscardPrewarm` | **作り置き**（2026-10-02。§2.8）: 空いた時間に隠した枠の中で画面を組み立てておき、次にそのプレハブを積むときに使う |
 | `IndexOf(ScreenHandle)` | 手札の画面の段の添字（根 = 0。積まれていない・外れた画面は −1。2026-10-02） |
 | `HandleBack()`・`WouldHandleBack()`・`BackPreviewTarget` | 戻るの段の Navigation の層と同じ決め方の口（2026-10-02 に公開。§5.2） |
@@ -128,7 +128,10 @@ UiNavigation（Canvas・単位 dp）
 
 そのため「画面を点けたまま」「描き続け」のような**共有の頼みを、入りで取って出で返す**と、置き換えでは新しい画面が取った後に古い画面が返して下ろしてしまう。
 数え上げ（取った回数だけ返されたら下ろす）にする（Wake or Pay の `KeepScreenOnLease`・`ContinuousRedrawLease`）。作り置きを使い回す画面（`PrewarmMode.Reuse`）
-には、使うたびに `OnScreenEnter`、外れるたびに `OnScreenExit` が届く。
+には、使うたびに `OnScreenEnter`、外れるたびに `OnScreenExit` が届く（2026-10-03 から、覆われて手放すだけ〈`KeepState = false`〉で作り置きへ戻るときも
+`OnScreenHidden` の後に `OnScreenExit` が届く。以前は Exit なしで次に貸したときの Enter が届き、数え上げが漏れた。2 回目のレビュー #24）。
+**残した制限**: 作り置きでない `KeepState = false` の画面は、手放すとき `OnScreenExit` を受けずに実体ごと消え、戻ってきたら作り直した画面が `OnScreenEnter` を受ける
+（従来どおり。Enter/Exit の数え上げをする画面は `KeepState = true` にするか、`OnDestroy` でも返す。backlog）。
 
 ### 2.7 Edit 上で画面を見る（段階 A: 置いてある根・段階 B: プレビュー。2026-10-02）
 
@@ -175,8 +178,11 @@ ScreenHandle? h = root.Push(myBody, NavTransition.Push, args, options, ScreenCon
 | 温まった | 中身ができあがって `PrewarmSlot.SettleFrames`（2）フレーム経ち（部品のスクリプトの `OnStart` と最初の Update が済む）、画面のスクリプトの `UiScreen.IsPrewarmReady`（既定 true）が true。重い準備を Update で続ける画面は済むまで false を返す。待つ上限 `PrewarmSlot.MaxWaitFrames`（300）を過ぎたら警告して温まったとみなす |
 | 温め描き | `WarmDrawFrames` ≥ 1 なら、温まった枠を段 0 の画面より 1 段奥のレイヤー（−`LayerStep`）で見せ、そのフレーム数だけ描いてから隠す（隠したノードは描かれないので、字形は最初に画面へ出したフレームで焼かれる。PC で約 33 ms）。根の画面の不透明な背景の下なので利用者には見えない（**根の画面が透けるスタックでは見えるので使わない**） |
 | 貸す | 作り置きがあるプレハブを積むと、`CreateInstance` が枠ごと借りる（作っている途中・温め描きの途中でも借りる。もう 1 つ作るより軽い。温め描きは打ち切る）。中身ができあがっていれば次のフレームで `OnScreenEnter`。同じプレハブの 2 つ目（作り置きを貸している間に同じ画面をもう 1 つ積む）はプレハブから作る |
-| 外れたとき（`PrewarmMode`） | `Once`: 画面と一緒に消え、作り置きは無くなる。`Refill`: 画面と一緒に消え、次に空いたフレームで作り直す。`Reuse`: `OnScreenExit` の後、枠ごと隠して見た目の上書き（底上げ・ずらし・倍率）を戻し、押下を取り消して作り置きへ戻す（作り直さない。画面のスクリプトには次に使うときにまた `OnScreenEnter` が届く。前の状態は Enter で作り直す） |
-| 渡された中身 | 枠ができたフレームに枠の `Body`（安全領域の中）か枠の直下へ付け替える（自分を隠していても見せる）。作り直せないので `KeepState` は常に true として扱う（`ScreenContentPlan.EffectiveKeepState`）。外れたとき `Destroy`（既定）は画面と一緒に消え、`ReturnToParent` は `OnScreenExit` の後・枠を消す前に、押下を取り消して積んだときの親へ戻す（付け替えは枠を消すより先に発行するので、中身は消えない）。戻した中身は隠れないので、親を隠した置き場にしておく |
+| 外れたとき（`PrewarmMode`） | `Once`: 画面と一緒に消え、作り置きは無くなる。`Refill`: 画面と一緒に消え、次に空いたフレームで作り直す。`Reuse`: `OnScreenExit` の後、枠ごと隠して見た目の上書き（底上げ・ずらし・倍率）を戻し、押下を取り消して作り置きへ戻す（作り直さない。画面のスクリプトには次に使うときにまた `OnScreenEnter` が届く。前の状態は Enter で作り直す）。覆われて手放すだけ（`KeepState = false`）で戻すときも `OnScreenExit` を届ける（2026-10-03。レビュー #24。`ScreenContentPlan.NotifiesExit`・`PrewarmSlot.KeepsContentOnReturn`） |
+| 渡された中身 | 枠ができたフレームに枠の `Body`（安全領域の中）か枠の直下へ付け替える（自分を隠していても見せる）。作り直せないので `KeepState` は常に true として扱う（`ScreenContentPlan.EffectiveKeepState`）。外れたとき `Destroy`（既定）は画面と一緒に消え、`ReturnToParent` は `OnScreenExit` の後・枠を消す前に、押下を取り消して元の親へ戻す（付け替えは枠を消すより先に発行するので、中身は消えない）。戻した中身は隠れないので、親を隠した置き場にしておく |
+| 渡された中身の元の親（2026-10-03。レビュー #21） | 元の親は積んだ時点ではなく、**枠へ移すフレーム（`TakeContent`）に読む**（`_body ??= GameObject.Instantiate(path, _store); root.Push(_body, …, ReturnToParent)` のように同じフレームに作った中身は、積んだ時点ではできあがっておらず親が無効に見え、下ろすとシーンの根の直下へ見えたまま出た）。元の親が無い（シーンの根にあった）・消えたなら、**シーンの根へ移して隠す**（消さない。警告 `渡された中身の元の親がありません`） |
+| 同じ中身を 2 回（2026-10-03。レビュー #22。`Model/SuppliedContentRules.cs`） | ほかの段が持っている中身は**積まない**（`Push`・`Replace` は null・警告 `ほかの段で使用中`。二度押しで 2 段目へ移ると 1 段目が空の枠になり、既定の Destroy では 2 段目を下ろすと中身も消えた）。外れた段（下ろした・置き換えた）が `ReturnToParent` で持っているなら積める（出入りは順に動くので、外れる処理で戻してから新しい段が枠へ移す＝下ろす動きの途中にもう一度積む形）。外れた段が `Destroy` で持っているなら積まない（警告。外れる処理で消える）。同じスタックの残っている段の中身をアプリが自分で付け替えて出しても、その段が外れるまでは使用中のまま |
+| 手放すときの確かめ（2026-10-03。レビュー #22） | 外れるとき、中身が**もうこの枠の下に無ければ触らない**（アプリが付け替えた中身を元の親へ引き戻さない・`Destroy` でも消さない。画面のスクリプトの `Navigator`・`Handle` は外す） |
 | 戻るとフォーカス | 隠した枠は戻るの登録簿に「どの段でもない枠」として載せる（中の入れ子のスタック・タブは戻るを受けない）。使い回す中身・戻した中身の画面のスクリプトは、スタックと手札の参照（`Navigator`・`Handle`）を外す |
 | ログ | `[UI] nav: … prewarm <プレハブ> mode=… warmDraw=…`・`作り置きを作り始めた`・`作り置きが温まった（N フレーム）`・`作り置きを貸した（N 回目・段階）`・`作り置きへ戻した（使い回す）`・`中身を引き取った（Supplied など）` |
 
@@ -194,6 +200,13 @@ ScreenHandle? h = root.Push(myBody, NavTransition.Push, args, options, ScreenCon
 帯の底上げは `layer.overlay`・`layer.sheet`・`layer.dialog`、帯の中の j 番目は j × `layer.modal_step`（後から開いた面が手前）。
 面は準備ができるまで隠し、開いている間はフォーカスの範囲を前へ出す。手札（`ModalHandle`・`DialogHandle`）で閉じるのを待つ・スクリプトから閉じる。
 
+**作りかけの上限**（2026-10-03。2 回目のレビュー #20。純粋な帳面は `Model/ModalOpeningBook.cs`）: 作ったが面のスクリプトがまだ受け取っていない面（作りかけ）は、
+その種類の数（`Count`）に入り、戻るを受けて捨てる（開いた直後の二度押しで後ろが閉じない）。`ModalOpeningBook.MaxClaimWaitFrames`（60）フレームのうちに
+受け取られなければ（面のプレハブが無い〈templates/ui を取り込み直していないプロジェクトの `popup.actor` など〉・誤ったパス・根に `ModalPlane` の派生が無い）、
+エラー（`… の面のスクリプトが 60 フレームのうちに始まりません`）を出し、根を消して手札を閉じる（`DialogHandle` は `Dismissed`・ほかは null）。
+以前は作りかけの数が減らず、その種類の戻るを永久に飲み込み、`WhenClosed` も終わらなかった。作りかけがある間は次のフレームを描かせる（on_demand でも数え切る）。
+`ModalHost` が消えるとき（シーンの切り替え・Play の終わり）に残った作りかけの手札も同じ結果で閉じる。
+
 **任意の面のプレハブで開く**（2026-10-02。backlog W3-6 (3)。欄の `OverlayPrefab` などを一時的に替えなくてよい）:
 
 | 口 | 規則 |
@@ -208,10 +221,11 @@ ScreenHandle? h = root.Push(myBody, NavTransition.Push, args, options, ScreenCon
 | 項目 | 規則 |
 |---|---|
 | 順 | 戻るの段と同じく上の層から: ダイアログ → シート → 覆い（ポップアップを含む）。同じ種類の中は後から開いた面から（戻るを 1 回ずつ押したのと同じ） |
-| 結果 | ダイアログは `DialogResult.Dismissed`（`Dismiss()` と同じ。入力欄の `InputText` は null のまま。2026-10-03 から手札の Close と同じくボタンと同じ決め方〈`Dialog.Choose`〉を通る＝入力欄のフォーカスとキーボードの持ち上げを片付ける。§3.2）、シート・覆い・ポップアップは null（幕・戻るで閉じたのと同じ） |
+| 結果 | **手札の型で決める**（2026-10-03。2 回目のレビュー #23。`ModalCloseOrder.ResultForHandle`）: `ShowDialog` の手札（`DialogHandle`）は `DialogResult.Dismissed`（`Dismiss()` と同じ。入力欄の `InputText` は null のまま。2026-10-03 から手札の Close と同じくボタンと同じ決め方〈`Dialog.Choose`〉を通る＝入力欄のフォーカスとキーボードの持ち上げを片付ける。§3.2）、それ以外の手札（シート・覆い・ポップアップ・`ShowPlane` の自前の面）は null（幕・戻るで閉じたのと同じ）。帯が Dialog のポップアップ（`PopupOptions.Kind = Dialog`）や `ShowPlane(ModalKind.Dialog, …)` の面も手札は普通の `ModalHandle` なので null（以前は種類で決めて箱入りの `DialogResult.Dismissed` が入った。旧い `ModalCloseOrder.ResultFor(ModalKind)` は互換のために残すが CloseAll は使わない） |
 | 閉じない設定の面 | `DismissOnScrimTap`・`CancelableByBack` = false の面・進捗の札も閉じる（指・戻るでは閉じない面を、アプリの都合で閉じる口） |
 | 動き | animate = true: 各面が出る動きの後に手札が閉じる（もう閉じる動きの途中の面はそのまま・数えない）。false: 出る動きを見せずにこの呼び出しの中で閉じ、手札の `Closed`・`Completed` も**閉じる順に**この中で届く（閉じる動きの途中の面もすぐ閉じ終える） |
-| 作りかけ | 面のスクリプトがまだ動いていない面は、見せずに取りやめて手札をこの呼び出しの中で閉じる（動きの有無によらない。後で面のスクリプトが始まっても黙って消える） |
+| 作りかけ | 面のスクリプトがまだ動いていない面は、見せずに取りやめて手札をこの呼び出しの中で閉じる（動きの有無によらない。後で面のスクリプトが始まっても黙って消える）。取りやめる面は先に全部帳面から外すので、手札の知らせの中で `CloseAll` を呼び直しても同じ面を二度扱わない（2026-10-03。レビュー #31。以前は作りかけの数を二重に減らした） |
+| 知らせの中で開いた面 | 閉じる面は呼んだ時点で決まる。手札の `Closed`・`Completed` の中で新しく開いた面は閉じずに残る（閉じた後に開き直す使い方のため。それも閉じるなら知らせの中で `CloseAll` を呼び直す） |
 | 画面の下へ回した面（§3.7） | 閉じる（見えない所で出る動きをして閉じる） |
 | 戻り値 | この呼び出しで閉じ始めた・閉じた面の数（作りかけの取りやめを含む） |
 

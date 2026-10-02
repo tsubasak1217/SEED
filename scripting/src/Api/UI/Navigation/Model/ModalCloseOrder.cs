@@ -9,8 +9,9 @@ namespace SEED.UI;
 //
 //  閉じる順は戻るの段（BackOrder）と同じく上の層から: ダイアログ → シート → 覆い。同じ種類の中は後から開いた面（手前）から。
 //  戻るを 1 回ずつ押して閉じていったのと同じ順になる（Wake or Pay は鳴動画面を出す前に戻るを上限つきで繰り返して代えていた）。
-//  結果: ダイアログは DialogResult.Dismissed（DialogHandle.Dismiss と同じ）、シート・覆い（ポップアップを含む）は null
-//  （幕のタップ・戻るで閉じたときと同じ）。閉じない設定（DismissOnScrimTap・CancelableByBack = false）の面も閉じる。
+//  結果（ResultForHandle。2026-10-03。2 回目のレビュー #23）: 手札が DialogHandle なら DialogResult.Dismissed（DialogHandle.Dismiss と同じ）、
+//  それ以外（シート・覆い・ポップアップ〈帯が Dialog でも〉・自前の面）は null（幕のタップ・戻るで閉じたときと同じ）。
+//  閉じない設定（DismissOnScrimTap・CancelableByBack = false）の面も閉じる。
 // ============================================================
 
 /// <summary>開いている面を全部閉じる順と結果。</summary>
@@ -38,8 +39,23 @@ public static class ModalCloseOrder
         return order;
     }
 
-    /// <summary>全部閉じるで閉じた面の結果（ダイアログは Dismissed・シートと覆いは null）。</summary>
+    /// <summary>
+    /// 種類だけで決めた結果（ダイアログの種類は Dismissed・シートと覆いは null）。
+    /// <b>ModalHost.CloseAll はこれを使わない</b>（2026-10-03。2 回目のレビュー #23）: 帯が Dialog のポップアップ（PopupOptions.Kind = Dialog）や
+    /// ShowPlane(ModalKind.Dialog, …) で開いた自前の面の手札は普通の ModalHandle なので、種類で決めると箱入りの DialogResult が入る。
+    /// 結果は手札の型で決める <see cref="ResultForHandle(bool)"/> を使うこと（互換のために残す）。
+    /// </summary>
     /// <param name="kind">面の種類。</param>
-    /// <returns>手札へ渡す結果。</returns>
+    /// <returns>種類だけで決めた結果。</returns>
     public static object? ResultFor(ModalKind kind) => kind == ModalKind.Dialog ? DialogResult.Dismissed : null;
+
+    /// <summary>
+    /// 全部閉じる・開くのを取りやめたときに手札へ渡す結果（2026-10-03。2 回目のレビュー #23）: 手札が DialogHandle（ShowDialog で開いた）なら
+    /// DialogResult.Dismissed（Dismiss と同じ）、それ以外は null（幕・戻るで閉じたのと同じ）。面の種類（帯）では決めない
+    /// （帯が Dialog のポップアップ・ShowPlane(ModalKind.Dialog, …) の自前の面の手札も null。以前は箱入りの DialogResult.Dismissed が入り、
+    /// <c>(MyResult?)await h.WhenClosed</c> のような受け手が InvalidCastException になった）。
+    /// </summary>
+    /// <param name="isDialogHandle">手札が DialogHandle か。</param>
+    /// <returns>手札へ渡す結果。</returns>
+    public static object? ResultForHandle(bool isDialogHandle) => isDialogHandle ? DialogResult.Dismissed : null;
 }

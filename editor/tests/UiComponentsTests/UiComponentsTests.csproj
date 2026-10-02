@@ -41,6 +41,9 @@
     遷移の時計の直し（2026-09-30）: 動きの 1 フレームの上限・始めのフレームを数えない（MotionStep）、入ってくる中身の落ち着き待ち
     （ContentSettleGate）、画面の出入り 1 回の時計（TransitionClock）と、Wake or Pay の編集画面の重いフレームの列での直す前との比べ
     （TransitionClockTests.cs。対象は Navigation/Model/*.cs の取り込みに含まれる）。
+    2026-10-03（lane3。L3-7。2 回目のレビュー #20〜#24・#31）: 作りかけの面の帳面（受け取りの上限・取りやめた鍵・全部閉じるの再入）、全部閉じるの結果（手札の型）、
+    渡された中身の受け付けと手放し方、使い回す作り置きへ戻すときの OnScreenExit（NavigationReviewTests.cs。ModalOpeningBook・SuppliedContentRules も
+    Navigation/Model/*.cs の取り込みに含まれる）。
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>

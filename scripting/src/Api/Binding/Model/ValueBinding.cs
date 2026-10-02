@@ -38,7 +38,17 @@ internal sealed class ValueBinding<TSource, TTarget> : BindingBase
 
         // 先に購読してから今の値を読む（Computed・Deferred は最初の購読で依存をつなぎ、今の値を覚える）
         Own(source.Subscribe(Apply));
-        Apply(source.Value);
+        try
+        {
+            Apply(source.Value);
+        }
+        catch
+        {
+            // 最初の当てが例外（変換・当てる先の書き込み）: 呼び手は結び付けを受け取れず owner にも預けられないので、
+            // 購読を残さずに外してから投げ直す（以前は購読だけが残り、その後も書き続けた。2026-10-03。2 回目のレビュー #32）
+            Dispose();
+            throw;
+        }
     }
 
     /// <summary>今の値を変換し直して当てる（値は同じでも当てる。言語の切り替えなど）。</summary>

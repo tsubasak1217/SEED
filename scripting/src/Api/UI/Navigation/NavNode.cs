@@ -79,4 +79,33 @@ internal static class NavNode
 
     /// <summary>エンティティの鍵（登録簿の辞書の鍵）。</summary>
     public static (uint, uint) Key(GameObject node) => (node.Entity.Index, node.Entity.Generation);
+
+    /// <summary>
+    /// アクタのノードとして今もあるかを問う疑似コンポーネントの名前（Rust 側 has_component の "GameObject"＝アクタの索引に載っているか。
+    /// SEED.Binding の ActorLife と同じ問い）。
+    /// </summary>
+    private const string ActorPseudoComponent = "GameObject";
+
+    /// <summary>
+    /// ノードが今もアクタとしてあるか（ハンドルが有効で、破棄されていない。2026-10-03。GameObject.IsValid はハンドルが束縛されているかだけ）。
+    /// Instantiate したフレームの構築の前は false。
+    /// </summary>
+    public static bool Exists(GameObject node) => node.IsValid && node.HasComponent(ActorPseudoComponent);
+
+    /// <summary>
+    /// <paramref name="node"/> が <paramref name="ancestor"/> の子孫か（今の木の祖先をたどる。同じフレームに発行した SetParent はまだ反映されていない。
+    /// 2026-10-03。渡された中身がまだ画面の枠の下にあるか）。自分自身は子孫に数えない。
+    /// </summary>
+    public static bool IsDescendantOf(GameObject node, GameObject ancestor)
+    {
+        if (!node.IsValid || !ancestor.IsValid) return false;
+        var target = Key(ancestor);
+        var current = node.Parent;
+        for (int i = 0; i < MaxAncestorHops && current.IsValid; i++)
+        {
+            if (Key(current) == target) return true;
+            current = current.Parent;
+        }
+        return false;
+    }
 }

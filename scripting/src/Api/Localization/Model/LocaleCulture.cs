@@ -100,7 +100,11 @@ public static class LocaleCulture
         return value.ToString(GroupedNumberFormat + clamped.ToString(CultureInfo.InvariantCulture), culture);
     }
 
-    /// <summary>日付（.NET の日付の書式。空なら文化の短い日付。読めない書式は短い日付に戻す）。</summary>
+    /// <summary>
+    /// 日付（.NET の日付の書式。空なら文化の短い日付。読めない書式は短い日付に戻す）。文化の暦（グレゴリオ暦でない暦。ar-SA の UmAlQura は
+    /// 1900〜2077 年だけ）で表せない日付は、同じ書式を不変文化（グレゴリオ暦）で書く（2026-10-03。2 回目のレビュー #33。以前は
+    /// ArgumentOutOfRangeException が呼び手へ飛んだ）。
+    /// </summary>
     /// <param name="date">日付。</param>
     /// <param name="pattern">書式（"yyyy/M/d"・"D" など）。</param>
     /// <param name="culture">文化。</param>
@@ -114,7 +118,45 @@ public static class LocaleCulture
         }
         catch (FormatException)
         {
-            return date.ToString(DefaultDatePattern, culture);
+            return FormatDateOutsideCalendar(date, DefaultDatePattern, culture);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return FormatDateOutsideCalendar(date, format, CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>
+    /// 日付を書く（文化の暦の範囲の外なら、同じ書式を不変文化で。不変文化でも読めない書式なら不変文化の短い日付）。
+    /// <see cref="FormatDate"/> と差し込み（LocaleFormatter の {name:書式}）の戻り先。
+    /// </summary>
+    /// <param name="date">日付。</param>
+    /// <param name="format">書式。</param>
+    /// <param name="culture">文化。</param>
+    /// <returns>書いた日付（例外にしない）。</returns>
+    internal static string FormatDateOutsideCalendar(DateTime date, string format, CultureInfo culture)
+    {
+        var invariant = CultureInfo.InvariantCulture;
+        try
+        {
+            return date.ToString(format, culture);
+        }
+        catch (ArgumentOutOfRangeException) when (!ReferenceEquals(culture, invariant))
+        {
+            // 文化の暦で表せない: 下で同じ書式を不変文化で書く
+        }
+        catch (FormatException)
+        {
+            // 読めない書式: 不変文化（グレゴリオ暦で DateTime の全範囲を表せる）の短い日付は必ず書ける
+            return date.ToString(DefaultDatePattern, invariant);
+        }
+        try
+        {
+            return date.ToString(format, invariant);
+        }
+        catch (FormatException)
+        {
+            return date.ToString(DefaultDatePattern, invariant);
         }
     }
 

@@ -35,7 +35,7 @@ public static class LocalePaths
 
     /// <summary>言語の表のパス（"assets://locale/en.json"）。</summary>
     /// <param name="root">書きそろえた置き場。</param>
-    /// <param name="code">言語のコード（index.json に書いたまま）。</param>
+    /// <param name="code">言語のコード（書きそろえた後の LocaleLanguage.Code。"pt_BR" と書いた言語は "pt-BR"）。</param>
     /// <returns>パス。</returns>
     public static string TablePath(string root, string code) => root + Separator + code + TableExtension;
 }

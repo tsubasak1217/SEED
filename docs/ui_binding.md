@@ -155,6 +155,15 @@ Bind.Text(this, moneyLabel, _money, "hud.money", "amount");   // ja.json: "hud":
 - **観測値が正**: 作った時点で観測値の値を部品へ当てる（部品の初めの値は捨てる）。
 - **往復の留め金**: 部品へ書いている間の部品の知らせは観測値へ返さない（`SelectionGroup.Select` は必ず知らせるが止まる）。
   部品の値を観測値へ入れている間の観測値の知らせは部品へ書き戻さない。同じ観測値を 2 つの部品へ結ぶと、片方の操作がもう片方へ届く。
+- **購読の直しは部品へ返す**（2026-10-03。2 回目のレビュー #25）: 部品の値を観測値へ入れている間に購読が値を直したら（拒否して戻す・範囲に収める）、
+  留め金を外した後で観測値の今の値を部品へ書き戻す（以前は捨てて、トグルは ON の見た目・観測値は false のまま残った）。
+  比べ方は観測値のもの（`new Observable<string>("abc", StringComparer.OrdinalIgnoreCase)` なら、部品の "ABC" は等しいので打った文字を書き換えない）。
+  購読の中で結び付けを外したら書き戻さない。`Bind.TextField` は打っている最中の欄を上書きしない決まり（`SetTextUnlessFocused`）なので、
+  フォーカスの間の直しは欄に出ない（既存の制限。docs/backlog.md「データバインディング」）。
+  ```csharp
+  Bind.Toggle(this, notifyToggle, _notify);
+  _notify.Subscribe(this, on => { if (on && !_granted) _notify.Value = false; });   // 許可が無ければ ON を戻す → トグルも OFF へ戻る
+  ```
 - **部品の OnStart を待つ**: 部品のスクリプトは画面のスクリプトより後に始まることがある（Instantiate したプレハブの部品は次のフレーム）。
   **ノード（`GameObject`）から結ぶ**と、部品が登録簿（`UiRegistry`）に載るまでフレームの区切りごとに待ち、載ったら知らせの口を付けて最新の値を当てる。
   選択のグループは子の項目が集まる（最初の Update）まで待つ。部品そのもの（`UiWidget.Of<T>` で引いた後）を渡してもよい。
@@ -219,6 +228,8 @@ public override void Update(ref NativeFrameContext ctx) => _list.Update();      
 
 - スクリプトの破棄の後に預けた物はその場で外れる（漏れない）。当てる先が消えて自分で外れた結び付けは、預けた袋が大きくなったときに捨てる。
 - owner なしで作り、当てる先が消えた後に値が一度も変わらない結び付けは、観測値が捨てられるまで残る（**owner を渡すのが推奨**）。
+  ただし **owner なしの `Bind.Text` の L10n 版**（キーと引数）は言語の切り替えの知らせ（静的な `Events` の `L10n.Changed`）にも購読を持つので、
+  観測値を捨てても、次に言語を切り替える（表を読み直す）まで残る（そのときの当て直しで当てる先が消えたことに気づいて外れる。2026-10-03。2 回目のレビュー #32 で記述を足した）。
 - スクリプトの読み直し（ホットリロード）では、区切りを待っている仕事を捨てる（`BindingFrame.ResetForReload`。旧アセンブリを握らない）。
 - **名前の衝突**: 画面のスクリプトに `Bind` という名前のメソッドがあると、その中の `Bind.Text(…)` はメソッドを指してコンパイルできない（CS0119）。
   `SEED.Binding.Bind.Text(…)` と書くか、`using BindTo = SEED.Binding.Bind;` のように別名を付ける（Wake or Pay の `PopupPlane.Bind()` など）。

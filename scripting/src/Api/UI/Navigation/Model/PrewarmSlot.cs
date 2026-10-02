@@ -97,6 +97,12 @@ public sealed class PrewarmSlot
     public bool CanLend => Stage is PrewarmStage.Building or PrewarmStage.WarmDrawing or PrewarmStage.Ready;
 
     /// <summary>
+    /// 今貸している画面が外れたら、中身を消さずに作り置きへ戻すか（貸している最中で Reuse。<see cref="Return"/> が Ready を返す条件。
+    /// 捨てた〈Discard〉後は false）。ScreenStack が、手放すだけの画面にも OnScreenExit を届けるかを決めるのに使う（2026-10-03。2 回目のレビュー #24）。
+    /// </summary>
+    public bool KeepsContentOnReturn => Stage == PrewarmStage.Lent && Options.Mode == PrewarmMode.Reuse;
+
+    /// <summary>
     /// 1 フレーム進める（毎フレーム 1 回。貸している・捨てた後は何もしない）。
     /// </summary>
     /// <param name="transitioning">スタックが出入りの動きの途中か（途中なら作り始めない＝重いフレームを動きと重ねない）。</param>
