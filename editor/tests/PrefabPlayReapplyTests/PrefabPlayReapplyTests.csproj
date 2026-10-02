@@ -1,0 +1,41 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Play 中に変わったプレハブの待ち行列（PrefabPlayReapplyQueue）の単体テスト。
+
+    対象:
+      - DecideOnSave         : 保存したときの状態 × 設定 → 何を送るか
+      - Remember             : Play / Pause 中だけ覚える・同じファイルは 1 回
+      - TakeOnReturnToEdit   : Play 停止時に設定オンなら再展開、オフなら版ずれの問い合わせだけ
+
+    AutoReloadPolicyTests と同じ流儀:
+      - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
+      - SEEDEditor 本体（WPF / WinExe）は参照せず、WPF 非依存のファイルだけをリンクで取り込む
+        （PlaybackState / IsPlaying は AutoReloadPolicy.cs にある）
+
+    実行方法: dotnet run (project=editor/tests/PrefabPlayReapplyTests)
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.PrefabPlayReapply</RootNamespace>
+    <AssemblyName>PrefabPlayReapplyTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- テスト対象（WPF 非依存の純粋なロジック） -->
+    <Compile Include="..\..\src\Reload\PrefabPlayReapplyQueue.cs">
+      <Link>Linked\Reload\PrefabPlayReapplyQueue.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Reload\AutoReloadPolicy.cs">
+      <Link>Linked\Reload\AutoReloadPolicy.cs</Link>
+    </Compile>
+    <!-- テストランナーは SpriteRigTests のものを共有する（同じ仕組みを二重に持たない） -->
+    <Compile Include="..\SpriteRigTests\TestHarness.cs">
+      <Link>Linked\TestHarness.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

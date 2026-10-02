@@ -96,17 +96,38 @@ Android の実行中（端末のアプリが動いていて IPC がつながっ�
   未保存の編集は送らない（保存したときに送られる）。
 - PC 側の自動再読込（第 2〜3 節）は Android の実行中もそのまま動く（エディタの Edit のワールドは PC の規則で更新される）。
 
-## 7. 関連ファイル
+## 7. プレハブ（.actor）の Play 中の扱い（2026-10-02）
+
+プレハブは「保留して停止時に反映」ではなく、**Play 中のインスタンスへ状態を保ったまま当て直す**
+（`PREFAB_LIVE_PATCH_PATH`。スクリプトの CLR インスタンスを作り直さない＝第 1 節の副作用が無い）。
+そのうえで、Play 停止後に Edit のシーンへも反映する（Play の世界は停止で Play 前の写しへ戻るため）。
+正典は [editor_prefab.md](editor_prefab.md) 8 章。
+
+| 契機 | Play / Pause 中 | Play 停止時 |
+| --- | --- | --- |
+| プレハブの保存（`SAVE_OK`） | `PREFAB_LIVE_PATCH_PATH`（設定に関わらず）＋パスを覚える | 設定オン: `PREFAB_REAPPLY_PATH`／オフ: `PREFAB_STATUS`（バナー） |
+| Play 中の変更の書き戻し（`PREFAB_WRITE_BACK_DONE`） | ランタイムが続けて当て直し済み。パスを覚える | 同上 |
+
+- 設定は「表示 > シーン > プレハブ保存時にシーンのインスタンスへ自動反映」（`PrefabAutoPropagateOnSave`）。
+  Edit のシーン（保存されるもの）への反映だけに効く。停止時点の値で判断する（保留中にオフにしたら再展開しない）。
+- 判定は `editor/src/Reload/PrefabPlayReapplyQueue.cs`（純粋なクラス）、テストは `editor/tests/PrefabPlayReapplyTests`。
+- 消化は `MainWindow.OnStateChanged`（Edit）→ `OnReturnedToEditForPrefabs`（`MainWindow.Prefab.cs`）。
+  シーン・スクリプトの保留分の消化の後に行う。
+
+## 8. 関連ファイル
 
 | ファイル | 役割 |
 | --- | --- |
 | `editor/src/Reload/AutoReloadPolicy.cs` | 判定ロジック（純関数。WPF・ランタイム非依存） |
 | `editor/tests/AutoReloadPolicyTests/` | 上記の単体テスト |
+| `editor/src/Reload/PrefabPlayReapplyQueue.cs` | Play 中に変わったプレハブの待ち行列（第 7 節。純粋なクラス） |
+| `editor/tests/PrefabPlayReapplyTests/` | 上記の単体テスト |
+| `runtime/src/engine/core/app_base/app/prefab_live_patch/` | Play 中の当て直し・書き戻し（ランタイム側） |
 | `editor/src/Scripting/ScriptAutoReloader.cs` | `.cs` の監視・デバウンス・コンパイル検証・送信 |
 | `editor/src/Scene/SceneAutoReloader.cs` | `.scene` の監視・自己保存の除外・再読込 |
 | `editor/src/MainWindow.SceneAutoReload.cs` | シーン側の依存注入と `CurrentPlaybackState` |
 | `editor/src/MainWindow.xaml.cs` | スクリプト側の依存注入・メニュートグル |
-| `editor/src/MainWindow.Camera.cs` | `OnStateChanged` での保留分の消化 |
+| `editor/src/MainWindow.Camera.cs` | `OnStateChanged` での保留分の消化（シーン → スクリプト → プレハブ） |
 | `editor/src/EditorPreferences.cs` | `auto_reload_scripts` / `auto_reload_scene` / `play_script_hot_reload` |
 | `editor/src/AndroidRun/AndroidHotReloadController.cs` | Android の実行中の監視・まとめ・差し替えの呼び出し（第 6 節） |
 | `editor/src/MainWindow.AndroidRun.cs` | 上記の依存注入（種類ごとの設定の参照・Output への配線） |

@@ -114,9 +114,10 @@ public partial class MainWindow
         var existing = _actorTabs.FirstOrDefault(t => t.Path == path);
         if (existing != null)
         {
-            // 既存タブに切り替え（再ロードなし）
+            // 既存タブに切り替え（再ロードなし。Play 中の書き戻しで古くなったタブだけは読み直す。MainWindow.Prefab.cs）
             _activeActorPath = path;
-            SendNavCommand($"SET_ACTIVE_WORLD_LINE:{existing.WorldLine}");
+            if (!TryReloadStaleActorTab(path))
+                SendNavCommand($"SET_ACTIVE_WORLD_LINE:{existing.WorldLine}");
             EditorLog.Write($"OnActorFileOpened — SET_ACTIVE_WORLD_LINE:{existing.WorldLine}");
         }
         else
@@ -202,7 +203,9 @@ public partial class MainWindow
         var tab = _actorTabs.FirstOrDefault(t => t.Path == path);
         if (tab == null) return;
         _activeActorPath = path;
-        SendNavCommand($"SET_ACTIVE_WORLD_LINE:{tab.WorldLine}");
+        // Play 中の書き戻しで古くなったタブは読み直して表示する（OPEN_ACTOR。MainWindow.Prefab.cs）
+        if (!TryReloadStaleActorTab(path))
+            SendNavCommand($"SET_ACTIVE_WORLD_LINE:{tab.WorldLine}");
         PanelHierarchy.SetActorEditMode(true, tab.WorldLine, tab.IsActor2D, tab.IsSceneCanvas);
         PanelInspector.SetActorEditMode(true);
         // 別タブへ移動したのでキャンバス編集タブは終了する（移動コマンド送信後に呼ぶこと）

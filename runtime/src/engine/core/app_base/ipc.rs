@@ -1078,6 +1078,23 @@ pub enum IpcCommand {
     /// フォーマット: PREFAB_STATUS（引数なし）
     PrefabStatus,
 
+    /// **Play 中**に、指定した 1 本のプレハブを参照するインスタンス全部へ、ファイルの今の中身を
+    /// 「状態を保ったまま」当て直す（ホットリロード。app/prefab_live_patch/。docs/editor_prefab.md 8 章）。
+    /// 丸ごとの再展開（PREFAB_REAPPLY_PATH）と違い、スクリプトの CLR インスタンスを作り直さない（OnStart が
+    /// 走り直さない）。スクリプトの Instantiate で Play 中に作られたインスタンスも対象。Undo は積まず
+    /// SCENE_MODIFIED も送らない（Play の世界は停止で戻る）。Edit で届いたら拒否する。
+    /// 応答: `PREFAB_LIVE_PATCH_DONE:{件数},{仮想パス}`（0 件でも返す）／`PREFAB_LIVE_PATCH_ERROR:{理由}`。
+    /// フォーマット: PREFAB_LIVE_PATCH_PATH:{path}（絶対パス／`assets://` 仮想パスのどちらも可）
+    PrefabLivePatchPath { path: String },
+
+    /// **Play 中**のプレハブのインスタンス（根の DFS ID）の部分木を、参照先の `.actor` へ書き戻す
+    /// （アクタファイル化と同じ直列化。スクリプトが Play 中に生成した部分木は書かない）。書いた後、同じパスの
+    /// Play 中のインスタンス全部へ当て直す（prefab_hash も新しい版へ揃う）。利用者のファイルを上書きするので、
+    /// エディタ側で確認ダイアログを出してから送る。Edit で届いたら拒否する。
+    /// 応答: `PREFAB_WRITE_BACK_DONE:{当て直した件数},{仮想パス}`／`PREFAB_WRITE_BACK_ERROR:{理由}`。
+    /// フォーマット: PREFAB_WRITE_BACK:{actor_dfs}
+    PrefabWriteBack { actor_dfs: u32 },
+
     /// 編集時の物理シミュレーション設定。
     /// enabled=true かつ with_rigidbody=false : 重力なし・全ボディを kinematic として衝突検出のみ
     /// enabled=true かつ with_rigidbody=true  : 重力・ダイナミクスも有効な完全シミュレーション
@@ -3437,6 +3454,20 @@ pub(crate) fn read_loop<R: Read>(source: R, tx: mpsc::Sender<IpcCommand>) -> Rea
 
                         // プレハブの版ずれ問い合わせ（引数なし・読み取りのみ）。
                         "PREFAB_STATUS" => Some(IpcCommand::PrefabStatus),
+
+                        s if s.starts_with("PREFAB_LIVE_PATCH_PATH:") => {
+                            // フォーマット: PREFAB_LIVE_PATCH_PATH:{path}（Play 中の当て直し）。
+                            // パスは空白を含み得るので trim のみ。空なら捨てる。
+                            let path = s["PREFAB_LIVE_PATCH_PATH:".len()..].trim().to_string();
+                            if path.is_empty() { None }
+                            else { Some(IpcCommand::PrefabLivePatchPath { path }) }
+                        }
+
+                        s if s.starts_with("PREFAB_WRITE_BACK:") => {
+                            // フォーマット: PREFAB_WRITE_BACK:{actor_dfs}（Play 中の変更の書き戻し）
+                            s["PREFAB_WRITE_BACK:".len()..].trim().parse::<u32>().ok()
+                                .map(|actor_dfs| IpcCommand::PrefabWriteBack { actor_dfs })
+                        }
 
                         "EDIT_PHYSICS_PLAY_PAUSE" => {
                             Some(IpcCommand::EditPhysicsPlayPause)

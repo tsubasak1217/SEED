@@ -176,6 +176,12 @@ impl App {
         //   （Play 前の Undo 履歴の DFS 番号とも合う。Undo には積まない。app/editor_preview/ops.rs）。
         self.remove_previews_for_play();
 
+        // ── 1-c) Play 中のプレハブの当て直しに使う「元の版」を控える ─────────────
+        //   シーンのインスタンスが作られた版のファイルを参照パスごとに 1 回だけ読む（エディタとつながっているときだけ）。
+        //   Play 中にプレハブが保存されたら、ファイルが変えた欄だけを当てる 3 方向の当て直しに使う
+        //   （app/prefab_live_patch/。控えが無いインスタンスは 2 方向＝ファイルの値を当てる）。
+        self.capture_prefab_live_bases();
+
         // ── 2) 編集専用状態のリセット（選択・ギズモ・ホバー・ドラッグ）──────────
         self.selected_instances.clear();
         self.selected_actor_dfs_ids.clear();
@@ -298,6 +304,8 @@ impl App {
         self.reset_redraw_for_play_session();
         // 入力欄の場を捨てる（キーボードを隠し、PC の窓の IME の許可を外す命令は次のフレームの末尾で出る。W2-6a）
         self.reset_text_input_for_play_session();
+        // Play 中のプレハブの当て直しに使った「元の版」の控えを捨てる（次の Play は開始時に控え直す）。
+        self.prefab_live_bases.clear();
         // Play でなければ mode だけ Edit に寄せて応答（べき等）。
         // 開始状態の記録も必ず捨てる（次の Play へ持ち越さない）。
         if self.mode != RuntimeMode::Play {

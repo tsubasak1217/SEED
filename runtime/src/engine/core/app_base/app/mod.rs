@@ -206,6 +206,8 @@ pub(crate) mod jointattach_scene_gizmo;
 pub(crate) mod skybox_scene_gizmo;
 pub(crate) mod particle_scene_gizmo;
 mod prefab_ops;
+/// Play 中のプレハブのホットリロード（PREFAB_LIVE_PATCH_PATH / PREFAB_WRITE_BACK。docs/editor_prefab.md 8 章）
+mod prefab_live_patch;
 /// テンプレートアクタの追加（ADD_TEMPLATE_ACTOR）: まっさらなアクタとして Canvas の規則で入れる
 mod template_actor_ops;
 /// エディタのプレビュー（PREVIEW_*）: 保存されないプレビューの出し入れ・作り直し・Play 開始で外す・木の編集の拒否
@@ -1013,6 +1015,9 @@ pub struct App {
     /// 値は `(ActorData, 内容ハッシュ)`。ハッシュは生成アクタの `prefab_hash` へ焼き込む。
     pub(super) scatter_prefab_cache: std::collections::HashMap<
         String, (crate::engine::structs::objects::actor::ActorData, String)>,
+    /// Play 中のプレハブの当て直し（prefab_live_patch/）の「元の版」の控え。
+    /// （仮想パス, 内容ハッシュ）→ その版のファイルの中身。Play の開始で作り直し、停止で捨てる。
+    prefab_live_bases: prefab_live_patch::PrefabBaseCache,
 
     // ── 世界線システム ───────────────────────────────────────────
     /// 現在アクティブな世界線 (0=通常シーン, N=アクター編集タブ)。
@@ -1768,6 +1773,7 @@ impl App {
             inspector_transform_drag:     None,
             field_edit_session:           None,
             scatter_prefab_cache:         std::collections::HashMap::new(),
+            prefab_live_bases:            prefab_live_patch::PrefabBaseCache::default(),
             edit_physics_enabled:        false,
             edit_physics_with_rigidbody: false,
             edit_physics_paused:          true,

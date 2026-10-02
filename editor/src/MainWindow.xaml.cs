@@ -540,6 +540,11 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         // シーンを開いた直後の版ずれ問い合わせの応答。
         _runtimeManager.PrefabReapplyCompleted        += OnPrefabReapplyCompleted;
         _runtimeManager.PrefabStatusReceived          += OnPrefabStatusReceived;
+        // Play 中のプレハブの当て直し・書き戻しの結果（MainWindow.Prefab.cs。docs/editor_prefab.md 8 章）
+        _runtimeManager.PrefabLivePatchCompleted      += OnPrefabLivePatchCompleted;
+        _runtimeManager.PrefabLivePatchFailed         += OnPrefabLivePatchFailed;
+        _runtimeManager.PrefabWriteBackCompleted      += OnPrefabWriteBackCompleted;
+        _runtimeManager.PrefabWriteBackFailed         += OnPrefabWriteBackFailed;
         // ランタイム側のツールホットキー（Q/W/E/T）とツールバーの表示を同期する。
         _runtimeManager.ToolModeChanged               += OnRuntimeToolModeChanged;
         // モーダルトランスフォーム（G/R/S）の進行状態。キーフックの分岐に使う。
@@ -586,6 +591,9 @@ public partial class MainWindow : Window, MainWindow.IViewportDropReceiver
         PanelHierarchy.ActorDfsSelected += id => PanelInspector.SelectActor(id);
         // Hierarchy のプレハブルート「アクタファイルを開く」→ Inspector が参照元パスを解決して開く
         PanelHierarchy.PrefabSourceOpenRequested += id => PanelInspector.OpenPrefabSource(id);
+        // 「Play 中の変更をプレハブへ書き戻す」（ヒエラルキーの右クリック・インスペクタのプレハブの帯。MainWindow.Prefab.cs）
+        PanelHierarchy.PrefabWriteBackRequested  += RequestPrefabWriteBack;
+        PanelInspector.PrefabWriteBackRequested  += RequestPrefabWriteBack;
         // 選択アクターのビューポート所属（is_vp）に応じてシーンタブ（ワールド/ビューポート）を自動切替する
         PanelHierarchy.SelectionKindResolved += OnHierarchySelectionKindResolved;
         // 右クリック「アクタを追加」→「テンプレートアクタ...」でテンプレートアクタの窓を開く（MainWindow.TemplateActors.cs）

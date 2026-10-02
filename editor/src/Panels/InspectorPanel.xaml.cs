@@ -125,6 +125,12 @@ public partial class InspectorPanel : UserControl
     /// </summary>
     public event Action<string>? ActorFileOpenRequested;
 
+    /// <summary>
+    /// プレハブの帯の「書き戻す」（Play / Pause 中だけ出る）: Play 中の変更をプレハブへ書き戻すよう要求する。
+    /// 引数は（インスタンスの根の DFS ID, プレハブの参照パス）。確認ダイアログと送信は MainWindow（MainWindow.Prefab.cs）。
+    /// </summary>
+    public event Action<int, string?>? PrefabWriteBackRequested;
+
     // ── プレハブ参照バー ─────────────────────────────────────
     /// <summary>
     /// 現在選択中アクターのプレハブ参照元パス（assets:// 仮想パス or 絶対パス）。
@@ -10328,6 +10334,12 @@ public partial class InspectorPanel : UserControl
     /// <summary>プレハブ参照バーのホバー時背景色（少し明るい青）。</summary>
     private static readonly SolidColorBrush PrefabBarHoverBrush  = MakeFrozenBrush(Color.FromRgb(0x30, 0x47, 0x66));
 
+    /// <summary>プレハブの帯の「書き戻す」ボタンの列（Play 中だけ置く）。</summary>
+    private const int PrefabBarWriteBackColumn = 2;
+
+    /// <summary>プレハブの帯の「リンク解除」ボタンの列。</summary>
+    private const int PrefabBarUnlinkColumn = 3;
+
     private static SolidColorBrush MakeFrozenBrush(Color c)
     {
         var b = new SolidColorBrush(c);
@@ -10340,6 +10352,7 @@ public partial class InspectorPanel : UserControl
     /// ・薄い青系の帯 + 📦 アイコン + 参照ファイル名（フルパスはツールチップ）。
     /// ・ダブルクリックで参照元 .actor をアクタ編集タブで開く（ActorFileOpenRequested）。
     /// ・右端の「リンク解除」ボタンで確認ダイアログ後 UNLINK_PREFAB を送信する。
+    /// ・Play / Pause 中だけ「書き戻す」ボタンを出す（Play 中の変更をプレハブへ書き戻す。docs/editor_prefab.md 8 章）。
     /// </summary>
     /// <param name="source">プレハブ参照元パス（assets:// 仮想パス or 絶対パス）。</param>
     private UIElement BuildPrefabRefBar(string source)
@@ -10348,10 +10361,11 @@ public partial class InspectorPanel : UserControl
         var fileName = Path.GetFileName(source);
         if (string.IsNullOrEmpty(fileName)) fileName = source;
 
-        // 3 列グリッド: [アイコン] [ファイル名(伸縮)] [リンク解除ボタン]
+        // 4 列グリッド: [アイコン] [ファイル名(伸縮)] [書き戻すボタン（Play 中だけ）] [リンク解除ボタン]
         var grid = new Grid { Margin = new Thickness(6, 3, 6, 3) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         // 参照アセットを表すアイコン
@@ -10386,8 +10400,27 @@ public partial class InspectorPanel : UserControl
             ToolTip             = "このアクターとプレハブファイルの参照リンクを解除します",
         };
         unlinkBtn.Click += (_, _) => ConfirmAndUnlinkPrefab();
-        Grid.SetColumn(unlinkBtn, 2);
+        Grid.SetColumn(unlinkBtn, PrefabBarUnlinkColumn);
         grid.Children.Add(unlinkBtn);
+
+        // 書き戻すボタン（Play / Pause 中だけ。見た目はリンク解除と同じ共通スタイル）
+        if (_runtime?.State is EditorState.Play or EditorState.Pause)
+        {
+            var writeBackBtn = new Button
+            {
+                Content             = "書き戻す",
+                FontSize            = 10,
+                Padding             = new Thickness(6, 1, 6, 1),
+                Margin              = new Thickness(0, 0, 4, 0),
+                VerticalAlignment   = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                ToolTip             = "Play 中の変更をこのプレハブ（アクタファイル）へ書き戻します",
+            };
+            int dfs = _currentActorId;
+            writeBackBtn.Click += (_, _) => PrefabWriteBackRequested?.Invoke(dfs, source);
+            Grid.SetColumn(writeBackBtn, PrefabBarWriteBackColumn);
+            grid.Children.Add(writeBackBtn);
+        }
 
         // 帯本体（左端アクセント + 薄い青背景）。ダブルクリックで参照元を開く。
         var bar = new Border

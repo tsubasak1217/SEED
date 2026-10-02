@@ -6,6 +6,11 @@
 //     今開いているシーン内インスタンスへの自動反映（設定でオン／オフ）
 //   - シーンを開いた直後の「版ずれ」検出と、非モーダルバナーでの提示
 //   - バナーの［更新する］［無視］操作
+//   - Play 中のホットリロード（docs/editor_prefab.md 8 章）:
+//       保存したら Play 中のインスタンスへ状態を保ったまま当て直す（PREFAB_LIVE_PATCH_PATH）、
+//       「Play 中の変更をプレハブへ書き戻す」の確認と送信（PREFAB_WRITE_BACK）、
+//       Play 停止後に Edit のシーンへ反映する（PrefabPlayReapplyQueue → PREFAB_REAPPLY_PATH / PREFAB_STATUS）、
+//       書き戻しで古くなったアクタータブの読み直し
 //
 //  設計の前提（正典: runtime/src/engine/core/app_base/app/prefab_ops.rs 冒頭、
 //  および docs/editor_prefab.md）:
@@ -18,6 +23,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using SEEDEditor.Runtime;
@@ -34,6 +40,54 @@ public partial class MainWindow
 
     /// <summary>シーン内プレハブの版ずれを問い合わせる IPC（引数なし・読み取りのみ）。</summary>
     private const string PrefabStatusCommand = "PREFAB_STATUS";
+
+    /// <summary>Play 中のインスタンスへ状態を保ったまま当て直す IPC の接頭辞（docs/editor_prefab.md 8 章）。</summary>
+    private const string PrefabLivePatchPathCommandPrefix = "PREFAB_LIVE_PATCH_PATH:";
+
+    /// <summary>Play 中の変更をプレハブへ書き戻す IPC の接頭辞（後ろにインスタンスの根の DFS ID）。</summary>
+    private const string PrefabWriteBackCommandPrefix = "PREFAB_WRITE_BACK:";
+
+    // ── 通知の文言（Play 中の当て直し・書き戻し）────────────────
+
+    /// <summary>当て直しの結果のトースト（{0}=プレハブ名・{1}=件数・{2}=停止後の扱い）。</summary>
+    private const string LivePatchToastFormat = "プレハブ {0} を Play 中の {1} 個のインスタンスへ当て直しました（{2}）";
+
+    /// <summary>停止後に Edit のシーンへも反映するとき（設定オン）の添え書き。</summary>
+    private const string AfterStopReapplyNote = "停止後に Edit のシーンへも反映";
+
+    /// <summary>停止後に Edit のシーンへ自動では反映しないとき（設定オフ）の添え書き。</summary>
+    private const string AfterStopBannerNote = "Edit のシーンへは停止後に更新のお知らせを出します";
+
+    /// <summary>当て直しの失敗のトースト（{0}=理由）。</summary>
+    private const string LivePatchFailedToastFormat = "Play 中の当て直しに失敗しました: {0}";
+
+    /// <summary>書き戻しの確認ダイアログの本文（{0}=書き戻し先）。</summary>
+    private const string WriteBackConfirmFormat =
+        "Play 中の変更を {0} へ書き戻します。\n" +
+        "元に戻せません（ファイルが上書きされます）。\n" +
+        "スクリプトが Play 中に生成した部分（積まれた画面・リストの行など）は書き込みません。\n\n" +
+        "続行しますか？";
+
+    /// <summary>書き戻しの確認ダイアログの題名。</summary>
+    private const string WriteBackConfirmTitle = "Play 中の変更をプレハブへ書き戻す";
+
+    /// <summary>書き戻しの結果のトースト（{0}=プレハブ名・{1}=当て直した件数・{2}=停止後の扱い）。</summary>
+    private const string WriteBackToastFormat = "Play 中の変更を {0} へ書き戻しました（Play 中の {1} 個へ当て直し・{2}）";
+
+    /// <summary>書き戻しの失敗のダイアログの本文（{0}=理由）。</summary>
+    private const string WriteBackFailedFormat = "Play 中の変更を書き戻せませんでした。\n\n{0}";
+
+    /// <summary>
+    /// Play 中に変わったプレハブを覚えておき、Play 停止後に Edit のシーンへ反映する待ち行列
+    /// （判定は純粋なクラス <see cref="SEEDEditor.Reload.PrefabPlayReapplyQueue"/>。テストあり）。
+    /// </summary>
+    private readonly SEEDEditor.Reload.PrefabPlayReapplyQueue _prefabPlayQueue = new();
+
+    /// <summary>
+    /// Play 中の書き戻しでファイルが変わったアクタータブ（絶対パス）。タブの中身は古い版のままなので、
+    /// Edit へ戻って次にそのタブを表示するときに読み直す（<see cref="TryReloadStaleActorTab"/>）。
+    /// </summary>
+    private readonly HashSet<string> _staleActorTabPaths = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// 直近に保存したプレハブ（.actor / .actor2d）の絶対パス。
@@ -69,16 +123,203 @@ public partial class MainWindow
         _savingActorPath = null;
 
         if (string.IsNullOrEmpty(path)) return;
-        // 画面プレビューは設定に関わらず作り直す（シーンの内容を変えないため。MainWindow.ScreenPreview.cs）
-        RequestPreviewRefresh(path);
-        if (!EditorPreferences.Instance.PrefabAutoPropagateOnSave) return;
+        var state = CurrentPlaybackState;
+        // 画面プレビューは設定に関わらず作り直す（シーンの内容を変えないため。MainWindow.ScreenPreview.cs）。
+        // Play 中はプレビューが外れている（停止で戻る）ので、停止後にまとめて作り直す（OnReturnedToEditForPrefabs）。
+        if (!SEEDEditor.Reload.AutoReloadPolicy.IsPlaying(state)) RequestPreviewRefresh(path);
 
         // ランタイムがシーンを持っていなければ反映先が無い（アクタータブ単独編集など）。
         if (_runtimeManager is null) return;
 
-        _runtimeManager.SendToRuntime($"{PrefabReapplyPathCommandPrefix}{path}");
-        EditorLog.Write($"[Prefab] 保存に続けて自動反映を要求: {path}");
+        switch (SEEDEditor.Reload.PrefabPlayReapplyQueue.DecideOnSave(
+                    state, EditorPreferences.Instance.PrefabAutoPropagateOnSave))
+        {
+            case SEEDEditor.Reload.PrefabSaveAction.ReapplyNow:
+                _runtimeManager.SendToRuntime($"{PrefabReapplyPathCommandPrefix}{path}");
+                EditorLog.Write($"[Prefab] 保存に続けて自動反映を要求: {path}");
+                break;
+            case SEEDEditor.Reload.PrefabSaveAction.LivePatchAndRemember:
+                // Play 中: 丸ごとの再展開は OnStart が走り直して画面が初期化されるので、状態を保つ当て直しにする。
+                // Edit のシーンへは Play 停止後に反映する（Play の世界は停止で Play 前へ戻るため）。
+                RequestPrefabLivePatch(path);
+                break;
+            case SEEDEditor.Reload.PrefabSaveAction.None:
+                break;
+        }
     }
+
+    // ── Play 中の当て直し（PREFAB_LIVE_PATCH_PATH）──────────────────
+
+    /// <summary>
+    /// Play 中のインスタンスへ、プレハブの今の中身を状態を保ったまま当て直すよう要求し、
+    /// Play 停止後に Edit のシーンへ反映するために覚えておく。
+    /// </summary>
+    /// <param name="path">プレハブの絶対パス or assets:// 仮想パス。</param>
+    private void RequestPrefabLivePatch(string path)
+    {
+        if (_runtimeManager is null) return;
+        _runtimeManager.SendToRuntime($"{PrefabLivePatchPathCommandPrefix}{path}");
+        RememberPrefabChangedDuringPlay(path);
+        EditorLog.Write($"[Prefab] Play 中の当て直しを要求: {path}");
+    }
+
+    /// <summary>
+    /// Play 中に変わったプレハブを覚える（絶対パスへ揃えてから。停止後の反映とプレビューの作り直しに使う）。
+    /// </summary>
+    /// <param name="path">プレハブの絶対パス or assets:// 仮想パス。</param>
+    private void RememberPrefabChangedDuringPlay(string path)
+    {
+        var absolute = SEEDEditor.VirtualPath.ToAbsolute(path, AssetsPath);
+        if (_prefabPlayQueue.Remember(absolute, CurrentPlaybackState))
+            EditorLog.Write($"[Prefab] Play 停止後に Edit のシーンへ反映するよう覚えました: {absolute}");
+    }
+
+    /// <summary>
+    /// Play 中の当て直しが終わったときの通知（IPC <c>PREFAB_LIVE_PATCH_DONE</c>）。
+    /// 0 件（Play 中のワールドにそのプレハブのインスタンスが無い）のときは黙っている。
+    /// </summary>
+    /// <param name="count">当て直したインスタンス数。</param>
+    /// <param name="source">プレハブの assets:// 仮想パス。</param>
+    private void OnPrefabLivePatchCompleted(int count, string source)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (count <= 0) return;
+            ShowToast(string.Format(LivePatchToastFormat, PrefabDisplayName(source), count, AfterStopNote()));
+            EditorLog.Write($"[Prefab] Play 中の当て直し: {source} → {count} 件");
+        });
+    }
+
+    /// <summary>Play 中の当て直しが失敗したときの通知（IPC <c>PREFAB_LIVE_PATCH_ERROR</c>）。トーストで知らせる。</summary>
+    /// <param name="reason">ランタイムが返した理由。</param>
+    private void OnPrefabLivePatchFailed(string reason)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            ShowToast(string.Format(LivePatchFailedToastFormat, reason));
+            EditorLog.Write($"[Prefab] Play 中の当て直しに失敗: {reason}");
+        });
+    }
+
+    /// <summary>停止後の扱いの添え書き（設定「プレハブ保存時にシーンのインスタンスへ自動反映」で変わる）。</summary>
+    private static string AfterStopNote() =>
+        EditorPreferences.Instance.PrefabAutoPropagateOnSave ? AfterStopReapplyNote : AfterStopBannerNote;
+
+    // ── Play 中の変更の書き戻し（PREFAB_WRITE_BACK）────────────────
+
+    /// <summary>
+    /// 「Play 中の変更をプレハブへ書き戻す」（ヒエラルキーの右クリック・インスペクタのプレハブの帯から）。
+    /// 利用者のファイルを上書きするので、確認ダイアログを 1 回出してから送る。
+    /// </summary>
+    /// <param name="actorDfsId">プレハブのインスタンスの根の DFS ID。</param>
+    /// <param name="source">プレハブの参照パス（assets:// 仮想パス。分からなければ null）。</param>
+    private void RequestPrefabWriteBack(int actorDfsId, string? source)
+    {
+        if (_runtimeManager is null) return;
+        // Play / Pause 中だけの操作（メニュー・ボタンも Play 中だけ出すが、状態が変わった直後の押下に備える）
+        if (!SEEDEditor.Reload.AutoReloadPolicy.IsPlaying(CurrentPlaybackState)) return;
+
+        var target = string.IsNullOrEmpty(source)
+            ? "プレハブ"
+            : SEEDEditor.VirtualPath.ToDisplay(source, AssetsPath);
+        var answer = MessageBox.Show(
+            string.Format(WriteBackConfirmFormat, target), WriteBackConfirmTitle,
+            MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.OK) return;
+
+        _runtimeManager.SendToRuntime($"{PrefabWriteBackCommandPrefix}{actorDfsId}");
+        EditorLog.Write($"[Prefab] Play 中の変更の書き戻しを要求: DFS {actorDfsId}（{target}）");
+    }
+
+    /// <summary>
+    /// 書き戻しが終わったときの通知（IPC <c>PREFAB_WRITE_BACK_DONE</c>）。
+    /// (1) そのファイルを開いているアクタータブを Edit へ戻ってから読み直す印を付け、
+    /// (2) Play 停止後に Edit のシーンへ反映するよう覚え、(3) トーストで知らせる。
+    /// </summary>
+    /// <param name="count">続けて当て直した Play 中のインスタンス数（書いた本人を含む）。</param>
+    /// <param name="source">書き戻したプレハブの assets:// 仮想パス。</param>
+    private void OnPrefabWriteBackCompleted(int count, string source)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            MarkActorTabStale(source);
+            RememberPrefabChangedDuringPlay(source);
+            ShowToast(string.Format(WriteBackToastFormat, PrefabDisplayName(source), count, AfterStopNote()));
+            EditorLog.Write($"[Prefab] Play 中の変更を書き戻し: {source}（当て直し {count} 件）");
+        });
+    }
+
+    /// <summary>書き戻しが失敗したときの通知（IPC <c>PREFAB_WRITE_BACK_ERROR</c>）。ファイルは書かれていない。</summary>
+    /// <param name="reason">ランタイムが返した理由。</param>
+    private void OnPrefabWriteBackFailed(string reason)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            EditorLog.Write($"[Prefab] 書き戻しに失敗: {reason}");
+            MessageBox.Show(string.Format(WriteBackFailedFormat, reason), WriteBackConfirmTitle,
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        });
+    }
+
+    // ── Play 停止後の反映 ───────────────────────────────────────
+
+    /// <summary>
+    /// Play が止まって Edit へ戻ったとき（<c>OnStateChanged</c> の Edit）に、Play 中に変わったプレハブを
+    /// Edit のシーンへ反映する。設定オンなら <c>PREFAB_REAPPLY_PATH</c>（パスごとに Undo 1 操作・件数のトースト）、
+    /// オフなら <c>PREFAB_STATUS</c> だけ（版ずれのバナーで知らせる）。画面プレビューは設定に関わらず作り直し、
+    /// 表示中のアクタータブが書き戻しで古くなっていれば読み直す。
+    /// </summary>
+    private void OnReturnedToEditForPrefabs()
+    {
+        var plan = _prefabPlayQueue.TakeOnReturnToEdit(EditorPreferences.Instance.PrefabAutoPropagateOnSave);
+        foreach (var path in plan.ChangedPaths)
+            RequestPreviewRefresh(path);
+        if (_runtimeManager is not null)
+        {
+            foreach (var path in plan.ReapplyPaths)
+            {
+                _runtimeManager.SendToRuntime($"{PrefabReapplyPathCommandPrefix}{path}");
+                EditorLog.Write($"[Prefab] Play 停止後に Edit のシーンへ反映: {path}");
+            }
+            if (plan.RequestStatus) RequestPrefabStatus();
+        }
+        // いま表示しているアクタータブが古ければここで読み直す（ほかのタブは表示したときに読み直す）
+        if (_activeActorPath is not null) TryReloadStaleActorTab(_activeActorPath);
+    }
+
+    // ── 書き戻しで古くなったアクタータブ ─────────────────────────
+
+    /// <summary>書き戻したファイルを開いているアクタータブに「読み直しが要る」印を付ける。</summary>
+    /// <param name="source">書き戻したプレハブ（assets:// 仮想パス or 絶対パス）。</param>
+    private void MarkActorTabStale(string source)
+    {
+        var absolute = SEEDEditor.VirtualPath.ToAbsolute(source, AssetsPath);
+        var tab = _actorTabs.FirstOrDefault(t =>
+            !t.IsSceneCanvas && string.Equals(NormalizeTabPath(t.Path), NormalizeTabPath(absolute), StringComparison.OrdinalIgnoreCase));
+        if (tab is null) return;
+        _staleActorTabPaths.Add(tab.Path);
+        EditorLog.Write($"[Prefab] 書き戻しでタブの中身が古くなりました（Edit へ戻って表示するときに読み直します）: {tab.Path}");
+    }
+
+    /// <summary>
+    /// そのアクタータブに読み直しの印があれば、ファイルから読み直して表示する（<c>OPEN_ACTOR</c> は同じ世界線を
+    /// 読み直してそのタブを表示する）。印が無ければ何もしない。Edit 中だけ（Play 中はタブを表示できない）。
+    /// </summary>
+    /// <param name="path">アクタータブのパス（<c>ActorTab.Path</c>）。</param>
+    /// <returns>読み直したら true（呼び出し側は SET_ACTIVE_WORLD_LINE を送らなくてよい）。</returns>
+    private bool TryReloadStaleActorTab(string path)
+    {
+        if (_runtimeManager?.State != EditorState.Edit) return false;
+        if (!_staleActorTabPaths.Remove(path)) return false;
+        var tab = _actorTabs.FirstOrDefault(t => t.Path == path);
+        if (tab is null) return false;
+        SendNavCommand($"OPEN_ACTOR:{tab.WorldLine},{tab.Path}");
+        EditorLog.Write($"[Prefab] 書き戻しで変わったアクタータブを読み直しました: {tab.Path}");
+        return true;
+    }
+
+    /// <summary>タブのパスの比較用（区切りを揃える）。</summary>
+    private static string NormalizeTabPath(string path) => path.Replace('/', '\\');
 
     /// <summary>
     /// 参照パス指定の再展開が終わったときの通知（IPC <c>PREFAB_REAPPLY_DONE</c>）。

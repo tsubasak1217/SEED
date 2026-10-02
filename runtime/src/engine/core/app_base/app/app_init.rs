@@ -999,6 +999,14 @@ impl App {
         //   ワーカー側で走るのでここでディスクには触らない。
         super::model_streaming::clear_pending_slots();
         self.start_model_prefetch();
+
+        // ── 10. Play 中のプレハブの当て直しの「元の版」を控え直す（Play のときだけ）───────
+        // ウィンドウ Play の起動・スクリプトのシーン遷移・Play 中の LOAD_SCENE で、新しいシーンの
+        // インスタンスが作られた版を控える（埋め込み Play は enter_play が控える）。エディタとつながって
+        // いないときは読まない（中で IPC の有無を見る。app/prefab_live_patch/ops.rs）。
+        if self.mode == RuntimeMode::Play {
+            self.capture_prefab_live_bases();
+        }
     }
 
     pub(super) fn load_play_scene(&mut self) {

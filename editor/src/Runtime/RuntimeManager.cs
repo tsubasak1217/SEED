@@ -318,6 +318,24 @@ public sealed partial class RuntimeManager : IDisposable
     /// プレハブ版ずれ問い合わせ（PREFAB_STATUS）への応答の接頭辞。後ろに JSON 配列が続く。
     /// </summary>
     public const string PREFAB_STATUS_PREFIX = "PREFAB_STATUS:";
+
+    /// <summary>
+    /// Play 中のプレハブの当て直し（PREFAB_LIVE_PATCH_PATH）の完了通知の接頭辞。
+    /// 後ろに <c>{当て直したインスタンス数},{assets:// 仮想パス}</c> が続く（0 件でも届く）。
+    /// </summary>
+    public const string PREFAB_LIVE_PATCH_DONE_PREFIX = "PREFAB_LIVE_PATCH_DONE:";
+
+    /// <summary>Play 中のプレハブの当て直しの失敗通知の接頭辞。後ろに理由が続く。</summary>
+    public const string PREFAB_LIVE_PATCH_ERROR_PREFIX = "PREFAB_LIVE_PATCH_ERROR:";
+
+    /// <summary>
+    /// Play 中の変更の書き戻し（PREFAB_WRITE_BACK）の完了通知の接頭辞。
+    /// 後ろに <c>{続けて当て直したインスタンス数},{assets:// 仮想パス}</c> が続く。
+    /// </summary>
+    public const string PREFAB_WRITE_BACK_DONE_PREFIX = "PREFAB_WRITE_BACK_DONE:";
+
+    /// <summary>Play 中の変更の書き戻しの失敗通知の接頭辞。後ろに理由が続く。</summary>
+    public const string PREFAB_WRITE_BACK_ERROR_PREFIX = "PREFAB_WRITE_BACK_ERROR:";
     /// <summary>撮影失敗応答の接頭辞。</summary>
     public const string SCREENSHOT_ERROR_PREFIX = "SCREENSHOT_ERROR:";
 
@@ -584,6 +602,24 @@ public sealed partial class RuntimeManager : IDisposable
     /// 引数は <c>[{"source":..,"total":N,"stale":N,"unknown":N,"missing":bool}, ..]</c> の JSON。
     /// </summary>
     public event Action<string>? PrefabStatusReceived;
+
+    /// <summary>
+    /// Play 中のプレハブの当て直しの完了通知（<c>PREFAB_LIVE_PATCH_DONE:{件数},{仮想パス}</c>）。
+    /// 引数は (当て直したインスタンス数, プレハブの assets:// 仮想パス)。0 件でも届く。
+    /// </summary>
+    public event Action<int, string>? PrefabLivePatchCompleted;
+
+    /// <summary>Play 中のプレハブの当て直しの失敗通知（<c>PREFAB_LIVE_PATCH_ERROR:{理由}</c>）。引数は理由。</summary>
+    public event Action<string>? PrefabLivePatchFailed;
+
+    /// <summary>
+    /// Play 中の変更の書き戻しの完了通知（<c>PREFAB_WRITE_BACK_DONE:{件数},{仮想パス}</c>）。
+    /// 引数は (続けて当て直した Play 中のインスタンス数, 書き戻したプレハブの assets:// 仮想パス)。
+    /// </summary>
+    public event Action<int, string>? PrefabWriteBackCompleted;
+
+    /// <summary>Play 中の変更の書き戻しの失敗通知（<c>PREFAB_WRITE_BACK_ERROR:{理由}</c>）。引数は理由。</summary>
+    public event Action<string>? PrefabWriteBackFailed;
 
     /// <summary>地形の初期化完了通知（TERRAIN_INIT_OK）。</summary>
     public event Action? TerrainInitCompleted;
@@ -1058,6 +1094,19 @@ public sealed partial class RuntimeManager : IDisposable
         else EditorLog.Write("Resume — 埋め込み Play 中のためウィンドウ切り離しをスキップ");
         _pipe?.Send(RuntimeIpcCommands.Resume);
         ChangeState(EditorState.Play);
+    }
+
+    /// <summary>
+    /// <c>{件数},{パス}</c> の形の応答を分ける（PREFAB_*_DONE 共通）。
+    /// パスにはカンマが入り得るので、最初のカンマだけで区切る。件数が読めなければ 0。
+    /// </summary>
+    private static (int Count, string Path) SplitCountAndPath(string payload)
+    {
+        int comma = payload.IndexOf(',');
+        var countText = comma >= 0 ? payload[..comma] : payload;
+        var path      = comma >= 0 ? payload[(comma + 1)..] : "";
+        _ = int.TryParse(countText, out int count);
+        return (count, path);
     }
 
     /// <summary>Runtime に任意のメッセージを送信する（IPC 経由）。</summary>
@@ -2410,6 +2459,32 @@ public sealed partial class RuntimeManager : IDisposable
             var json = msg[PREFAB_STATUS_PREFIX.Length..];
             EditorLog.Write($"[Runtime→Editor] PREFAB_STATUS {json}");
             PrefabStatusReceived?.Invoke(json);
+        }
+        else if (msg.StartsWith(PREFAB_LIVE_PATCH_DONE_PREFIX, StringComparison.Ordinal))
+        {
+            // フォーマット: PREFAB_LIVE_PATCH_DONE:{件数},{仮想パス}（仮想パスにカンマが入り得るので最初のカンマで区切る）
+            var (count, source) = SplitCountAndPath(msg[PREFAB_LIVE_PATCH_DONE_PREFIX.Length..]);
+            EditorLog.Write($"[Runtime→Editor] PREFAB_LIVE_PATCH_DONE count={count} source={source}");
+            PrefabLivePatchCompleted?.Invoke(count, source);
+        }
+        else if (msg.StartsWith(PREFAB_LIVE_PATCH_ERROR_PREFIX, StringComparison.Ordinal))
+        {
+            var reason = msg[PREFAB_LIVE_PATCH_ERROR_PREFIX.Length..];
+            EditorLog.Write($"[Runtime→Editor] PREFAB_LIVE_PATCH_ERROR {reason}");
+            PrefabLivePatchFailed?.Invoke(reason);
+        }
+        else if (msg.StartsWith(PREFAB_WRITE_BACK_DONE_PREFIX, StringComparison.Ordinal))
+        {
+            // フォーマット: PREFAB_WRITE_BACK_DONE:{件数},{仮想パス}
+            var (count, source) = SplitCountAndPath(msg[PREFAB_WRITE_BACK_DONE_PREFIX.Length..]);
+            EditorLog.Write($"[Runtime→Editor] PREFAB_WRITE_BACK_DONE count={count} source={source}");
+            PrefabWriteBackCompleted?.Invoke(count, source);
+        }
+        else if (msg.StartsWith(PREFAB_WRITE_BACK_ERROR_PREFIX, StringComparison.Ordinal))
+        {
+            var reason = msg[PREFAB_WRITE_BACK_ERROR_PREFIX.Length..];
+            EditorLog.Write($"[Runtime→Editor] PREFAB_WRITE_BACK_ERROR {reason}");
+            PrefabWriteBackFailed?.Invoke(reason);
         }
         else if (msg.StartsWith("EXPORT_ACTOR_OK:", StringComparison.Ordinal))
         {

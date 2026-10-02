@@ -120,9 +120,22 @@ impl App {
 
         let host = self.scripting_host.clone();
 
-        // load_actor_into は draw_ctx と scene.world を同時に参照するため
+        // ── ファイルを読む（生テキストのハッシュ付き。読み込みの入口は actor_file）──
+        // ハッシュはプレハブの版（prefab_hash）として根へ記録する。Play 中のプレハブの当て直し
+        // （prefab_live_patch/。IPC PREFAB_LIVE_PATCH_PATH）が、スクリプトの積んだ画面も対象にできるように
+        // prefab_source とあわせて付ける（docs/editor_prefab.md 1 章の 5 番目の経路）。
+        // 参照パスは `assets://` の仮想パスへ揃える（スクリプトはアセット相対・絶対・仮想のどれでも渡せる。
+        // 当て直しの対象は `prefab_source` の文字列一致で探すので、エディタが送る仮想パスと同じ形にする）
+        let vpath = crate::engine::asset_fs::to_virtual(&crate::engine::asset_fs::normalize_asset_path(path));
+        let loaded = super::prefab_ops::load_actor_data_with_hash(path);
+        if let Ok((data, hash)) = &loaded {
+            // 当て直しの「元の版」として控える（エディタとつながっているときだけ。版ごとに最初の 1 回）
+            self.remember_instantiated_prefab(&vpath, hash, data);
+        }
+
+        // build_actor は draw_ctx と scene.world を同時に参照するため
         // ブロックスコープで借用ライフタイムを制限する
-        let load_result = {
+        let load_result = loaded.and_then(|(data, hash)| {
             // ── モデルの非同期ロードを許可する唯一の区間 ────────────────────
             // プレイ中に生成されるアクタ（魚・エフェクト等）のモデルは、ここから
             // 構築される。USB 外付けのように遅いドライブでは同期ロードが
@@ -131,15 +144,20 @@ impl App {
             let _async_scope = super::model_streaming::AsyncModelScope::enter();
             let ctx   = self.draw_ctx.as_ref().unwrap();
             let scene = self.scene.as_mut().unwrap();
-            Scene::load_actor_into(
-                std::path::Path::new(path),
-                ctx,
-                &mut scene.world,
-                host.as_ref(),
-                0,          // world_line = 通常シーン（Play シーン）
-                Some(root), // ffi_instantiate が予約したルートエンティティを使う
+            // ffi_instantiate が予約したルートエンティティを使う（Scene::load_actor_into と同じ組み立て）
+            let mut actor = crate::engine::core::app_base::scene::build_actor(
+                data, ctx, &mut scene.world, host.as_ref(), Some(root),
             )
-        };
+            .map_err(|e| e.to_string())?;
+            // world_line = 通常シーン（Play シーン）を自身と全子孫へ伝える
+            actor.set_world_line_recursive(0);
+            // プレハブのインスタンスの根として記録する（取り込んだ版つき）
+            actor.prefab_source = Some(vpath.clone());
+            actor.prefab_hash = Some(hash);
+            // スクリプトが生成した部分木の印（当て直しで「ファイルに無い」と消さない・書き戻しでファイルへ書かない）
+            actor.spawned_by_script = true;
+            Ok(actor)
+        });
 
         match load_result {
             Ok(actor) => {
