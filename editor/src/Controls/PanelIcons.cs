@@ -42,6 +42,7 @@ internal static class PanelIcons
         ["ai_assistant"]       = "Icon.Panel.AiAssistant",
         ["sprite_rig"]         = "Icon.Panel.SpriteRig",
         ["version_control"]    = "Icon.Panel.VersionControl",
+        ["localization"]       = "Icon.Panel.Localization",
     };
 
     /// <summary>

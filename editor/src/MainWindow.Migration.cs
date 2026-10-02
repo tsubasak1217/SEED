@@ -8,6 +8,8 @@
 //     ・ログ（Output パネルへ流れる EditorLog）
 //  2. プロジェクトを開いた直後の「古い形式が n 件あります」案内を起こす
 //  3. 「ツール → プロジェクトの形式をアップグレード...」メニューの受け口
+//  4. その前後の開いているシーンの扱い（2026-10-03。レビュー #8。判定は Migration/UpgradeUnsavedPolicy.cs）:
+//     未保存なら「保存してから」「破棄して」「やめる」を選ばせ、実行したらシーンをディスクから読み直す
 //
 //  【なぜ MainWindow に置くのか】
 //  差し込む中身（トースト・ビルド構成の選択）はこのウィンドウしか持っていない。
@@ -69,6 +71,89 @@ public partial class MainWindow
             return;
         }
 
+        // ── アクタータブ表示中は始めない（2026-10-03 のレビュー #6）──
+        //   DoQuickSave はアクタータブ表示中はアクターだけを保存し、_isDirty はシーンとタブで 1 つなので、
+        //   「保存してから」でもシーンの未保存の編集は保存されず、実行後の読み直しで消える。
+        if (_activeActorPath != null)
+        {
+            SEEDEditor.Headless.EditorDialogs.Show(
+                MigrationMessages.UPGRADE_ACTOR_TAB_OPEN,
+                MigrationMessages.UPGRADE_WINDOW_TITLE,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // ── 未保存の編集があるなら、先に保存か破棄を選ばせる（レビュー #8。判定は UpgradeUnsavedPolicy.cs）──
+        //   アップグレードはディスクの .scene の prefab_hash も貼り直す。未保存のまま実行して後で保存すると、
+        //   メモリの古い prefab_hash で上書きされ、次に開いたとき偽の「プレハブが更新されています」が出る。
+        var choice = _isDirty ? AskUnsavedBeforeUpgrade() : UpgradeUnsavedChoice.Cancel;
+        switch (UpgradeUnsavedPolicy.Decide(_isDirty, choice))
+        {
+            case UpgradeStartAction.Abort:
+                return;
+
+            case UpgradeStartAction.SaveThenOpen:
+                // 保存は非同期（完了は OnSaveCompleted → ContinuePendingUpgrade）。送れなければ取りやめる
+                _pendingUpgradeTarget = target;
+                if (!DoQuickSave())
+                {
+                    _pendingUpgradeTarget = null;
+                    ShowToast(MigrationMessages.UPGRADE_SAVE_NOT_STARTED);
+                }
+                return;
+
+            case UpgradeStartAction.OpenNow:
+                OpenUpgradeWindow(target);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// 「保存してからアップグレード」で保存を待っている対象（.seedproj か assets ルート）。待っていなければ null。
+    /// </summary>
+    private string? _pendingUpgradeTarget;
+
+    /// <summary>
+    /// 未保存の編集があるときに、アップグレードの前に保存するか・破棄するか・やめるかを聞く。
+    /// </summary>
+    /// <returns>選んだこと（ダイアログを閉じた・ヘッドレスの既定応答はやめる）。</returns>
+    private static UpgradeUnsavedChoice AskUnsavedBeforeUpgrade()
+    {
+        var answer = SEEDEditor.Headless.EditorDialogs.Show(
+            MigrationMessages.UPGRADE_UNSAVED_PROMPT,
+            MigrationMessages.UPGRADE_WINDOW_TITLE,
+            MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+        return answer switch
+        {
+            MessageBoxResult.Yes => UpgradeUnsavedChoice.SaveFirst,
+            MessageBoxResult.No  => UpgradeUnsavedChoice.Discard,
+            _                    => UpgradeUnsavedChoice.Cancel,
+        };
+    }
+
+    /// <summary>
+    /// 「保存してからアップグレード」の続き（OnSaveCompleted から呼ぶ。UI スレッド）。
+    /// 保存できたらアップグレードの窓を開き、失敗したら開かない。待っていなければ何もしない。
+    /// </summary>
+    /// <param name="saved">保存に成功したか。</param>
+    private void ContinuePendingUpgrade(bool saved)
+    {
+        if (_pendingUpgradeTarget is not { } target) return;
+        _pendingUpgradeTarget = null;
+        if (!saved)
+        {
+            ShowToast(MigrationMessages.UPGRADE_SAVE_FAILED);
+            return;
+        }
+        OpenUpgradeWindow(target);
+    }
+
+    /// <summary>
+    /// アップグレードの窓を開き、実行したなら開いているシーンをディスクから読み直す（レビュー #8）。
+    /// </summary>
+    /// <param name="target">アップグレード対象（<see cref="UpgradeTargetPath"/> の値）。</param>
+    private void OpenUpgradeWindow(string target)
+    {
         var window = new ProjectUpgradeWindow(target, AssetsPath) { Owner = this };
         // 一括アップグレードは .actor をまとめて書き換える（中身は同じで形式の版だけが上がる）。
         // プレハブの外部変更の監視がそれを拾ってプレハブごとに再展開（Undo・トースト・未保存の印）を
@@ -81,6 +166,15 @@ public partial class MainWindow
         finally
         {
             _prefabAutoReloader?.EndSuppression();
+        }
+
+        // ── 実行したなら、貼り直した prefab_hash を取り込むため開いているシーンを読み直す ──
+        //   未保存の編集（「破棄して」を選んだもの）はここで捨てる。シーンの自動再読込が先に読み直していても、
+        //   同じ内容を読み直すだけなので害は無い（自動再読込は未保存なら見送るので、こちらが確実に読む）。
+        if (UpgradeUnsavedPolicy.ShouldReloadScene(window.Executed, _currentScenePath is not null))
+        {
+            _sceneAutoReloader?.ForceReload();
+            ShowToast(MigrationMessages.UPGRADE_SCENE_RELOADED);
         }
     }
 

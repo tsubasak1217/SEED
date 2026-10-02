@@ -532,8 +532,12 @@ public partial class MainWindow
                         _runtimeManager?.SendToRuntime($"DELETE_RECURSIVE:{string.Join(",", ids)}");
                 });
                 menu.Items.Add(new Separator());
-                AddViewportMenuItem(menu, "アクタファイル化", null,
-                    () => PanelHierarchy.ShowExportActorDialog());
+                AddViewportMenuItem(menu, "アクタファイル化", null, () =>
+                {
+                    // 画面プレビューの中のノードは書き出さない（入れ子のプレハブのリンクを外した写しなので、元のプレハブへ
+                    // 上書きすると平坦化される。ランタイムが断るのは根だけ。レビュー #14。MainWindow.ScreenPreview.cs の文言）
+                    if (!PanelHierarchy.ShowExportActorDialog()) ShowToast(PreviewExportRefusedToast);
+                });
                 menu.Items.Add(new Separator());
             }
             // ── アクタを追加 サブメニュー ──────────────────────

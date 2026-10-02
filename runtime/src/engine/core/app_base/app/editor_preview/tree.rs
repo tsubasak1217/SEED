@@ -265,6 +265,21 @@ pub(super) fn locate_in_parent(actors: &[Actor], entity: Entity) -> Option<TreeL
     actors.iter().find_map(|actor| locate_in_children(actor, entity))
 }
 
+/// エンティティのアクタ自身か、その祖先のどれかが `matches` に当たるか（世界線を問わない。見つからなければ false）。
+///
+/// プレビューの差し込み先が地形の部分木の中かを確かめるのに使う（ops.rs の resolve_insert_target。レビュー #7）。
+pub(super) fn entity_or_ancestor_matches(actors: &[Actor], entity: Entity, matches: impl Fn(&Actor) -> bool + Copy) -> bool {
+    /// `actor` の部分木に `entity` があるかを探し、あれば道筋（`actor` から `entity` まで）のどれかが当たるかを返す。
+    fn search(actor: &Actor, entity: Entity, matches: impl Fn(&Actor) -> bool + Copy, ancestor_matched: bool) -> Option<bool> {
+        let matched = ancestor_matched || matches(actor);
+        if actor.entity == entity {
+            return Some(matched);
+        }
+        actor.children().iter().find_map(|child| search(child, entity, matches, matched))
+    }
+    actors.iter().find_map(|actor| search(actor, entity, matches, false)).unwrap_or(false)
+}
+
 // ============================================================
 //  テスト — 名前のパス・DFS からの根の引き方・根の集め方・入れ子の控え・印の外し方・位置
 // ============================================================
@@ -470,5 +485,32 @@ mod tests {
         );
         assert_eq!(locate_in_parent(&actors, top_entity), Some(TreeLocation { parent: None, index: 1 }));
         assert_eq!(locate_in_parent(&actors, world.spawn()), None);
+    }
+
+    /// 自分か祖先が条件に当たるか（地形の部分木の中への差し込みを断るため。レビュー #7）。
+    #[test]
+    fn ancestor_match_covers_self_descendants_and_not_siblings() {
+        let mut world = World::new();
+        // Group ─ Terrain ─ Chunk ─ Deep / Group ─ Other
+        let deep = actor(&mut world, "Deep");
+        let deep_entity = deep.entity;
+        let chunk = with_children(actor(&mut world, "Chunk"), vec![deep]);
+        let chunk_entity = chunk.entity;
+        let terrain = with_children(actor(&mut world, "Terrain"), vec![chunk]);
+        let terrain_entity = terrain.entity;
+        let other = actor(&mut world, "Other");
+        let other_entity = other.entity;
+        let group = with_children(actor(&mut world, "Group"), vec![terrain, other]);
+        let group_entity = group.entity;
+        let actors = vec![group];
+        let is_terrain = |a: &Actor| a.name == "Terrain";
+
+        assert!(entity_or_ancestor_matches(&actors, terrain_entity, is_terrain), "自分が地形");
+        assert!(entity_or_ancestor_matches(&actors, chunk_entity, is_terrain), "親が地形");
+        assert!(entity_or_ancestor_matches(&actors, deep_entity, is_terrain), "祖先が地形");
+        assert!(!entity_or_ancestor_matches(&actors, other_entity, is_terrain), "地形の兄弟は外");
+        assert!(!entity_or_ancestor_matches(&actors, group_entity, is_terrain), "地形の親は外");
+        let stray = world.spawn();   // 木に入れていないエンティティ（Entity::default() は最初のアクタと同じ番号になりうるので使わない）
+        assert!(!entity_or_ancestor_matches(&actors, stray, is_terrain), "木に無ければ false");
     }
 }

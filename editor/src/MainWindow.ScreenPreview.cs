@@ -53,6 +53,10 @@ public partial class MainWindow
     /// <summary>プレビューの中のノードを Delete で消そうとしたときのトースト。</summary>
     private const string PreviewInnerDeleteToast = "プレビューの中は消せません（根を選んで消すと、プレビューごと消えます）";
 
+    /// <summary>シーンビューの「アクタファイル化」をプレビューの中で選んだとき（レビュー #14）。</summary>
+    private const string PreviewExportRefusedToast =
+        "プレビューの中はアクタファイル化できません（保存されない表示用のアクタです。元のプレハブを開いて編集してください）";
+
     /// <summary>差し込み先を見失ったが理由が分からないときのトースト。</summary>
     private const string PreviewTargetLostToast = "差し込み先が見つかりません。ヒエラルキーで選び直してください";
 

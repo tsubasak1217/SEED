@@ -365,6 +365,8 @@ public partial class MainWindow
                     // パネル側の OnPanelKeyDown が実施するため、ここでは何もしない
                     // （二重保存を避ける）。
                     if (PanelScriptEditor.IsActiveForSave) return;
+                    // 文字列表（ローカライズ）パネルにフォーカスがあるときも同じ（パネルの PreviewKeyDown が表を保存する）
+                    if (PanelLocalization.IsKeyboardFocusWithin) return;
                     if (shift) ShowSaveAsDialog();
                     else       DoQuickSave();
                 });

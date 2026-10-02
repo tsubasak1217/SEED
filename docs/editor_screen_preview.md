@@ -43,6 +43,8 @@ Edit 上で画面の見た目がつかめない。そこで **Edit 中に、任�
 - **プレハブを選ぶ窓**（「プロジェクトから選ぶ...」・案内の［選ぶ...］）: プロジェクトの `.actor` / `.actor2d` を「最近使ったもの」→「プロジェクトのプレハブ」の順に並べ、
   検索欄（ファイル名・フォルダの部分一致。空白区切りは全部を含む）で絞る。ダブルクリック・Enter で決定、Esc で閉じる。
   最近使ったもの（8 件まで）はプロジェクトごとに `editor/settings/screen_preview_recent.json` に残る。
+  エディタを複数開いているときは、保存の直前に読み直して足すので先に保存された追加は残るが、ほぼ同時に足すと後の方の内容になり 1 件落ちることがある
+  （錠は掛けない。ファイルが壊れることはない＝一時ファイルの名前は書き込みごとに固有。2026-10-03。`PreviewRecentStore`）。
 - **入れ子にできる**: プレビューの中のノードへ、さらにプレビューを差し込める（例: `alarm_edit.actor` の `Column/Body` へ `alarm_edit_body.actor`。
   実行時にスクリプトが中身を入れる画面を、Edit で組み立てて見られる）。入れ子はヒエラルキーの右クリックから作るほか、プレビューの中のアクタが
   案内の表のスクリプト（例: プレビューした `center_popup.actor` の `PopupPlane`）を持つときは、インスペクタの帯の中に案内が出る
@@ -59,7 +61,7 @@ Edit 上で画面の見た目がつかめない。そこで **Edit 中に、任�
 |---|---|---|
 | シーンの保存（`SAVE_SCENE`・`SAVE_SCENE_AS`・Play 用一時シーンの `SAVE_SCENE_COPY`） | **含めない** | `Scene::to_json`（保存用の形）で取り除く |
 | アクタファイルへの書き出し（`SAVE_ACTOR`・`EXPORT_ACTOR`） | 子孫のプレビューは取り除く。根がプレビューなら**断る** | `actor_file::save` |
-| コピー（`COPY`） | プレビューの中のアクタはコピーしない・子孫のプレビューは取り除く | `clipboard.rs::do_copy` |
+| コピー（`COPY`） | プレビューの中のアクタはコピーしない・子孫のプレビューは取り除く。**選択がプレビューだけならクリップボードを空にして `PREVIEW_ERROR`**（前にコピーした別のものを次の Ctrl+V で黙って貼らせない。2026-10-03） | `clipboard.rs::do_copy` |
 | 写しの書き出し（`SNAPSHOT_SCENE`） | 含めない（.scene のファイルなので） | `scene_snapshot/collect.rs` |
 | Undo の写し・Play の開始時の写し・AI の `SCENE_INFO` | **残す**（メモリの中だけ。下の理由） | `to_data` のまま |
 | Play の開始（`ENTER_PLAY`） | 写しを取った**後で**外す。Play を止めると Play 前の編集状態の復元で**戻る** | `remove_previews_for_play` |
@@ -78,11 +80,21 @@ Play を止めると、Play を始めた瞬間の編集状態（プレビュー�
 - 理由: 既存のプレハブの流儀（[editor_prefab.md](editor_prefab.md) §2）では、プレハブの中身はアクタータブで直し、シーンへは明示の操作で反映する。
   プレビューは保存されないので、プレビューの上で値を変えても**黙って消える**（保存・作り直し・Play で消える）。黙って消える編集を許さないため、編集はプレハブへ誘導する。
 - ヒエラルキーでも、プレビューのノードは名前の変更・ドラッグ（並べ替え・アクタファイル化）・アクタの追加ができない（右クリックはプレビューの項目だけ）。
-  実アクタをプレビューの中へドロップすることもできない。
+  行頭の目アイコン（表示の切り替え）も押せない（ツールチップで理由を出す。2026-10-03）。
+  実アクタをプレビューの中へドロップすることもできない。シーンビューの右クリック「アクタファイル化」も、プレビューの中のノードでは断る（トースト。2026-10-03）。
 - Delete キー・シーンビューの「削除」は選択を分ける（`PreviewDeletionPlanner`）: プレビューの根は `PREVIEW_CLEAR`（DFS の大きい順。外側の根と一緒に選んだ入れ子の根は送らない）、
   中のノードは消さない、普通のノードは「先に消えるプレビューの分だけ詰めた DFS」で従来どおり `DELETE`（ランタイムは命令ごとにその時点の木で DFS を引くため）。
 - ランタイムも、**実アクタをプレビューの中へ移す・プレビューの中へアクタを足す・プレビューを外へ動かす**命令を断る（`PREVIEW_ERROR`。
-  プレビューの中に入れたものは保存されず、データが消えるため）。値の編集・名前・表示・削除はメモリの中だけの変更なので断らない（エディタが読み取り専用にしている）。
+  プレビューの中に入れたものは保存されず、データが消えるため）。
+- ランタイムは **プレビューの中の値・構成を変える命令も断る**（`PREVIEW_ERROR:プレビューの中は編集できません…`。2026-10-03。レビュー #3）:
+  インスペクタの値の編集（`field_edit.rs` の分類で対象のアクタがある `SET_*` 全部。`SET_VISIBLE`・`SET_ACTIVE` を含む）・`SET_ACTOR_TRANSFORM`・`SET_CANVAS_TRANSFORM`・
+  コンポーネントの追加・削除・複製・制御点の書き換え・AI の `AI_SET_VALUE` / `AI_ADD_COMPONENT` / `AI_MOVE_ACTOR` / `AI_REMOVE_ACTOR`・
+  ロジック配置 `LOGIC_PLACE` / `LOGIC_PLACE_BEGIN`（アクタの配置は `parent_dfs` が中なら「追加できません」、制御点の追記は `actor_dfs_id` が中なら「編集できません」）。
+  エディタの UI はプレビューの行を読み取り専用にしていて送らないが、**AI ツール・MCP（`seed_send_ipc` など）・スクリプトは UI を通らない**ため、
+  以前は普通の編集として成功し、保存・作り直し・Play のどれかで黙って消えていた。MCP の `seed_find_actor` は結果に `is_preview` を載せるので、AI は DFS ID を得た時点で分かる。
+  エディタの AI ツール（`set_value`・`add_component`・`move_actor`・`remove_actor`）は送る前にヒエラルキーでプレビューの中かを確かめ、中ならエラーをツールの結果として返す
+  （送るだけだと応答を待たずに「設定しました」と返し、AI には成功に見えるため。`EditorCommandExecutor.PreviewGuard.cs`）。
+  名前の変更・削除はメモリの中だけの変更なので断らない（エディタの UI はプレビューの行で出さない）。
 
 ## 4. ScreenStack への差し込み（枠 → 中身の 2 段）
 
@@ -179,6 +191,13 @@ Undo の各コマンドは対象を (world_line, DFS 番号) で持つので、�
 そこで**プレビューの出し入れ・作り直しは Undo 履歴へ 1 件ずつ積む**（`EditorPreviewTreeCommand`。中身は前後の木の写し `ActorTreeSnapshotCommand`）。
 
 - Ctrl+Z で出したプレビューが消え、Ctrl+Y で戻る。その Undo/Redo も未保存にしない（`Command::is_scene_neutral`）。
+- **Undo/Redo で木を組み直した後は、選択を同じアクタへ引き直して知らせる**（2026-10-03。レビュー #1。プレビューに限らず、アクタの追加・削除・付け替えの Undo/Redo も同じ）。
+  組み直しは entity も作り直すので、エディタの安定キーと同じ「ルートからの名前の道筋＋同じ名前の兄弟の中で何番目か」で控えて引き直し
+  （`app/undo_selection.rs`）、ヒエラルキー（組み直したときは間引かず即時）→ `SELECTED` →（主があれば）`ACTOR_COMPONENTS` の順に送る。
+  道筋で引けなくても木の形（DFS 順の子の数の並び）が前後で同じなら同じ番号のまま残す（名前の変更の Undo/Redo）。
+  選んでいたアクタが消えた（プレビューの中・追加を戻したアクタ）・親が変わった（道筋も形も変わる）ときは選択から外し、何も残らなければ `SELECTED:-1`。
+  以前は古い DFS の選択が残り、インスペクタの次の値の編集（`SET_*:{古い番号}`）がその番号に今いる別の実アクタへ当たって保存されていた。
+  エディタ側も、ヒエラルキーの同期で選択の DFS が変わったらインスペクタへ新しい番号を知らせる（`HierarchyPanel.RestoreSelectionAfterSync` / `Hierarchy/SelectionRestorePlan.cs`）。
 - 作り直し（`PREVIEW_REFRESH_PATH`）は世界線ごとに 1 件（複数のタブにプレビューがあると、その数だけ Ctrl+Z が要る）。
 - Play の開始で外すときは積まない（その時点の履歴は Play 用の空の履歴で、Play を止めると Play 前の写しから木が戻るので、Play 前の履歴と DFS が合う）。
 
@@ -186,16 +205,17 @@ Undo の各コマンドは対象を (world_line, DFS 番号) で持つので、�
 
 | コマンド | 書式 | 応答 |
 |---|---|---|
-| `PREVIEW_PREFAB` | `PREVIEW_PREFAB:{world_line},{parent_dfs},{json}`。json = `{"prefab":"assets://..","under":"Screens","frame":"assets://ui/prefabs/screen_frame.actor","frame_body":"Body","layer_bias":10000}`（`prefab` だけ必須。`under` 空 = 親の直下、`frame` 無し = 枠なし、`frame_body` 空 = 枠の直下、`layer_bias` 0 = 底上げなし。±16,777,216 に収める。知らないキーは無視） | `HIERARCHY_QUIET` → `HIERARCHY` → `SELECTED…` → `PREVIEW_ADDED:{world_line},{根の DFS}`（失敗は `PREVIEW_ERROR:{理由}`。木は変わらない。json が読めない命令は捨てる） |
+| `PREVIEW_PREFAB` | `PREVIEW_PREFAB:{world_line},{parent_dfs},{json}`。json = `{"prefab":"assets://..","under":"Screens","frame":"assets://ui/prefabs/screen_frame.actor","frame_body":"Body","layer_bias":10000}`（`prefab` だけ必須。`under` 空 = 親の直下、`frame` 無し = 枠なし、`frame_body` 空 = 枠の直下、`layer_bias` 0 = 底上げなし。±16,777,216 に収める。知らないキーは無視） | `HIERARCHY_QUIET` → `HIERARCHY` → `SELECTED…` → `PREVIEW_ADDED:{world_line},{根の DFS}`（失敗は `PREVIEW_ERROR:{理由}`。木は変わらない。json が読めない命令は捨てる。**例外**: 追加した根の位置（DFS）を引けなかったとき〈`ADDED_ROOT_LOST`。通常は起きない〉だけは、木を変え・Undo を 1 件積み・`HIERARCHY_QUIET` → `HIERARCHY` → `SELECTED…` を送った**後で** `PREVIEW_ERROR` を返す。プレビューは出ているので Ctrl+Z か `PREVIEW_CLEAR` で消す） |
 | `PREVIEW_CLEAR` | `PREVIEW_CLEAR:{world_line},{dfs}`（dfs を含むプレビューを 1 つ。根でも中のノードでもよい） | `PREVIEW_CLEARED:{数}`（0 なら何も変えない） |
 | `PREVIEW_CLEAR_ALL` | `PREVIEW_CLEAR_ALL:{world_line}` | `PREVIEW_CLEARED:{数}` |
-| `PREVIEW_REFRESH_PATH` | `PREVIEW_REFRESH_PATH:{path}`（絶対パス or `assets://`。中身か枠がそのプレハブのプレビューを作り直す。比べるときは仮想パスの解決・区切り・大小文字をそろえる） | `PREVIEW_REFRESHED:{数},{path}`（Edit 以外は 0） |
+| `PREVIEW_REFRESH_PATH` | `PREVIEW_REFRESH_PATH:{path}`（絶対パス or `assets://`。中身か枠がそのプレハブのプレビューを作り直す。比べるときは仮想パスの解決・区切り・大小文字をそろえる） | 組み立てに失敗した根ごとに `PREVIEW_ERROR:{理由}`（その根は古い表示のまま残す）→ 作り直した根があれば `HIERARCHY_QUIET` → `HIERARCHY` → `SELECTED…` → 最後に必ず `PREVIEW_REFRESHED:{作り直した数},{path}`（Edit 以外は 0。失敗した根は数に入らない） |
 
 - Play 中は `PREVIEW_PREFAB`・`PREVIEW_CLEAR`・`PREVIEW_CLEAR_ALL` を断る（`PREVIEW_ERROR`。Play 中の消去は Play 用の履歴に積まれて捨てられ、Play 前の履歴と DFS がずれるため）。
 
 - `HIERARCHY` の各ノード: `preview`（プレビューの部分木の中か）・`preview_root`（根か）・`preview_source`（根の中身のプレハブ。根以外は null）。
 - `ACTOR_COMPONENTS`: `editor_preview`（プレビューの中なら `{"root_dfs":N,"is_root":bool,"prefab":"..","frame":".."|null}`、外なら null）。
-- 断る命令（`PREVIEW_ERROR`）: Play 中・端末の写しの閲覧中の `PREVIEW_*`、§3 の木の編集。
+- 断る命令（`PREVIEW_ERROR`）: Play 中・端末の写しの閲覧中の `PREVIEW_*`、§3 の木の編集とプレビューの中の値・構成の編集、プレビューだけを選んだ `COPY`（§2）、
+  地形ルートとその部分木の中への `PREVIEW_PREFAB`（§9）。
 - MCP からは専用のツール **`seed_preview`**（2026-10-02。`action: add | clear | clear_all`）で使う。差し込みは
   `parent`（DFS ID か名前パス）・`prefab_path`・`host`（差し込み先の案内の行の見出し。省くと右クリックと同じ枠なし）で、
   UI と同じ道筋（`MainWindow.ScreenPreview.cs` の判定・親の引き直し・送信）を通り、`PREVIEW_ADDED` / `PREVIEW_CLEARED` を待って結果を返す。
@@ -209,8 +229,9 @@ Undo の各コマンドは対象を (world_line, DFS 番号) で持つので、�
 - ルート（親なし）へは出せない（必ず親のノードを選ぶ）。
 - プレビューの中身は Edit で動かない（スクリプトが中身を作る画面は空の所が残る。入れ子のプレビューで補う）。
 - テーマの塗り直し・不透明な画面より下を隠す・出入りの動き、は Edit では再現しない（§4。段・帯の底上げは §4.1 で近づけた）。
-- 地形ルートの部分木の中に置いたプレビューは、Play を止めても戻らない（地形は Play をまたいで現物のまま保つ経路のため。まず起きない置き方）。
+- **地形ルートとその部分木の中へは出せない**（`PREVIEW_ERROR:地形の中にはプレビューを出せません…`。2026-10-03。レビュー #7）。Undo の写しは地形ルートを位置の印だけにして
+  現物を Keep し、Play も地形を現物のまま保つので、中に置いたプレビューは Ctrl+Z でも消えず・Play を止めても戻らず、DFS をずらして前に積んだ Undo が別のアクタへ当たるため。
 - ランタイムの木の編集の拒否（§3）は、表示中の世界線の木で DFS を数える（エディタは表示中の世界線へしか送らない）。
-- 読み取り専用はインスペクタとヒエラルキーだけ。シーンビューのギズモではプレビューのアクタを動かせてしまう（メモリの中だけの変更で保存されないが、
-  普通の編集として未保存の印が付きうる）。ヒエラルキーの右クリック「削除」（普通のノードを右クリックしたとき）は Delete キーの振り分けを通らない。
+- 読み取り専用はインスペクタとヒエラルキーだけ（ランタイムは IPC の値の編集を断る。§3）。シーンビューのギズモ（ランタイムの中のドラッグで IPC を通らない）では
+  プレビューのアクタを動かせてしまう（メモリの中だけの変更で保存されないが、普通の編集として未保存の印が付きうる）。ヒエラルキーの右クリック「削除」（普通のノードを右クリックしたとき）は Delete キーの振り分けを通らない。
 - 詳細は [backlog.md](backlog.md) の「Edit 上の画面プレビュー」節。

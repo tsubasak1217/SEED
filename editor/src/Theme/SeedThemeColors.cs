@@ -226,6 +226,14 @@ public static class SeedThemeColors
     /// <inheritdoc cref="SeedColorTable.PREVIEW_BANNER_TEXT"/>
     public static readonly Color PreviewBannerText = ToColor(SeedColorTable.PREVIEW_BANNER_TEXT);
 
+    // ── 文字列表（ローカライズ）のパネルの升目 ──────────────
+
+    /// <inheritdoc cref="SeedColorTable.LOCALE_MISSING_CELL_BG"/>
+    public static readonly Color LocaleMissingCellBg = ToColor(SeedColorTable.LOCALE_MISSING_CELL_BG);
+
+    /// <inheritdoc cref="SeedColorTable.LOCALE_MISSING_CELL_FG"/>
+    public static readonly Color LocaleMissingCellFg = ToColor(SeedColorTable.LOCALE_MISSING_CELL_FG);
+
     /// <summary>
     /// 色表の 16 進文字列を WPF の <see cref="Color"/> へ変換する。
     /// </summary>

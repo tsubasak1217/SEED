@@ -343,6 +343,20 @@ public static class SeedColorTable
     public const string PREVIEW_BANNER_TEXT = DIALOG_TEXT;
 
     // ══════════════════════════════════════════════════════════
+    //  文字列表（ローカライズ）のパネルの升目（docs/localization.md §15）
+    //
+    //  未訳（空・null・表に無い）の升目の地。一覧の中で目に留まるよう、地色（SURFACE_WINDOW）から
+    //  はっきり離した暗い赤茶にする（通知帯の琥珀・プレビューの帯の紫・選択の青と取り違えない）。
+    //  升目に文字（空の文字列以外の文は無いが、書き始めると乗る）が乗るので本文色で 4.5 以上を要求する。
+    // ══════════════════════════════════════════════════════════
+
+    /// <summary>文字列表の未訳の升目の地（暗い赤茶）。</summary>
+    public const string LOCALE_MISSING_CELL_BG = "#4F2A22";
+
+    /// <summary>文字列表の未訳の升目の文字（本文色）。</summary>
+    public const string LOCALE_MISSING_CELL_FG = DIALOG_TEXT;
+
+    // ══════════════════════════════════════════════════════════
     //  コントラストの基準（WCAG 2.1）
     // ══════════════════════════════════════════════════════════
 
@@ -461,6 +475,9 @@ public static class SeedColorTable
         new("プレビューの帯/本文",   PREVIEW_BANNER_BG, null, PREVIEW_BANNER_TEXT,   MIN_RATIO_TEXT),
         // 左端の帯がインスペクタの地から浮いて見えるか（文字ではないので 3:1）
         new("プレビューの帯/左端",   SURFACE_WINDOW,    null, PREVIEW_BANNER_ACCENT, MIN_RATIO_NON_TEXT),
+
+        // ── 文字列表の未訳の升目（書き始めると文字が乗る。地の色そのものは目印なので文字だけを検査する）──
+        new("文字列表/未訳の升目",       LOCALE_MISSING_CELL_BG, null, LOCALE_MISSING_CELL_FG, MIN_RATIO_TEXT),
     };
 
     // ══════════════════════════════════════════════════════════

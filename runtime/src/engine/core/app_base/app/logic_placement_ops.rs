@@ -576,6 +576,9 @@ impl App {
         self.selected_actor_dfs_ids     = dfs_ids;
         // MC インスタンス単位の選択とは排他（アクタ選択へ倒す）。
         self.selected_instances.clear();
+        // 呼び出し側の send_hierarchy が間引きで遅れていたら、SELECTED より先に今送る
+        // （エディタは選択の番号を手元の木で引くため。hierarchy_sync.rs の flush_deferred_hierarchy）
+        self.flush_deferred_hierarchy();
         self.send_selected();
         if let Some(idx) = self.actor_virtual_selected_idx {
             self.send_actor_components(idx as u32, self.actor_virtual_selected_slot_idx);

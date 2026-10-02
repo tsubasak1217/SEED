@@ -168,6 +168,12 @@ public sealed class AssetFixture : IDisposable
         File.WriteAllText(abs, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
+    /// <summary>テキストファイルを読む（既存のフィクスチャのファイルを書き換えるテスト用）。</summary>
+    /// <param name="relative">ルート相対パス。</param>
+    /// <returns>中身。</returns>
+    public string ReadText(string relative) =>
+        File.ReadAllText(Path.Combine(Root, relative.Replace('/', Path.DirectorySeparatorChar)));
+
     /// <summary>指定バイト数のダミーバイナリを書く。</summary>
     /// <param name="relative">ルート相対パス。</param>
     /// <param name="size">バイト数（中身は連番）。</param>

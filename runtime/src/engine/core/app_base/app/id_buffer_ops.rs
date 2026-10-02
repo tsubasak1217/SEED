@@ -57,6 +57,26 @@ pub(super) fn decide_id_buffer_policy(inputs: &IdBufferInputs) -> IdBufferPolicy
     }
 }
 
+/// ID バッファを作らない構成（picking=false）で撮影を頼まれたときの文言（レビュー #12）。
+pub(super) const ID_BUFFER_DISABLED_BY_PROFILE: &str =
+    "この描画の構成（picking=false）では撮影できません（背景を抜く ID バッファを作らない構成です）";
+
+/// 作ってよい構成なのに ID バッファを用意できなかったときの文言（窓の大きさが未確定・描画の準備前など）。
+pub(super) const ID_BUFFER_NOT_READY: &str =
+    "ID バッファを用意できなかったため撮影できません（窓の大きさが決まっていない・描画の準備ができていない可能性）";
+
+/// ID パスを描く準備（`ensure_id_buffer` の後）ができていないときの理由（純関数）。できていれば None。
+///
+/// 以前は ID バッファが無いまま撮影を続け、読み戻しも予約されないので 30 秒の期限切れまで待ってから
+/// 「フレームが回っていない可能性」という誤った理由で失敗していた（thumbnail_ops.rs。レビュー #12）。
+pub(super) fn id_buffer_unavailable_reason(has_buffer: bool, policy: IdBufferPolicy) -> Option<&'static str> {
+    match (has_buffer, policy) {
+        (true, _) => None,
+        (false, IdBufferPolicy::Never) => Some(ID_BUFFER_DISABLED_BY_PROFILE),
+        (false, IdBufferPolicy::Always | IdBufferPolicy::OnDemand) => Some(ID_BUFFER_NOT_READY),
+    }
+}
+
 impl App {
     /// 今の状態での ID バッファの持ち方。
     fn id_buffer_policy(&self) -> IdBufferPolicy {
@@ -101,6 +121,15 @@ impl App {
         eprintln!("[SEED PICKING] ID バッファを作りました（{width}x{height}。ID パスを描くため＝図鑑のサムネイルの撮影など）");
         self.id_buffer = Some(IdBuffer::new(&draw_ctx.device, width, height));
     }
+
+    /// 撮影（ID パスを描く）の前に ID バッファを用意し、用意できなければ理由を返す（thumbnail_ops.rs が使う）。
+    pub(super) fn prepare_id_buffer_for_capture(&mut self) -> Result<(), &'static str> {
+        self.ensure_id_buffer();
+        match id_buffer_unavailable_reason(self.id_buffer.is_some(), self.id_buffer_policy()) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -129,5 +158,16 @@ mod tests {
         assert_eq!(decide_id_buffer_policy(&full), IdBufferPolicy::OnDemand);
         let ui = IdBufferInputs { picking_flag: false, ..Default::default() };
         assert_eq!(decide_id_buffer_policy(&ui), IdBufferPolicy::Never);
+    }
+
+    /// レビュー #12: ID バッファが無いまま撮影を進めない。作らない構成なら構成の理由、作ってよいのに無ければ準備の理由。
+    #[test]
+    fn capture_is_refused_without_id_buffer_with_the_right_reason() {
+        for policy in [IdBufferPolicy::Always, IdBufferPolicy::OnDemand, IdBufferPolicy::Never] {
+            assert_eq!(id_buffer_unavailable_reason(true, policy), None, "あれば撮れる（{policy:?}）");
+        }
+        assert_eq!(id_buffer_unavailable_reason(false, IdBufferPolicy::Never), Some(ID_BUFFER_DISABLED_BY_PROFILE));
+        assert_eq!(id_buffer_unavailable_reason(false, IdBufferPolicy::OnDemand), Some(ID_BUFFER_NOT_READY));
+        assert_eq!(id_buffer_unavailable_reason(false, IdBufferPolicy::Always), Some(ID_BUFFER_NOT_READY));
     }
 }

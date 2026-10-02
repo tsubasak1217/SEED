@@ -175,6 +175,8 @@ public static class Program
         harness.Add("子階層も再帰的に整合する", NestedLevelsStayConsistent);
         harness.Add("末尾の余りを削除しても、生き残る項目は正しい対応を保つ", TrimKeepsMapping);
         harness.Add("別シーンへの全面差し替えでも位置とノードが 1:1 で対応する", WholeTreeReplacement);
+        // 差分同期の後の選択の直し方（SelectionRestorePlanTests.cs。レビュー #1）
+        SelectionRestorePlanTests.Register(harness);
 
         Console.WriteLine("=== ヒエラルキー差分更新テスト ===");
         return harness.Run();

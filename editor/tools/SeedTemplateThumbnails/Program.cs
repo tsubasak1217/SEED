@@ -5,9 +5,13 @@
 //    1. 引数の解釈（ThumbnailArguments）と入力の確定（ThumbnailInputs: ライブラリ・ランタイム・作業フォルダ）
 //    2. カタログの読み込み（TemplateActorCatalog = エディタの「テンプレートアクタを追加」の窓と同じ）と、
 //       見本の撮り方（thumbnail_sample。ThumbnailSampleCatalog）の読み込み
-//    3. 件ごとの舞台の計画（StageSceneBuilder。--only で絞る。skip の件・書き損じの件はここで結果へ）
-//    4. 撮影（ThumbnailGenerator: ランタイムを 1 回だけ起動し、LOAD_SCENE で舞台を順に読み込んで撮る）
-//    5. 結果の一覧（ThumbnailReport）と、--sheet のときの確認用の画像（ContactSheet）
+//    3. 作業の置き場を借りる（ThumbnailWorkFolder。道具の印のある置き場・無い置き場・空の置き場だけを使い、
+//       プロジェクト・印の無い中身のあるフォルダ・別の実行が使っている置き場は断る〈終了コード 4〉）。
+//       借りたら前の実行の中身（assets/・shots/・ランタイムのログ）を消す
+//    4. 件ごとの舞台の計画（StageSceneBuilder。--only で絞る。skip の件・書き損じの件はここで結果へ）
+//    5. 撮影（ThumbnailGenerator: ランタイムを 1 回だけ起動し、LOAD_SCENE で舞台を順に読み込んで撮る）
+//    6. 結果の一覧（ThumbnailReport。カタログに現れた順。ThumbnailResultOrder）と、--sheet のときの確認用の画像（ContactSheet）
+//    7. 作業の置き場を返す（既定の実行ごとの置き場は、成功したら消す。失敗したらログを見られるよう残す）
 //
 //  【書くもの】
 //  templates/<フォルダ>/thumbnails/<テンプレートのファイル名（拡張子なし）>.png（カタログの thumbnail 欄があればそこ）。
@@ -16,9 +20,11 @@
 // ============================================================
 
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 using SEEDEditor.Templates.Actors;
 using SEEDEditor.Tools.SeedTemplateThumbnails.Imaging;
 using SEEDEditor.Tools.SeedTemplateThumbnails.Stage;
+using SEEDEditor.Tools.SeedTemplateThumbnails.Work;
 
 namespace SEEDEditor.Tools.SeedTemplateThumbnails;
 
@@ -38,6 +44,9 @@ public static class Program
 
     /// <summary>ランタイムを使えなかった。</summary>
     private const int ExitRuntimeUnavailable = 3;
+
+    /// <summary>作業の置き場を使えない（プロジェクト・道具の印の無い中身のあるフォルダ・別の実行が使用中・前の中身を消せない）。</summary>
+    private const int ExitWorkFolderUnusable = 4;
 
     /// <summary>
     /// 見本の画像を作る。WPF の画像の機能（確認用の画像の文字の描画を含む）のため STA で動かす。
@@ -68,10 +77,8 @@ public static class Program
             Console.Error.WriteLine($"❌ {inputError}");
             return ExitInvalidInput;
         }
-        Directory.CreateDirectory(inputs.WorkRoot);
         Console.WriteLine($"ライブラリ: {inputs.LibraryRoot}");
         Console.WriteLine($"ランタイム: {inputs.RuntimeExe}（作業フォルダ {inputs.RuntimeWorkingDirectory}）");
-        Console.WriteLine($"作業の置き場: {inputs.WorkRoot}");
 
         // ── 2. カタログ ──
         var catalog = TemplateActorCatalog.Load(inputs.LibraryRoot);
@@ -92,7 +99,54 @@ public static class Program
         }
         Console.WriteLine($"カタログ: {catalog.Entries.Count} 件（撮る対象 {entries.Count} 件）");
 
-        // ── 3. 計画 ──
+        // ── 3. 作業の置き場を借りる（中身を消してよいのは道具の印のある置き場だけ。プロジェクトなどは断る）──
+        if (ThumbnailWorkFolder.Acquire(inputs.WorkRoot, inputs.WorkIsTemporary, out var workError) is not { } work)
+        {
+            Console.Error.WriteLine($"❌ {workError}");
+            return ExitWorkFolderUnusable;
+        }
+        // 例外で抜けたときも失敗扱い（既定の置き場もログを見られるよう残す）
+        int exitCode = ExitWorkFolderUnusable;
+        try
+        {
+            Console.WriteLine($"作業の置き場: {work.Root}（{work.DescribeVerdict()}）");
+            try
+            {
+                work.CleanForRun();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"❌ 作業の置き場の前の中身（assets/・shots/・ログ）を消せません（ほかのプロセスが使っていないか確かめてください）: {ex.Message}");
+                return exitCode;
+            }
+            exitCode = PlanAndShoot(options, inputs, work, catalog, samples, entries, clock);
+            return exitCode;
+        }
+        finally
+        {
+            // ── 7. 返す（既定の置き場は成功したら消す）──
+            var kept = work.Release(succeeded: exitCode == ExitSuccess);
+            if (kept is not null && work.IsTemporary)
+                Console.WriteLine($"作業の置き場を残しました（ランタイムのログ・撮った元の画像を見られます。要らなければ消してください）: {kept}");
+        }
+    }
+
+    /// <summary>
+    /// 計画・撮影・結果の一覧（手順 4〜6）。
+    /// </summary>
+    /// <param name="options">引数。</param>
+    /// <param name="inputs">確定した入力。</param>
+    /// <param name="work">借りた作業の置き場（前の中身は消してある）。</param>
+    /// <param name="catalog">テンプレートのカタログ。</param>
+    /// <param name="samples">見本の撮り方（テンプレートのライブラリ相対パス → thumbnail_sample）。</param>
+    /// <param name="entries">撮る対象のエントリ（カタログに現れた順）。</param>
+    /// <param name="clock">全体の時計。</param>
+    /// <returns>終了コード。</returns>
+    private static int PlanAndShoot(ThumbnailOptions options, ThumbnailInputs inputs, ThumbnailWorkFolder work,
+        TemplateActorCatalog catalog, IReadOnlyDictionary<string, JsonNode> samples,
+        IReadOnlyList<TemplateActorEntry> entries, Stopwatch clock)
+    {
+        // ── 4. 計画 ──
         var builder = new StageSceneBuilder(inputs.LibraryRoot, catalog);
         var results = new List<ThumbnailResult>();
         var plans = new List<StagePlan>();
@@ -104,27 +158,26 @@ public static class Program
             var sample = ThumbnailSample.Parse(samples.GetValueOrDefault(entry.TemplateRelPath), errors);
             if (sample.SkipReason.Length > 0 && errors.Count == 0)
             {
-                results.Add(new ThumbnailResult(name, entry.Name, ThumbnailOutcome.Skipped, sample.SkipReason, null, 0, 0, null, [], TimeSpan.Zero));
+                results.Add(new ThumbnailResult(name, entry.TemplateRelPath, entry.Name, ThumbnailOutcome.Skipped,
+                    sample.SkipReason, null, 0, 0, null, [], TimeSpan.Zero));
                 continue;
             }
             var plan = errors.Count == 0 ? builder.Build(i, entry, sample, errors) : null;
             if (plan is null)
             {
-                results.Add(new ThumbnailResult(name, entry.Name, ThumbnailOutcome.Failed,
+                results.Add(new ThumbnailResult(name, entry.TemplateRelPath, entry.Name, ThumbnailOutcome.Failed,
                     "舞台を組み立てられません: " + string.Join(" / ", errors), null, 0, 0, null, [], TimeSpan.Zero));
                 continue;
             }
             plans.Add(plan);
         }
 
-        // ── 4. 撮影 ──
-        var generator = new ThumbnailGenerator(inputs, options.Size, options.Port, Console.WriteLine);
+        // ── 5. 撮影 ──
+        var generator = new ThumbnailGenerator(inputs, work, options.Size, options.Port, Console.WriteLine);
         var runtimeError = generator.Run(plans, results);
 
-        // ── 5. 結果 ──
-        var order = entries.Select((e, i) => (Path.GetFileNameWithoutExtension(e.TemplateRelPath), i))
-            .ToDictionary(x => x.Item1, x => x.i, StringComparer.OrdinalIgnoreCase);
-        var sorted = results.OrderBy(r => order.GetValueOrDefault(r.Name, int.MaxValue)).ToList();
+        // ── 6. 結果（カタログに現れた順。鍵はライブラリ相対パス＝別のカタログの同じファイル名でも重ならない）──
+        var sorted = ThumbnailResultOrder.Sort(entries.Select(e => e.TemplateRelPath).ToList(), results, r => r.TemplateRelPath);
         ThumbnailReport.Print(sorted, clock.Elapsed, Console.WriteLine);
 
         if (options.Sheet is { } sheet)

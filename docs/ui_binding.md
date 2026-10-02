@@ -127,7 +127,7 @@ var label = Computed.From(total, t => $"{t:N0} 円");
 | `Bind.To(source, Action<T>)` | 任意の処理（作った時点で 1 回・変わるたびに呼ぶ） |
 | `Bind.OneWay(IBindTarget<T>, source)`・`Bind.OneWay(target, source, convert)` | 自作の当てる先（§4.5） |
 
-当てる先が消えたら（`Text.IsValid` / `Sprite.IsValid` が false・アクタが破棄された）書かずに自分を外す。
+当てる先が見えないとき（`Text.IsValid` / `Sprite.IsValid` が false・アクタが破棄された）は書かず、**フレームの区切り（LateUpdate の頭。World が見える）で確かめ直して**、本当に消えていれば自分を外す。見えないだけなら最新の値を 1 回当てる。別のスクリプトの `OnDestroy` の中（World が見えず `IsValid` が false になる）で観測値を変えても、結び付けは外れない（2026-10-03）。
 `GameObject` の「動かす／止める」（Active）の口がまだ無いので `Bind.Active` は無い（`docs/backlog.md`）。
 
 ### 4.2 L10n との組み合わせ

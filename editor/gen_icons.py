@@ -126,6 +126,8 @@ CATALOG = [
     ("Icon.Panel.Terrain", "terrain"),
     ("Icon.Panel.SpriteRig", "vector-square-edit"),
     ("Icon.Panel.VersionControl", "source-branch"),
+    # 文字列表（ローカライズ）パネル（docs/localization.md §15）。言語の切り替えの定番の絵。
+    ("Icon.Panel.Localization", "translate"),
 
     ("── バージョン管理（Version Control パネル）──", None),
     # 主操作。アーティストにも分かるよう「雲から降ろす／雲へ上げる」で統一する

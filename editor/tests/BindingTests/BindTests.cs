@@ -66,7 +66,7 @@ public static class BindTests
             Check.Equal(0, label.Writes.Count, "受け取れなかった結び付けは書き続けない");
         });
 
-        h.Add("一方向: 当てる先が消えたら（IsAlive が false）書かずに自分を外す", () =>
+        h.Add("一方向: 当てる先が見えない（IsAlive が false）ときは書かず、区切りで確かめて本当に消えていれば外す（見えないだけなら最新の値を当てる）", () =>
         {
             BindingFrame.ResetForReload();
             var value = new Observable<bool>(true);
@@ -74,8 +74,24 @@ public static class BindTests
             Bind.OneWay(node, value);
             node.IsAlive = false;
             value.Value = false;
-            Check.Equal(1, node.Writes.Count, "消えた後は書かない（最初の 1 回だけ）");
-            Check.Equal(0, value.SubscriberCount, "購読が外れる");
+            Check.Equal(1, node.Writes.Count, "見えない間は書かない（最初の 1 回だけ）");
+            Check.Equal(1, value.SubscriberCount, "すぐには外さない（OnDestroy の中で変えただけかもしれない。レビュー #7）");
+            Check.Equal(1, BindingFrame.PendingCount, "区切りで確かめる");
+            BindingFrame.Tick();
+            Check.Equal(0, value.SubscriberCount, "区切りでも消えていれば外れる");
+            Check.Equal(1, node.Writes.Count, "外れたので書かない");
+
+            // 見えないだけ（OnDestroy の中）: 区切りで見えるようになっていれば最新の値を 1 回当てる
+            var text = new Observable<int>(1);
+            var label = new FakeTarget<int>();
+            Bind.OneWay(label, text);
+            label.IsAlive = false;
+            text.Value = 2;
+            text.Value = 3;
+            label.IsAlive = true;
+            BindingFrame.Tick();
+            Check.Equal("1,3", string.Join(",", label.Writes), "区切りで最新の値を 1 回だけ当てる");
+            Check.Equal(1, text.SubscriberCount, "結び付けは生きている");
         });
 
         h.Add("一方向: 当てる先の用意を待つ（待つ間に何度変わっても、用意ができた区切りで最新の値を 1 回）", () =>
@@ -225,8 +241,10 @@ public static class BindTests
             Bind.TwoWay(gone, other);
             gone.IsAlive = false;
             other.Value = true;
-            Check.Equal(1, gone.Writes.Count, "消えた部品へは書かない");
-            Check.Equal(0, other.SubscriberCount, "外れる");
+            Check.Equal(1, gone.Writes.Count, "見えない部品へは書かない");
+            Check.Equal(1, other.SubscriberCount, "すぐには外さない（区切りで確かめる。レビュー #7）");
+            BindingFrame.Tick();
+            Check.Equal(0, other.SubscriberCount, "区切りでも消えていれば外れる");
             Check.Equal(0, gone.ActiveListeners, "部品の口も外れる");
         });
 
@@ -332,13 +350,27 @@ public static class BindTests
             Bind.List(rows, items);
             rows.IsAlive = false;
             items.Add(1);
-            Check.Equal("SetCount(0)", string.Join(",", rows.Calls), "消えた後は呼ばない");
-            Check.Equal(0, items.SubscriberCount, "外れる");
+            Check.Equal("SetCount(0)", string.Join(",", rows.Calls), "見えない間は呼ばない");
+            Check.Equal(1, items.SubscriberCount, "すぐには外さない（区切りで確かめる。レビュー #7）");
+            BindingFrame.Tick();
+            Check.Equal(0, items.SubscriberCount, "区切りでも消えていれば外れる");
 
             var dead = new FakeRows { IsAlive = false };
             Bind.List(dead, items);
-            Check.Equal(0, dead.Calls.Count, "最初から消えていれば呼ばない");
-            Check.Equal(0, items.SubscriberCount, "外れる");
+            Check.Equal(0, dead.Calls.Count, "最初から見えなければ呼ばない");
+            BindingFrame.Tick();
+            Check.Equal(0, items.SubscriberCount, "区切りでも消えていれば外れる");
+
+            // 見えないだけ（OnDestroy の中で一覧を変えた）: 区切りで見えていれば数を合わせ直す
+            var alive = new FakeRows();
+            var list = new ObservableList<int>();
+            Bind.List(alive, list);
+            alive.IsAlive = false;
+            list.Add(1);
+            list.Add(2);
+            alive.IsAlive = true;
+            BindingFrame.Tick();
+            Check.Equal("SetCount(0),SetCount(2)", string.Join(",", alive.Calls), "区切りで今の数を 1 回だけ合わせる");
         });
 
         h.Add("結び付け: 引数が null なら ArgumentNullException", () =>

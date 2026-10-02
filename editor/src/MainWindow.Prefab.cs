@@ -65,11 +65,29 @@ public partial class MainWindow
     private const string WriteBackConfirmFormat =
         "Play 中の変更を {0} へ書き戻します。\n" +
         "元に戻せません（ファイルが上書きされます）。\n" +
-        "スクリプトが Play 中に生成した部分（積まれた画面・リストの行など）は書き込みません。\n\n" +
+        "スクリプトが Play 中に生成した部分（積まれた画面・リストの行など）は書き込みません。\n" +
+        "既知の問題（docs/reviews/2026-10-03_code_review.md #1〜#4）: 枠へ移されたファイル由来の画面が消える・\n" +
+        "古い版からの巻き戻し・確認の間に木がずれると別のファイルを上書き・スクリプトが足したものが焼かれる。\n" +
+        "直前の版は <プロジェクト>/.backup/ に残ります。\n\n" +
         "続行しますか？";
 
     /// <summary>書き戻しの確認ダイアログの題名。</summary>
     private const string WriteBackConfirmTitle = "Play 中の変更をプレハブへ書き戻す";
+
+    /// <summary>
+    /// 書き戻しが無効（既定）のときの案内。レビュー（docs/reviews/2026-10-03_code_review.md #1〜#4）で
+    /// 見つかった既知の問題を列挙し、承知のうえで使う場合の有効化の方法を示す。
+    /// </summary>
+    private const string WriteBackDisabledMessage =
+        "「Play 中の変更をプレハブへ書き戻す」は、根本の直しが入るまで既定で無効にしています。\n\n" +
+        "既知の問題（docs/reviews/2026-10-03_code_review.md #1〜#4）:\n" +
+        "・ScreenStack が枠へ移したファイル由来の画面（置いてある根・Push(GameObject) の中身）がファイルから消える\n" +
+        "・古い版のインスタンスから書き戻すと、プレハブのその後の変更が巻き戻る\n" +
+        "・対象を DFS 番号だけで決めるので、確認の間に木がずれると別のファイルを上書きする\n" +
+        "・スクリプトが足したコンポーネント・スクリプト、表示の切り替えがそのまま焼かれる\n\n" +
+        "承知のうえで使う場合は editor/settings/editor_preferences.json の " +
+        "\"prefab_write_back_enabled\" を true にしてエディタを開き直してください。" +
+        "直前の版は <プロジェクト>/.backup/ に残ります。";
 
     /// <summary>書き戻しの結果のトースト（{0}=プレハブ名・{1}=当て直した件数・{2}=停止後の扱い）。</summary>
     private const string WriteBackToastFormat = "Play 中の変更を {0} へ書き戻しました（Play 中の {1} 個へ当て直し・{2}）";
@@ -224,6 +242,15 @@ public partial class MainWindow
         if (_runtimeManager is null) return;
         // Play / Pause 中だけの操作（メニュー・ボタンも Play 中だけ出すが、状態が変わった直後の押下に備える）
         if (!SEEDEditor.Reload.AutoReloadPolicy.IsPlaying(CurrentPlaybackState)) return;
+
+        // 既定で無効（既知の問題が直るまで）。有効化は設定ファイルから明示的に行う
+        if (!EditorPreferences.Instance.PrefabWriteBackEnabled)
+        {
+            MessageBox.Show(WriteBackDisabledMessage, WriteBackConfirmTitle,
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            EditorLog.Write($"[Prefab] 書き戻しは無効（prefab_write_back_enabled=false）: DFS {actorDfsId}");
+            return;
+        }
 
         var target = string.IsNullOrEmpty(source)
             ? "プレハブ"

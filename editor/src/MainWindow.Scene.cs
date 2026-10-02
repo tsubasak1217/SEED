@@ -136,6 +136,8 @@ public partial class MainWindow
         {
             // コピー先はアセットルート配下なので、ツリーを作り直して反映する。
             PanelProject.SetAssetsPath(AssetsPath);
+            // locale を取り込んだら、文字列表のパネルの「置き場がありません」の案内を読み直しに替える
+            PanelLocalization.RefreshIfMissing();
             ShowToast($"テンプレートを {result.CopiedCount} ファイル取り込みました");
         }
     }
@@ -278,6 +280,7 @@ public partial class MainWindow
         MenuItemSpriteRig.IsChecked = IsPanelVisible("sprite_rig");
         MenuItemProfiler.IsChecked = IsPanelVisible("profiler");
         MenuItemVersionControl.IsChecked = IsPanelVisible("version_control");
+        MenuItemLocalization.IsChecked = IsPanelVisible(LocalizationContentId);
         // スクリプト関連ウィンドウの表示状態もチェックへ反映する
         MenuItemOpenDocuments.IsChecked = IsPanelVisible("open_documents");
         MenuItemErrorList.IsChecked     = IsPanelVisible("error_list");
@@ -614,6 +617,8 @@ public partial class MainWindow
                 ContinuePendingAndroidRun(saved: true);
                 // 保存→端末の写しを表示（「保存して表示」。MainWindow.AndroidSnapshot.cs。§20.17）
                 ContinuePendingSnapshotSave(saved: true);
+                // 保存→プロジェクトの形式をアップグレード（「保存してから」。MainWindow.Migration.cs。レビュー #8）
+                ContinuePendingUpgrade(saved: true);
             }
             else
             {
@@ -625,6 +630,8 @@ public partial class MainWindow
                 ContinuePendingAndroidRun(saved: false);
                 // 「保存して表示」の続きも取りやめる（未保存の変更を守るため写しは出さない）
                 ContinuePendingSnapshotSave(saved: false);
+                // 「保存してからアップグレード」も取りやめる（未保存のまま実行させない）
+                ContinuePendingUpgrade(saved: false);
                 EditorLog.Write($"OnSaveCompleted — 保存失敗: {errorMsg}");
                 SEEDEditor.Headless.EditorDialogs.Show(
                     $"保存に失敗しました:\n{DescribeSaveError(errorMsg)}", "SEED Editor",

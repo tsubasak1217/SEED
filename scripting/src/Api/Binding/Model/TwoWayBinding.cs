@@ -49,11 +49,21 @@ internal sealed class TwoWayBinding<T> : BindingBase
 
     /// <summary>用意ができていれば知らせの口を付けて今の値を当てる。まだなら待つ。</summary>
     /// <returns>まだ待つなら true。</returns>
-    private bool Activate()
+    /// <param name="inFrame">
+    /// フレームの区切り（World が見える）からの呼び出しなら true。true のときだけ「当てる先が消えた」を確定して外す。
+    /// それ以外（作ったとき・観測値の変化。OnDestroy の中のこともある）では見えなくても区切りで確かめ直す
+    /// （docs/reviews/2026-10-03_code_review.md #7）。
+    /// </param>
+    private bool Activate(bool inFrame = false)
     {
         if (IsDisposed) return false;
         if (!_target.IsAlive)
         {
+            if (!inFrame)
+            {
+                WaitForTarget();
+                return true;
+            }
             Dispose();
             return false;
         }
@@ -88,7 +98,8 @@ internal sealed class TwoWayBinding<T> : BindingBase
         }
         if (!_target.IsAlive)
         {
-            Dispose();
+            // 見えないだけかもしれない（OnDestroy の中）: 区切りで確かめ直す
+            WaitForTarget();
             return;
         }
 
@@ -145,5 +156,5 @@ internal sealed class TwoWayBinding<T> : BindingBase
     }
 
     /// <inheritdoc />
-    protected override bool OnFrame() => Activate();
+    protected override bool OnFrame() => Activate(inFrame: true);
 }

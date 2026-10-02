@@ -6,10 +6,13 @@
 //                   持つ templates/ を探す（環境変数 SEED_TEMPLATE_LIBRARY があればそれ。エディタと同じ上書き）
 //    ランタイム   … <リポジトリ>/runtime/target/debug/SEED.exe（リポジトリ = ライブラリの親）
 //    作業フォルダ … <リポジトリ>/runtime（ランタイムはここから ../scripting/bin/Debug/net10.0/SEEDScripting.dll を読む）
-//    作業の置き場 … %TEMP%\seed_template_thumbnails
+//    作業の置き場 … %TEMP%\seed_template_thumbnails\run_<プロセス ID>_<乱数>（実行ごとの下位フォルダ。同時に動かしても重ならない。
+//                   成功したら消す。ThumbnailWorkFolder）
+//  作業の置き場を使ってよいか（プロジェクト・印の無いフォルダを拒む）はここでは調べない（Program が ThumbnailWorkFolder で借りる）。
 // ============================================================
 
 using SEEDEditor.Templates;
+using SEEDEditor.Tools.SeedTemplateThumbnails.Work;
 
 namespace SEEDEditor.Tools.SeedTemplateThumbnails;
 
@@ -18,7 +21,9 @@ namespace SEEDEditor.Tools.SeedTemplateThumbnails;
 /// <param name="RuntimeExe">SEED.exe の絶対パス。</param>
 /// <param name="RuntimeWorkingDirectory">ランタイムの作業フォルダの絶対パス。</param>
 /// <param name="WorkRoot">作業の置き場の絶対パス。</param>
-public sealed record ThumbnailInputs(string LibraryRoot, string RuntimeExe, string RuntimeWorkingDirectory, string WorkRoot)
+/// <param name="WorkIsTemporary">作業の置き場が既定の実行ごとの下位フォルダ（成功したら消す）か。--work で指定したら false。</param>
+public sealed record ThumbnailInputs(
+    string LibraryRoot, string RuntimeExe, string RuntimeWorkingDirectory, string WorkRoot, bool WorkIsTemporary)
 {
     /// <summary>上へ探す段数の上限。</summary>
     private const int SearchDepth = 12;
@@ -28,9 +33,6 @@ public sealed record ThumbnailInputs(string LibraryRoot, string RuntimeExe, stri
 
     /// <summary>リポジトリから見たランタイムの作業フォルダ。</summary>
     private const string RuntimeFolderName = "runtime";
-
-    /// <summary>作業の置き場の既定のフォルダ名（%TEMP% の下）。</summary>
-    private const string DefaultWorkFolderName = "seed_template_thumbnails";
 
     /// <summary>
     /// 引数と既定から入力を確定する。
@@ -61,8 +63,10 @@ public sealed record ThumbnailInputs(string LibraryRoot, string RuntimeExe, stri
             error = $"ランタイムの作業フォルダが見つかりません: {cwd}。--runtime-cwd で指定してください";
             return null;
         }
-        var work = Path.GetFullPath(options.Work ?? Path.Combine(Path.GetTempPath(), DefaultWorkFolderName));
-        return new ThumbnailInputs(library, exe, cwd, work);
+        // 作業の置き場: 指定が無ければ実行ごとの下位フォルダ（固定名だと同時に動かした実行どうしが中身を消し合う）
+        bool temporary = options.Work is null;
+        var work = Path.GetFullPath(options.Work ?? ThumbnailWorkFolder.NewDefaultRunFolder());
+        return new ThumbnailInputs(library, exe, cwd, work, temporary);
     }
 
     /// <summary>環境変数・実行ファイルの場所・作業フォルダから上へ、カタログを持つ templates/ を探す。</summary>

@@ -17,7 +17,13 @@ public static class RecentTests
         h.Add("最近: 上限 8 件・空白は足さない", PushCapsAndIgnoresBlank);
         h.Add("保存: プロジェクトごとに往復する（キーは大小文字・末尾の区切りを見ない）", StoreRoundTrip);
         h.Add("保存: 無いファイルは空、壊れたファイルは空で続けて次の保存で直る", StoreBrokenFile);
+        h.Add("保存: 別のエディタが書きかけの一時ファイルを開いていても保存できる（一時ファイルの名前は書き込みごとに違う）", StoreTempNameIsPerWrite);
+        h.Add("保存: 置き換えに失敗したら一時ファイルを残さない（理由は LastError）", StoreFailureLeavesNoTemp);
     }
+
+    /// <summary>保存ファイルと同じフォルダに残った一時ファイル（*.tmp）。</summary>
+    private static string[] TempFilesNextTo(string filePath) =>
+        Directory.GetFiles(Path.GetDirectoryName(filePath)!, "*.tmp");
 
     private static void PushMovesToFront()
     {
@@ -75,7 +81,66 @@ public static class RecentTests
         Check.Equal(2, doc.RootElement.GetProperty("projects").EnumerateObject().Count(), "プロジェクトの数");
         Check.True(doc.RootElement.GetProperty("projects").EnumerateObject().All(p => p.Name == p.Name.ToLowerInvariant() && !p.Name.Contains('\\')),
                    "キーは '/' 区切りの小文字");
-        Check.True(!File.Exists(store.FilePath + ".tmp"), "一時ファイルを残さない");
+        Check.Equal(0, TempFilesNextTo(store.FilePath).Length, "一時ファイルを残さない");
+    }
+
+    /// <summary>
+    /// 別のエディタ（B）が以前の固定の一時ファイル名（screen_preview_recent.json.tmp）へ書いている最中でも、
+    /// こちら（A）の保存は B の書きかけに触れずに成功する（2026-10-02 のレビュー #18。以前は名前が固定で、互いの書きかけを
+    /// 本体へ移して JSON を壊すか、開けずに保存し損ねた）。
+    /// </summary>
+    private static void StoreTempNameIsPerWrite()
+    {
+        using var temp = new TempDir();
+        var store = new PreviewRecentStore(Path.Combine(temp.Path, PreviewRecentStore.FileName));
+        var root = Path.Combine(temp.Path, "Proj", "assets");
+        store.Push(root, "assets://first.actor");
+
+        // B の書きかけ（共有を許して開いたまま。以前の固定の名前）
+        var legacyTemp = store.FilePath + ".tmp";
+        using (var writerB = new FileStream(legacyTemp, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+        {
+            writerB.Write("{ \"format_version\": 1, \"projects\": { "u8);
+            writerB.Flush();
+
+            store.Push(root, "assets://second.actor");
+            Check.True(store.LastError is null, $"別のエディタの書きかけがあると保存できない: {store.LastError}");
+        }
+
+        Check.Equal("assets://second.actor,assets://first.actor", string.Join(",", new PreviewRecentStore(store.FilePath).Get(root)),
+            "本体は A の書いた内容（B の書きかけが混ざっていない）");
+        File.Delete(legacyTemp);   // B の書きかけはこのテストが作ったもの
+
+        // 書き込みごとの一時ファイルの名前（同じフォルダ・違う名前・.tmp で終わる）
+        var a = PreviewRecentStore.MakeTempPath(store.FilePath);
+        var b = PreviewRecentStore.MakeTempPath(store.FilePath);
+        Check.True(!string.Equals(a, b, StringComparison.OrdinalIgnoreCase), "一時ファイルの名前が書き込みごとに違わない");
+        Check.Equal(Path.GetDirectoryName(store.FilePath), Path.GetDirectoryName(a), "一時ファイルは同じフォルダ（置き換えが名前の付け替えで済む）");
+        Check.True(Path.GetFileName(a).StartsWith(PreviewRecentStore.FileName, StringComparison.Ordinal) && a.EndsWith(".tmp", StringComparison.Ordinal),
+            $"一時ファイルの名前は <保存ファイル名>.<固有>.tmp: {a}");
+        Check.Equal(0, TempFilesNextTo(store.FilePath).Length, "一時ファイルを残さない");
+    }
+
+    /// <summary>置き換えに失敗したら一時ファイルを消す（名前が毎回違うので、残すと溜まる）。</summary>
+    private static void StoreFailureLeavesNoTemp()
+    {
+        using var temp = new TempDir();
+        var store = new PreviewRecentStore(Path.Combine(temp.Path, PreviewRecentStore.FileName));
+        var root = Path.Combine(temp.Path, "Proj", "assets");
+        store.Push(root, "assets://first.actor");
+
+        // 本体を「消し・置き換えを許さない」共有で開いておく（ほかのプロセスが読んでいる最中の再現）→ 置き換えが失敗する
+        using (var reader = new FileStream(store.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            store.Push(root, "assets://second.actor");
+            Check.True(store.LastError is not null, "置き換えに失敗したことを知らせない");
+            Check.Equal(0, TempFilesNextTo(store.FilePath).Length,
+                "置き換えに失敗した一時ファイルが残っている: " + string.Join(", ", TempFilesNextTo(store.FilePath).Select(Path.GetFileName)));
+        }
+
+        Check.Equal("assets://first.actor", string.Join(",", new PreviewRecentStore(store.FilePath).Get(root)), "失敗した保存は本体を変えない");
+        store.Push(root, "assets://second.actor");
+        Check.True(store.LastError is null, $"開放された後は保存できる: {store.LastError}");
     }
 
     private static void StoreBrokenFile()

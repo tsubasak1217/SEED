@@ -202,6 +202,8 @@ public partial class EditorCommandExecutor
     {
         using var doc = JsonDocument.Parse(argsJson);
         var id = doc.RootElement.GetProperty("actor_dfs_id").GetInt32();
+        // 画面プレビューの中は断る（ランタイムも断るが、送るだけだと AI には成功に見える。PreviewGuard.cs）
+        if (RefuseIfInsidePreview(id, "削除") is { } refused) return refused;
 
         _sendToRuntime($"AI_REMOVE_ACTOR:{id}");
         return $"DFS ID={id} のアクターを削除しました。上記の [現在のシーン情報] で変更後の DFS ID を確認できます。";
@@ -217,6 +219,7 @@ public partial class EditorCommandExecutor
         var x  = root.GetProperty("x").GetSingle();
         var y  = root.GetProperty("y").GetSingle();
         var z  = root.GetProperty("z").GetSingle();
+        if (RefuseIfInsidePreview(id, "移動") is { } refused) return refused;
 
         _sendToRuntime($"AI_MOVE_ACTOR:{id},{x},{y},{z}");
         return $"DFS ID={id} のアクターを移動しました。";
@@ -230,6 +233,7 @@ public partial class EditorCommandExecutor
 
         var actorId   = root.GetProperty("actor_dfs_id").GetInt32();
         var compType  = root.GetProperty("component_type").GetString() ?? "";
+        if (RefuseIfInsidePreview(actorId, "コンポーネントを追加") is { } refused) return refused;
 
         // params_json は現在は空文字列を渡す（将来の拡張用）
         _sendToRuntime($"AI_ADD_COMPONENT:{actorId},{compType},{{}}");
@@ -246,6 +250,7 @@ public partial class EditorCommandExecutor
         var slotIdx  = root.GetProperty("slot_idx").GetInt32();
         var key      = root.GetProperty("key").GetString()   ?? "";
         var value    = root.GetProperty("value").GetString() ?? "";
+        if (RefuseIfInsidePreview(actorId, "値を設定") is { } refused) return refused;
 
         _sendToRuntime($"AI_SET_VALUE:{actorId},{slotIdx},{key},{value}");
         return $"DFS ID={actorId} スロット={slotIdx} の '{key}' を '{value}' に設定しました。";

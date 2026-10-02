@@ -104,10 +104,10 @@ public static class PrefabAutoReloadTests
                         "オフでは何も送らない"));
             }
         }
-        h.Add("外部変更: Edit・自動反映オンは今すぐ再展開", () =>
-            Check.Equal(PrefabExternalChangeAction.ReapplyNow,
+        h.Add("外部変更: Edit・自動反映オンでも版ずれのお知らせだけ（2026-10-03 レビュー #5: 同時に変わった .scene を古い内容で上書きしないため）", () =>
+            Check.Equal(PrefabExternalChangeAction.StatusOnly,
                 AutoReloadPolicy.DecidePrefabExternalChange(PlaybackState.Edit, autoReloadEnabled: true, autoPropagate: true),
-                "PREFAB_REAPPLY_PATH"));
+                "PREFAB_STATUS（シーンに触れない。更新はバナーの［更新する］から）"));
         h.Add("外部変更: Edit・自動反映オフは版ずれのお知らせだけ", () =>
             Check.Equal(PrefabExternalChangeAction.StatusOnly,
                 AutoReloadPolicy.DecidePrefabExternalChange(PlaybackState.Edit, autoReloadEnabled: true, autoPropagate: false),

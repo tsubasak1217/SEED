@@ -27,7 +27,15 @@ public static class AssetPathUtil
     public static readonly StringComparer PathComparer = StringComparer.OrdinalIgnoreCase;
 
     /// <summary>
-    /// 相対パスを正規形（'/' 区切り・先頭の "./" と '/' を除去）へ整える。
+    /// 相対パスを正規形（'/' 区切り・先頭の "./" と '/' を除去・末尾の '/' を除去）へ整える。
+    ///
+    /// <para>
+    /// 末尾の '/' を落とすのは、フォルダの参照（スクリプトの定数 <c>"assets://common/data/"</c> など）を
+    /// フォルダの索引（<see cref="AssetCollector"/> は末尾 '/' なしで登録する）と同じ形にするため。
+    /// 2026-10-03 まで落としていなかったので、末尾 '/' のフォルダ参照は照合に外れて黙って収録から漏れていた
+    /// （Wake or Pay の APK にデータの JSON が入らなかった。docs/backlog.md W3）。
+    /// ファイルの参照は末尾が '/' にならないので、この変更の影響を受けない。
+    /// </para>
     /// </summary>
     /// <param name="relative">整えたい相対パス。</param>
     /// <returns>正規化された相対パス。</returns>
@@ -36,7 +44,7 @@ public static class AssetPathUtil
         var s = relative.Replace('\\', '/').Trim();
         while (s.StartsWith("./", StringComparison.Ordinal)) s = s[2..];
         s = s.TrimStart('/');
-        return CollapseDotSegments(s);
+        return CollapseDotSegments(s).TrimEnd('/');
     }
 
     /// <summary>

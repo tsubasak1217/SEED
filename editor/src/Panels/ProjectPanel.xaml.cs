@@ -247,6 +247,13 @@ public partial class ProjectPanel : UserControl
     public event Action<string>? AnimFileOpened;
 
     /// <summary>
+    /// 「直上のフォルダ名で専用のパネルへ回す規則」（editor/config/panel_open_rules.json。
+    /// <see cref="PanelOpenRuleCatalog"/>）に当たったファイルがダブルクリックされた（パネルの ContentId・絶対パス）。
+    /// 例: assets/locale/en.json → "localization"（文字列表のパネル）。
+    /// </summary>
+    public event Action<string, string>? PanelFileOpenRequested;
+
+    /// <summary>
     /// 画像ファイルの右クリックメニューから「スプライトリグを作成」が選ばれた（絶対パス）。
     /// スプライトリグパネルを開き、その画像の新しい編集タブを作る。
     /// </summary>
@@ -1086,6 +1093,13 @@ public partial class ProjectPanel : UserControl
                                                    StringComparison.OrdinalIgnoreCase))
                     // .sprite_mesh はスプライトリグパネルで再編集する
                     SpriteMeshFileOpened?.Invoke(meshFile.FullName);
+                else if (entry is FileInfo panelFile &&
+                         PanelOpenRuleCatalogProvider.Current.FindPanelFor(panelFile.FullName) is { } panelContentId)
+                    // 拡張子だけでは決まらず「置き場」で開き方が決まる形式（locale/*.json → 文字列表）は
+                    // 専用のパネルへ回す。規則は editor/config/panel_open_rules.json。
+                    // テキストの分岐より前に置くのは、.json が内蔵エディタでも開けて横取りされるため
+                    // （テキストで直したいときは右クリック「テキストエディタで開く」）。
+                    PanelFileOpenRequested?.Invoke(panelContentId, panelFile.FullName);
                 else if (entry is FileInfo textFile &&
                          EditorLanguages.IsEditableExtension(textFile.Extension))
                     // 専用エディタを持たないテキスト系（.cs / .wgsl / .json / .txt / .csv / .md / .icons …）は

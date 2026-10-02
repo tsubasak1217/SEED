@@ -44,6 +44,12 @@ public static class AssetPakBuilder
     public const string EmptyCollectionMessage =
         "❌ 収録対象が 0 件です。project_settings.json の start_scene / scenes を確認してください。";
 
+    /// <summary>
+    /// C# のコメントの中にだけ書かれた、実体の無いパスの件数の行の頭（警告ではないので記号を付けない。2026-10-03）。
+    /// 一覧は出さない（説明の例なので、出すと警告と同じだけ読む手間がかかる）。
+    /// </summary>
+    public const string IgnoredCommentReferencesPrefix = "参考: 参照先が見つからないコメントの中のパス: ";
+
     // ============================================================
     //  1. 収録ファイルの決定
     // ============================================================
@@ -110,6 +116,10 @@ public static class AssetPakBuilder
             if (result.MissingReferences.Count > MaxLoggedMissingReferences)
                 log($"    …ほか {result.MissingReferences.Count - MaxLoggedMissingReferences} 件");
         }
+
+        // C# のコメントの中にだけ書かれた例のパス（実行時に読まれない）は警告にせず、件数だけを知らせる（2026-10-03）
+        if (result.IgnoredCommentReferences.Count > 0)
+            log($"{IgnoredCommentReferencesPrefix}{result.IgnoredCommentReferences.Count} 件（C# のコメントの中にだけ書かれた例。実行時に読まれないので警告の対象外）");
     }
 
     /// <summary>収集結果に PAK へ入れるものがあるか（0 件なら書き出さない）。</summary>

@@ -142,6 +142,19 @@ public sealed class EditorPreferences
     public bool AutoReloadPrefabs { get; set; } = true;
 
     /// <summary>
+    /// 「Play 中の変更をプレハブへ書き戻す」（PREFAB_WRITE_BACK）を使えるようにするか。既定はオフ。
+    ///
+    /// 2026-10-03 のレビュー（docs/reviews/2026-10-03_code_review.md の #1〜#4）で、書き戻しが
+    /// (1) ScreenStack が枠へ移したファイル由来の画面を消す、(2) 古い版のインスタンスからプレハブを巻き戻す、
+    /// (3) DFS 番号だけで対象を決めるので確認の間に木がずれると別のファイルを上書きする、
+    /// (4) スクリプトが足したコンポーネント・スクリプトをそのまま焼く、と分かった。
+    /// 根本の直し（元の版との差分で書く・対象をパスで確かめる）が入るまでは既定で無効にし、
+    /// 承知のうえで使う人だけが editor_preferences.json で有効にする。
+    /// </summary>
+    [JsonPropertyName("prefab_write_back_enabled")]
+    public bool PrefabWriteBackEnabled { get; set; } = false;
+
+    /// <summary>
     /// ロジック配置ダイアログで最後に使ったパターン指定。
     ///
     /// 「円形に 12 個」「5×5 グリッド」といった指定は同じ設定を続けて使うことが多く、

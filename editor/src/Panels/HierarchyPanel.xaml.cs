@@ -720,34 +720,42 @@ public partial class HierarchyPanel : UserControl
     /// </param>
     private void RestoreSelectionAfterSync(string selectedKeyBeforeSync)
     {
-        if (_selectedId < 0) return;
-
-        // 同期後のツリーから「選択中だったアクター」を安定キーで引き直す。
-        var node = selectedKeyBeforeSync.Length > 0
+        // 同期後のツリーから「選択中だったアクター」を安定キーで引き直し、直し方を決める
+        // （判定は WPF 非依存の Hierarchy/SelectionRestorePlan.cs。HierarchySyncTests が確かめる）。
+        var node = _selectedId >= 0 && selectedKeyBeforeSync.Length > 0
             ? FindNodeByStableKey(_roots, selectedKeyBeforeSync)
             : null;
+        var plan = SEEDEditor.Panels.Hierarchy.SelectionRestorePlan.Decide(_selectedId, selectedKeyBeforeSync, node?.Id);
 
-        if (node != null)
+        switch (plan.Kind)
         {
-            // ID がズレていた場合は、選択の実体（同じアクター）を保ったまま ID を更新する。
-            if (node.Id != _selectedId)
-            {
-                UpdateSelectedId(node.Id);
+            case SEEDEditor.Panels.Hierarchy.SelectionRestoreKind.Nothing:
+                return;
+
+            case SEEDEditor.Panels.Hierarchy.SelectionRestoreKind.Moved:
+                // ID がズレていた場合は、選択の実体（同じアクター）を保ったまま ID を更新する。
+                UpdateSelectedId(plan.NewId);
                 SEEDEditor.EditorLog.Write(
-                    $"[Hierarchy.RestoreSelection] DFS ID 変化を安定キーで追跡 key={selectedKeyBeforeSync} id={node.Id}");
-            }
+                    $"[Hierarchy.RestoreSelection] DFS ID 変化を安定キーで追跡 key={selectedKeyBeforeSync} id={plan.NewId}");
+                break;
+
+            case SEEDEditor.Panels.Hierarchy.SelectionRestoreKind.Lost:
+                // 選択していたアクターが消えた（Destroy・シーン差し替え）。
+                // 古い ID で別アクターを掴まないよう、選択を解除する。
+                _selectedId = -1;
+                _selectedIds.Clear();
+                _anchorId = -1;
+                DeselectAll();
+                UpdateMultiSelectVisuals();
+                return;
         }
-        else if (selectedKeyBeforeSync.Length > 0)
-        {
-            // 選択していたアクターが消えた（Destroy・シーン差し替え）。
-            // 古い ID で別アクターを掴まないよう、選択を解除する。
-            _selectedId = -1;
-            _selectedIds.Clear();
-            _anchorId = -1;
-            DeselectAll();
-            UpdateMultiSelectVisuals();
-            return;
-        }
+
+        // インスペクタにも新しい番号で取り直させる（レビュー #1）。知らせないとインスペクタは
+        // 古い番号を持ったままになり、次の値の編集（SET_*:{古い番号}）がその番号に今いる
+        // 別のアクタへ当たる（Undo/Redo・手前のアクタの増減・Play 中の Instantiate で起きる）。
+        // 同じ番号への重複はインスペクタ側（SelectActor）が弾くので、後から SELECTED が来ても二重にならない。
+        if (plan.NotifiesInspector)
+            ActorDfsSelected?.Invoke(plan.NewId);
 
         if (ActorTree.SelectedItem is TreeViewItem { Tag: ActorNode sel } && sel.Id == _selectedId)
             return;
@@ -841,14 +849,21 @@ public partial class HierarchyPanel : UserControl
         // 表示 / 非表示トグル（目アイコン）を行頭に置く。
         // 状態表示には「実効表示」を、送る値には「自身のフラグの反転」を使う
         // （祖先が非表示のときに自分のフラグを戻せなくなるのを防ぐ）。
-        tb.Inlines.Add(new InlineUIContainer(
-            SEEDEditor.Controls.VisibilityToggle.Create(
-                node.Visible,
-                // アイコンの見た目は「実効表示」、送る値は「自身のフラグの反転」。
-                // コールバック引数（実効値の反転）はここでは使わない。
-                _ => _runtime?.SendToRuntime(
-                    SEEDEditor.Controls.VisibilityToggle.BuildCommand(node.Id, !node.SelfVisible)),
-                NodeIconSize))
+        var visibilityToggle = SEEDEditor.Controls.VisibilityToggle.Create(
+            node.Visible,
+            // アイコンの見た目は「実効表示」、送る値は「自身のフラグの反転」。
+            // コールバック引数（実効値の反転）はここでは使わない。
+            // プレビューの行は押せない（下の ApplyPreviewVisibilityToggleState）が、念のため送らない。
+            _ =>
+            {
+                if (node.IsPreview) return;
+                _runtime?.SendToRuntime(
+                    SEEDEditor.Controls.VisibilityToggle.BuildCommand(node.Id, !node.SelfVisible));
+            },
+            NodeIconSize);
+        // 画面プレビューの行は押せなくし、理由をツールチップで出す（HierarchyPanel.Preview.cs。レビュー #13）
+        ApplyPreviewVisibilityToggleState(visibilityToggle, node);
+        tb.Inlines.Add(new InlineUIContainer(visibilityToggle)
         {
             BaselineAlignment = BaselineAlignment.Center,
         });
@@ -1558,18 +1573,28 @@ public partial class HierarchyPanel : UserControl
     /// 選択中アクターのファイル化ダイアログを開いて保存コマンドを送信する。
     /// ビューポートのコンテキストメニューなど外部から呼び出す場合に使用する。
     /// </summary>
-    public void ShowExportActorDialog()
+    /// <returns>
+    /// 画面プレビューの中のノードなので断ったときだけ false（呼び出し側がトーストで知らせる）。
+    /// 選択が無い・ダイアログを取り消した・書き出したときは true。
+    /// </returns>
+    public bool ShowExportActorDialog()
     {
         // プライマリ選択 ID を決定する（単一選択 → _selectedId、複数選択 → 先頭）
         int targetId = _selectedId >= 0 ? _selectedId
                      : _selectedIds.Count > 0 ? _selectedIds.First()
                      : -1;
-        if (targetId < 0) return;
+        if (targetId < 0) return true;
 
         var node = GetAllNodes(_roots).FirstOrDefault(n => n.Id == targetId && !n.IsGroup);
-        if (node is null) return;
+        if (node is null) return true;
+
+        // 画面プレビュー（保存されない表示用のアクタ）の中は書き出さない（レビュー #14）。ランタイムは根だけを断り、
+        // 中のノードは入れ子のプレハブのリンクを外した写しのまま書き出してしまう（元のプレハブへ上書きすると平坦化される）。
+        // ヒエラルキーの右クリックはプレビューの行でこの項目を出さないので、ここへ来るのはシーンビューの右クリック。
+        if (node.IsPreview) return false;
 
         SendExportActorCommand(node.Id, node.Name, node.Is2D);
+        return true;
     }
 
     /// <summary>

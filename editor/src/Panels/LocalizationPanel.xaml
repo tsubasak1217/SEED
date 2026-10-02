@@ -1,0 +1,344 @@
+<UserControl x:Class="SEEDEditor.Panels.LocalizationPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ctrl="clr-namespace:SEEDEditor.Controls"
+             xmlns:theme="clr-namespace:SEEDEditor.Theme"
+             Background="#1E1E1E"
+             PreviewKeyDown="OnPanelPreviewKeyDown">
+    <!--
+        文字列表（ローカライズ）パネル。正典 docs/localization.md §15。
+
+        【画面の並び】
+          1. 操作の帯       … 保存・読み直す / キーの入力欄と「キーを追加」/ 名前の変更・削除・複数形の形 / 言語
+          2. 絞り込みの帯   … 検索・「未訳だけ表示」・未訳の要約・凡例・警告の数・置き場
+          3. 外部変更の帯   … ディスク上で変わったのに未保存の編集があるとき（非モーダル。ScriptDiskNoticeBar と同じ色）
+          4. 表             … 行 = キー（平たん化した a.b.c）・列 = 言語（index.json の順）。未訳の升目は地の色で示す
+          5. 置き場が無い   … 「見本から作る」（templates/locale を assets/locale へ）
+          6. 説明の帯       … 選んだキーの説明（"_" で始まる鍵）と操作の結果
+
+        【ボタンの見た目】共通書式（Theme/SeedButtonStyles.xaml）。色は書かない（docs/editor_ui_style.md）。
+        【アイコン】Icons.xaml のベクター（ctrl:AppIcon）。記号文字・絵文字は使わない。
+        【文言】Panels/Localization/LocalizationPanelMessages から流し込む（XAML の文言はボタンの短い名前だけ）。
+        【表の列】言語の数が変わるので、列はコードビハインド（LocalizationPanel.Grid.cs）で組む。
+    -->
+    <UserControl.Resources>
+        <!-- ══ 共通の色（ボタン以外）══════════════════════════ -->
+        <SolidColorBrush x:Key="L10n.Background" Color="#1E1E1E"/>
+        <SolidColorBrush x:Key="L10n.Toolbar"    Color="#2D2D2D"/>
+        <SolidColorBrush x:Key="L10n.Header"     Color="#252526"/>
+        <SolidColorBrush x:Key="L10n.Field"      Color="#1A1A1A"/>
+        <SolidColorBrush x:Key="L10n.Border"     Color="#3F3F46"/>
+        <SolidColorBrush x:Key="L10n.GridLine"   Color="#333337"/>
+        <SolidColorBrush x:Key="L10n.AltRow"     Color="#222224"/>
+        <SolidColorBrush x:Key="L10n.Text"       Color="#DCDCDC"/>
+        <SolidColorBrush x:Key="L10n.DimText"    Color="#999999"/>
+        <SolidColorBrush x:Key="L10n.Selection"  Color="#264F78"/>
+        <SolidColorBrush x:Key="L10n.Focus"      Color="{x:Static theme:SeedThemeColors.ButtonBorderFocus}"/>
+        <!-- 未訳の升目（色表 SeedColorTable.LOCALE_MISSING_CELL_BG。ThemeContrastTests が文字との比を検査する） -->
+        <SolidColorBrush x:Key="L10n.MissingCell"     Color="{x:Static theme:SeedThemeColors.LocaleMissingCellBg}"/>
+        <SolidColorBrush x:Key="L10n.MissingCellText" Color="{x:Static theme:SeedThemeColors.LocaleMissingCellFg}"/>
+        <!-- 外部変更の帯（スクリプトエディタの通知帯と同じ色） -->
+        <SolidColorBrush x:Key="L10n.NoticeBg"     Color="{x:Static theme:SeedThemeColors.NoticeBarBg}"/>
+        <SolidColorBrush x:Key="L10n.NoticeBorder" Color="{x:Static theme:SeedThemeColors.NoticeBarBorder}"/>
+        <SolidColorBrush x:Key="L10n.NoticeIcon"   Color="{x:Static theme:SeedThemeColors.NoticeBarIcon}"/>
+        <SolidColorBrush x:Key="L10n.SuccessText"  Color="{x:Static theme:SeedThemeColors.DialogSuccessText}"/>
+        <SolidColorBrush x:Key="L10n.ErrorText"    Color="{x:Static theme:SeedThemeColors.DialogErrorText}"/>
+
+        <!-- ══ 入力欄（暗い地）═══════════════════════════════ -->
+        <Style x:Key="L10n.TextBox" TargetType="TextBox">
+            <Setter Property="Background"      Value="{StaticResource L10n.Field}"/>
+            <Setter Property="Foreground"      Value="{StaticResource L10n.Text}"/>
+            <Setter Property="BorderBrush"     Value="{StaticResource L10n.Border}"/>
+            <Setter Property="CaretBrush"      Value="{StaticResource L10n.Text}"/>
+            <Setter Property="SelectionBrush"  Value="{StaticResource L10n.Selection}"/>
+            <Setter Property="Padding"         Value="3,1"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+
+        <!-- ══ 帯の中の文字 ═══════════════════════════════════ -->
+        <Style x:Key="L10n.BarLabel" TargetType="TextBlock">
+            <Setter Property="Foreground"        Value="{StaticResource L10n.DimText}"/>
+            <Setter Property="FontSize"          Value="11"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!-- ══ 帯の区切り ═════════════════════════════════════ -->
+        <Style x:Key="L10n.Separator" TargetType="Border">
+            <Setter Property="Width"      Value="1"/>
+            <Setter Property="Margin"     Value="8,3"/>
+            <Setter Property="Background" Value="{StaticResource L10n.Border}"/>
+        </Style>
+
+        <!-- ══ 帯のボタン（共通書式に寸法だけ足す）════════════ -->
+        <Style x:Key="L10n.BarButton" TargetType="Button" BasedOn="{StaticResource Seed.Button.Base}">
+            <Setter Property="Padding"  Value="8,2"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin"   Value="0,0,4,0"/>
+            <Setter Property="ToolTipService.ShowOnDisabled" Value="True"/>
+        </Style>
+
+        <!-- ══ アイコン＋文字のボタンの中身 ═════════════════════
+             ボタンの中身に置いた要素は論理の親（ボタン）から文字色を継ぐので、共通書式のテンプレートが
+             ContentPresenter に当てる状態の色（無効の減光・ホバーの白）が届かない。テンプレートの ContentPresenter の
+             文字色へ結び付けて、文字だけのボタンと同じ見え方にする（色そのものは共通書式が決める）。 -->
+        <Style x:Key="L10n.ButtonLabel" TargetType="TextBlock">
+            <Setter Property="Margin"     Value="4,0,0,0"/>
+            <Setter Property="Foreground" Value="{Binding Path=(TextElement.Foreground), RelativeSource={RelativeSource AncestorType={x:Type ContentPresenter}}}"/>
+        </Style>
+        <Style x:Key="L10n.ButtonIcon" TargetType="ctrl:AppIcon">
+            <Setter Property="Width"      Value="13"/>
+            <Setter Property="Height"     Value="13"/>
+            <Setter Property="Foreground" Value="{Binding Path=(TextElement.Foreground), RelativeSource={RelativeSource AncestorType={x:Type ContentPresenter}}}"/>
+        </Style>
+
+        <!-- ══ 表（DataGrid）の暗い見た目 ═══════════════════════
+             WPF 既定の見出し・選択の色（明るい灰・水色）は暗い地で文字を消すので、見出しと升目のテンプレートを置き換える。 -->
+        <Style x:Key="L10n.HeaderGripper" TargetType="Thumb">
+            <Setter Property="Width"      Value="8"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Cursor"     Value="SizeWE"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="{TemplateBinding Background}"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="L10n.ColumnHeader" TargetType="DataGridColumnHeader">
+            <Setter Property="Background"      Value="{StaticResource L10n.Header}"/>
+            <Setter Property="Foreground"      Value="{StaticResource L10n.Text}"/>
+            <Setter Property="BorderBrush"     Value="{StaticResource L10n.Border}"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
+            <Setter Property="Padding"         Value="6,3"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridColumnHeader">
+                        <Grid>
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter VerticalAlignment="Center" RecognizesAccessKey="False"/>
+                            </Border>
+                            <Thumb x:Name="PART_LeftHeaderGripper"  HorizontalAlignment="Left"  Style="{StaticResource L10n.HeaderGripper}"/>
+                            <Thumb x:Name="PART_RightHeaderGripper" HorizontalAlignment="Right" Style="{StaticResource L10n.HeaderGripper}"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 升目の土台（言語の列は BasedOn して未訳の地の色とツールチップを足す。LocalizationPanel.Grid.cs） -->
+        <Style x:Key="L10n.Cell" TargetType="DataGridCell">
+            <Setter Property="Background"      Value="Transparent"/>
+            <Setter Property="Foreground"      Value="{StaticResource L10n.Text}"/>
+            <Setter Property="BorderBrush"     Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter VerticalAlignment="Center" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource L10n.Selection}"/>
+                    <Setter Property="Foreground" Value="{StaticResource L10n.Text}"/>
+                </Trigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource L10n.Focus}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- 升目の文字（表示）と編集の入力欄 -->
+        <Style x:Key="L10n.CellText" TargetType="TextBlock">
+            <Setter Property="Padding"      Value="4,2"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="TextWrapping" Value="NoWrap"/>
+        </Style>
+        <Style x:Key="L10n.CellEdit" TargetType="TextBox">
+            <Setter Property="Background"      Value="{StaticResource L10n.Field}"/>
+            <Setter Property="Foreground"      Value="{StaticResource L10n.Text}"/>
+            <Setter Property="CaretBrush"      Value="{StaticResource L10n.Text}"/>
+            <Setter Property="SelectionBrush"  Value="{StaticResource L10n.Selection}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding"         Value="3,1"/>
+        </Style>
+
+        <Style x:Key="L10n.DimCellText" TargetType="TextBlock" BasedOn="{StaticResource L10n.CellText}">
+            <Setter Property="Foreground" Value="{StaticResource L10n.DimText}"/>
+        </Style>
+
+        <Style x:Key="L10n.Grid" TargetType="DataGrid">
+            <Setter Property="Background"               Value="{StaticResource L10n.Background}"/>
+            <Setter Property="Foreground"               Value="{StaticResource L10n.Text}"/>
+            <Setter Property="BorderThickness"          Value="0"/>
+            <Setter Property="RowBackground"            Value="{StaticResource L10n.Background}"/>
+            <Setter Property="AlternatingRowBackground" Value="{StaticResource L10n.AltRow}"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource L10n.GridLine}"/>
+            <Setter Property="VerticalGridLinesBrush"   Value="{StaticResource L10n.GridLine}"/>
+            <Setter Property="GridLinesVisibility"      Value="All"/>
+            <Setter Property="HeadersVisibility"        Value="Column"/>
+            <Setter Property="AutoGenerateColumns"      Value="False"/>
+            <Setter Property="CanUserAddRows"           Value="False"/>
+            <Setter Property="CanUserDeleteRows"        Value="False"/>
+            <Setter Property="CanUserReorderColumns"    Value="False"/>
+            <Setter Property="CanUserSortColumns"       Value="False"/>
+            <Setter Property="CanUserResizeRows"        Value="False"/>
+            <Setter Property="SelectionMode"            Value="Extended"/>
+            <Setter Property="SelectionUnit"            Value="FullRow"/>
+            <Setter Property="EnableRowVirtualization"  Value="True"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
+            <Setter Property="VirtualizingPanel.IsVirtualizing"   Value="True"/>
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
+            <Setter Property="FontSize"                 Value="12"/>
+            <Setter Property="ColumnHeaderStyle"        Value="{StaticResource L10n.ColumnHeader}"/>
+            <Setter Property="CellStyle"                Value="{StaticResource L10n.Cell}"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ══ 1. 操作の帯 ═══════════════════════════════════════ -->
+        <Border Grid.Row="0" Background="{StaticResource L10n.Toolbar}" Padding="4,3">
+            <WrapPanel Orientation="Horizontal">
+                <Button x:Name="BtnSave" Style="{StaticResource L10n.BarButton}" Click="OnSaveClick" ToolTip="保存（Ctrl+S。パネルにフォーカスがあるとき）">
+                    <StackPanel Orientation="Horizontal">
+                        <ctrl:AppIcon IconKey="Icon.Save" Style="{StaticResource L10n.ButtonIcon}"/>
+                        <TextBlock Text="保存" Style="{StaticResource L10n.ButtonLabel}"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="BtnReload" Style="{StaticResource L10n.BarButton}" Click="OnReloadClick" ToolTip="ディスクから読み直す（未保存の変更があれば確認します）">
+                    <StackPanel Orientation="Horizontal">
+                        <ctrl:AppIcon IconKey="Icon.Reset" Style="{StaticResource L10n.ButtonIcon}"/>
+                        <TextBlock Text="読み直す" Style="{StaticResource L10n.ButtonLabel}"/>
+                    </StackPanel>
+                </Button>
+
+                <Border Style="{StaticResource L10n.Separator}"/>
+
+                <TextBlock Text="新しいキー" Style="{StaticResource L10n.BarLabel}" Margin="0,0,4,0"/>
+                <TextBox x:Name="TxtNewKey" Style="{StaticResource L10n.TextBox}" Width="200" Margin="0,0,4,0"
+                         KeyDown="OnNewKeyKeyDown"
+                         ToolTip="平たいキー（menu.start のように . で区切ると入れ子になります）。Enter で追加"/>
+                <Button x:Name="BtnAddKey" Style="{StaticResource L10n.BarButton}" Click="OnAddKeyClick" ToolTip="全部の言語の表の末尾に、空（null＝未訳）で足します">
+                    <StackPanel Orientation="Horizontal">
+                        <ctrl:AppIcon IconKey="Icon.Add" Style="{StaticResource L10n.ButtonIcon}"/>
+                        <TextBlock Text="キーを追加" Style="{StaticResource L10n.ButtonLabel}"/>
+                    </StackPanel>
+                </Button>
+
+                <Border Style="{StaticResource L10n.Separator}"/>
+
+                <Button x:Name="BtnRename" Style="{StaticResource L10n.BarButton}" Click="OnRenameClick" Content="名前の変更…"
+                        ToolTip="選んだキーの名前を全部の言語で変えます（複数形の形の行はまとまりごと）"/>
+                <Button x:Name="BtnDelete" Style="{StaticResource L10n.BarButton}" Click="OnDeleteClick" ToolTip="選んだキーを全部の言語の表から消します（Delete キーでも）">
+                    <StackPanel Orientation="Horizontal">
+                        <ctrl:AppIcon IconKey="Icon.Delete" Style="{StaticResource L10n.ButtonIcon}"/>
+                        <TextBlock Text="削除" Style="{StaticResource L10n.ButtonLabel}"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="BtnPlural" Style="{StaticResource L10n.BarButton}" Click="OnPluralClick" Content="複数形の形を追加…"
+                        ToolTip="選んだキーに複数形の形（zero / one / two / few / many / other）を足します"/>
+
+                <Border Style="{StaticResource L10n.Separator}"/>
+
+                <Button x:Name="BtnLanguages" Style="{StaticResource L10n.BarButton}" Click="OnLanguagesClick" Content="言語…"
+                        ToolTip="言語の追加・既定の言語・次に探す言語（fallback）・名前・一覧から外す（列の見出しの右クリックでも）"/>
+            </WrapPanel>
+        </Border>
+
+        <!-- ══ 2. 絞り込みの帯 ═══════════════════════════════════ -->
+        <Border Grid.Row="1" Background="{StaticResource L10n.Header}" Padding="6,3"
+                BorderBrush="{StaticResource L10n.Border}" BorderThickness="0,0,0,1">
+            <DockPanel LastChildFill="True">
+                <ctrl:AppIcon DockPanel.Dock="Left" IconKey="Icon.Search" Width="13" Height="13" Margin="0,0,4,0"
+                              Foreground="{StaticResource L10n.DimText}"/>
+                <TextBox x:Name="TxtSearch" DockPanel.Dock="Left" Style="{StaticResource L10n.TextBox}" Width="200"
+                         TextChanged="OnSearchChanged" ToolTip="キーと文を検索（大文字小文字を区別しない）"/>
+                <CheckBox x:Name="ChkMissingOnly" DockPanel.Dock="Left" Content="未訳だけ表示" Margin="10,0,0,0"
+                          Foreground="{StaticResource L10n.Text}" FontSize="11" VerticalAlignment="Center"
+                          Checked="OnMissingOnlyChanged" Unchecked="OnMissingOnlyChanged"/>
+                <TextBlock x:Name="TxtSummary" DockPanel.Dock="Left" Style="{StaticResource L10n.BarLabel}" Margin="12,0,0,0"
+                           Foreground="{StaticResource L10n.Text}"/>
+                <!-- 凡例: 色の付いた升目は未訳、色の無い空欄は「要らない」 -->
+                <Border DockPanel.Dock="Left" Background="{StaticResource L10n.MissingCell}" Width="12" Height="12"
+                        Margin="12,0,4,0" VerticalAlignment="Center"/>
+                <TextBlock DockPanel.Dock="Left" Style="{StaticResource L10n.BarLabel}"
+                           Text="未訳（空・null・表に無い）。色の無い空欄はその言語では要らない升目"/>
+                <TextBlock x:Name="TxtWarnings" DockPanel.Dock="Left" Style="{StaticResource L10n.BarLabel}" Margin="12,0,0,0"
+                           Foreground="{StaticResource L10n.ErrorText}" Visibility="Collapsed"/>
+                <TextBlock x:Name="TxtFolder" Style="{StaticResource L10n.BarLabel}" HorizontalAlignment="Right"
+                           TextTrimming="CharacterEllipsis" Margin="12,0,0,0"/>
+            </DockPanel>
+        </Border>
+
+        <!-- ══ 3. 外部変更の帯（非モーダル）══════════════════════ -->
+        <Border x:Name="NoticeBar" Grid.Row="2" Visibility="Collapsed" Padding="8,4"
+                Background="{StaticResource L10n.NoticeBg}" BorderBrush="{StaticResource L10n.NoticeBorder}" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ctrl:AppIcon Grid.Column="0" IconKey="Icon.Warning" Width="13" Height="13" Margin="0,0,6,0"
+                              VerticalAlignment="Center" Foreground="{StaticResource L10n.NoticeIcon}"/>
+                <TextBlock x:Name="NoticeText" Grid.Column="1" Foreground="{StaticResource L10n.Text}" FontSize="11"
+                           TextWrapping="Wrap" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="BtnNoticeReload" Style="{StaticResource L10n.BarButton}" Margin="8,0,0,0" Click="OnNoticeReloadClick"/>
+                    <Button x:Name="BtnNoticeKeep" Style="{StaticResource L10n.BarButton}" Margin="8,0,0,0" Click="OnNoticeKeepClick"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ══ 4. 表 ═════════════════════════════════════════════ -->
+        <DataGrid x:Name="Table" Grid.Row="3" Style="{StaticResource L10n.Grid}"
+                  SelectionChanged="OnTableSelectionChanged"
+                  PreviewKeyDown="OnTablePreviewKeyDown"
+                  PreviewMouseRightButtonUp="OnTablePreviewMouseRightButtonUp"/>
+
+        <!-- ══ 5. 置き場が無いとき ═══════════════════════════════ -->
+        <Border x:Name="MissingView" Grid.Row="3" Background="{StaticResource L10n.Background}" Visibility="Collapsed">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="560">
+                <TextBlock x:Name="MissingText" Foreground="{StaticResource L10n.Text}" FontSize="13" TextWrapping="Wrap"
+                           HorizontalAlignment="Center" TextAlignment="Center"/>
+                <TextBlock x:Name="MissingHint" Foreground="{StaticResource L10n.DimText}" FontSize="11" TextWrapping="Wrap"
+                           HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,0"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,12,0,0">
+                    <Button x:Name="BtnCreate" Style="{StaticResource Seed.Button.Primary}" Padding="14,4" Click="OnCreateClick"
+                            Content="見本から作る"/>
+                    <Button Padding="14,4" Margin="8,0,0,0" Click="OnLanguagesClick" Content="言語を足して始める…"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- ══ 6. 説明・結果の帯 ═════════════════════════════════ -->
+        <Border Grid.Row="4" Background="{StaticResource L10n.Header}" Padding="6,4"
+                BorderBrush="{StaticResource L10n.Border}" BorderThickness="0,1,0,0">
+            <StackPanel>
+                <TextBlock x:Name="TxtStatus" FontSize="11" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,0,0,2"/>
+                <TextBlock x:Name="TxtDetails" Foreground="{StaticResource L10n.DimText}" FontSize="11" TextWrapping="Wrap"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    文字列表（ローカライズ）パネル（editor/src/Panels/LocalizationPanel）の見た目を「実物の XAML」で確かめるための検証用コンソール。
+
+    LocalizationPanelTests（モデルの単体テスト）と役割を分けている:
+      - あちら: 表のモデル・読み書き・規則を WPF 抜きで検証する
+      - こちら: 実際のパネルを組み立ててオフスクリーン描画し、PNG に落とす（GUI を起動しないと見えないので、目視確認の材料を作る）
+                あわせて、表の列・行の数・要約・未保存の印・案内の出し分けを標準出力へ出して表明する
+
+    SEEDEditor 本体をプロジェクト参照するのは、パネルの XAML・共通ボタン書式・アイコンがすべて本体アセンブリの中にあるため。
+    **エディタは起動しない**（App はリソース読み込みのために生成するだけで、Run() は呼ばない）。
+    表は一時フォルダへ写した見本（templates/locale）だけを読み書きする（リポジトリのファイルには触らない）。
+
+    実行例（オプションの先頭に付くハイフン 2 個は XML コメントに書けないため省略して記す）:
+      dotnet run (project=editor/tests/LocalizationPanelPreviewProbe) (区切り) (out) "C:\temp\out"
+    out を省くと一時フォルダ（%TEMP%\localization_panel_preview）へ書く。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SEEDEditor.Tests.LocalizationPanelPreview</RootNamespace>
+    <AssemblyName>LocalizationPanelPreviewProbe</AssemblyName>
+    <!-- 本体と同じ RID（本体の参照の復元条件をそろえる。VersionControlPanelPreviewProbe と同じ）-->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\SEEDEditor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WPF のリソース探索先を本体へ向ける初期化は VersionControlPanelPreviewProbe のものを共有する -->
+    <Compile Include="..\VersionControlPanelPreviewProbe\ResourceAssemblyInitializer.cs">
+      <Link>Linked\ResourceAssemblyInitializer.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>

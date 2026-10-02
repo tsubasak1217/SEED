@@ -29,6 +29,10 @@
     <Compile Include="..\..\src\Panels\Hierarchy\HierarchyTreeSync.cs">
       <Link>Linked\Panels\Hierarchy\HierarchyTreeSync.cs</Link>
     </Compile>
+    <!-- 差分同期の後の選択の直し方（2026-10-03。レビュー #1: ID が変わったらインスペクタへ知らせる） -->
+    <Compile Include="..\..\src\Panels\Hierarchy\SelectionRestorePlan.cs">
+      <Link>Linked\Panels\Hierarchy\SelectionRestorePlan.cs</Link>
+    </Compile>
     <!-- テストランナー（SpriteRigTests と共用） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>

@@ -9,6 +9,8 @@
 //  ライブラリの中身をそのままの相対パスで写せば、テンプレートの参照はそのまま解決する。
 //
 //  ライブラリ（templates/）にもリポジトリにも何も書かない。書くのは作業フォルダの中だけ。
+//  前の実行の中身を消すのはここではなく ThumbnailWorkFolder.CleanForRun（道具の印のある置き場を借りた後だけ）。
+//  ここは借りた置き場（ThumbnailWorkFolder）を受け取り、assets/ の中に書くだけ（何も消さない）。
 // ============================================================
 
 using System.Text.Encodings.Web;
@@ -16,18 +18,13 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using SEEDEditor.Packaging.Collect;
 using SEEDEditor.Templates.Actors;
+using SEEDEditor.Tools.SeedTemplateThumbnails.Work;
 
 namespace SEEDEditor.Tools.SeedTemplateThumbnails.Stage;
 
 /// <summary>撮影用の一時のプロジェクト。</summary>
 public sealed class StageProject
 {
-    /// <summary>アセットルートのフォルダ名（作業フォルダの下）。</summary>
-    private const string AssetsFolderName = "assets";
-
-    /// <summary>プロジェクト設定のファイル名。</summary>
-    private const string ProjectSettingsFileName = "project_settings.json";
-
     /// <summary>起動用の舞台（背景だけ）のシーンのファイル名。</summary>
     private const string BootSceneFileName = "_boot.scene";
 
@@ -66,15 +63,15 @@ public sealed class StageProject
     public string BootSceneVirtualPath => AssetsScheme + StageSceneBuilder.SceneFolder + "/" + BootSceneFileName;
 
     /// <summary>
-    /// 作業フォルダの下にアセットルートを用意する（中身は空にする）。
+    /// 借りた作業の置き場の下にアセットルート（assets/）を用意する。
+    /// 前の実行の中身は借りたときに消してある（<see cref="ThumbnailWorkFolder.CleanForRun"/>）ので、ここでは作るだけ。
     /// </summary>
     /// <param name="libraryRoot">ライブラリルート。</param>
-    /// <param name="workRoot">作業フォルダ。</param>
-    public StageProject(string libraryRoot, string workRoot)
+    /// <param name="workFolder">借りた作業の置き場。</param>
+    public StageProject(string libraryRoot, ThumbnailWorkFolder workFolder)
     {
         _libraryRoot = Path.GetFullPath(libraryRoot);
-        AssetsRoot = Path.Combine(Path.GetFullPath(workRoot), AssetsFolderName);
-        if (Directory.Exists(AssetsRoot)) Directory.Delete(AssetsRoot, recursive: true);
+        AssetsRoot = workFolder.AssetsRoot;
         Directory.CreateDirectory(Path.Combine(AssetsRoot, StageSceneBuilder.SceneFolder));
     }
 
@@ -99,7 +96,7 @@ public sealed class StageProject
             // 毎フレーム描く（描く理由の無いフレームを止める on_demand だと、撮る前の動きが進まないことがある）
             ["render_policy"] = "continuous",
         };
-        File.WriteAllText(Path.Combine(AssetsRoot, ProjectSettingsFileName), settings.ToJsonString(JsonOptions));
+        File.WriteAllText(Path.Combine(AssetsRoot, WorkFolderPolicy.ProjectSettingsFileName), settings.ToJsonString(JsonOptions));
     }
 
     /// <summary>

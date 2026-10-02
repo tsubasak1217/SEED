@@ -553,7 +553,11 @@
 - [ ] **アクタータブの保存が、開いていないシーンのインスタンスには当然届かない** — 2026-09-08（仕様）。自動反映の対象は「エディタが今開いているシーン」だけ。同じプレハブを使う他のシーンは、そのシーンを開いたときに版ずれバナーで気付く作りになっている。プロジェクト全体を走査して一括反映する仕組みは無い（`.scene` を開かずに書き換えることになるため、意図的に作っていない）。
 - [ ] **ネストプレハブの版ずれは内側を見ていない** — 2026-09-08。`collect_prefab_status_in_actor` はプレハブインスタンスのルートを見つけたら配下へ降りない（再展開が 1 段のみという現行仕様に揃えたもの）。プレハブ A の中にプレハブ B が入っている場合、B の更新は検出されない。ネストプレハブの再帰展開（`prefab_ops.rs` の TODO(P2)）と同時に対応するのが筋。
 - [ ] **版ずれバナーの［更新する］は参照パスの数だけ Undo 履歴を積む** — 2026-09-08。`PREFAB_REAPPLY_PATH` を対象パスごとに送るため、3 本のプレハブが更新されていると Ctrl+Z を 3 回押す必要がある。1 操作にまとめるなら、複数パスを 1 コマンドで受ける IPC か、ランタイム側の `CompositeCommand` が要る。
-- [ ] **（既存・2026-10-02 に気付いた）シーンを読み込むと `prefab_hash` が落ち、保存すると .scene からも消える** — 2026-10-02（画面のプレビューの実装中に見つけた。直していない）。
+- [x] **（既存・2026-10-02 に気付いた）シーンを読み込むと `prefab_hash` が落ち、保存すると .scene からも消える** — 2026-10-02（画面のプレビューの実装中に見つけた）。
+  → **2026-10-02 に直した**（コミット b5ee44db。`scene.rs::build_actor` が `actor.prefab_hash = data.prefab_hash;` を写す。この項目の更新漏れを 2026-10-03 のレビュー #20 で訂正）。
+  2026-10-03 の通し確認: Wake or Pay の App.scene の `prefab_hash` 5 件 → 読み込んで `SAVE_SCENE_COPY` した .scene も 5 件
+  （`C:\Users\k023g\.claude\jobs\434062fd\tmp\l1_review\e2e_review_fixes.py` の #20）。直したことで表に出た「開いたままの一括アップグレードの後に保存すると古い版で上書き」はレビュー #8 で直した。
+  以下は直す前の記録。
   `runtime/src/engine/core/app_base/scene.rs::build_actor` が `data.prefab_source` は `actor.prefab_source` へ写すが `data.prefab_hash` を写していない
   （`git log -S` でも写していた時期が無い）。そのため .scene・Undo の写し・Play 停止の組み直しから作ったインスタンスは `prefab_hash = None` になり、
   §3 の版ずれ検出（`PREFAB_STATUS`）が「版が不明」扱いで働かない。さらに `to_data` が None を書かないので、**読み込んで保存するだけで .scene の `prefab_hash` が全部消える**
@@ -667,6 +671,21 @@
   Stop 後に戻す経路が無く保存先の判断が壊れるため、意図的に見送った）。
   上書き保存はランタイム側の `path_mismatch` 保護があるので事故にはならないが、
   「Play 中はタイトルバーが遷移前シーンのまま」という表示上のズレは残っている。
+- [ ] **Undo/Redo の後の選択の引き直しは「名前の道筋」で見る（親が変わる操作では外れる）** — 2026-10-03（レビュー #1 の直しの制限）。
+  木を組み直す Undo/Redo は entity を全部作り直すので、選択はエディタの安定キーと同じ「ルートからの名前の道筋＋同じ名前の兄弟の中で何番目か」で
+  控えて引き直す（`runtime/src/engine/core/app_base/app/undo_selection.rs`）。道筋で引けなくても木の形（DFS 順の子の数の並び）が前後で同じなら
+  同じ番号のまま残すので、名前の変更の Undo/Redo では選択が残る。別の親への付け替え・グループ化の Undo/Redo では道筋も形も変わるので選択から外れ
+  （`SELECTED:-1`。古い番号で別のアクタを掴むよりは安全）、同じ名前の兄弟の途中を消した操作の Undo では、同じ名前の別の兄弟へ移ることがある
+  （インスペクタとヒエラルキーとランタイムの選択はそろうので、見えているアクタと編集されるアクタは食い違わない）。正確に追うなら、アクタへ
+  保存しない通し番号を持たせて写し（`ActorData`）へ載せ、組み直しで引き継ぐ。
+- [ ] **ヒエラルキーで名前を確定した直後の同期で、そのアクタの選択の行が外れる（未確認）** — 2026-10-03（レビュー #1 の調査中にコードを読んで気付いた）。
+  `HierarchyPanel.xaml.cs` の名前の確定（`Commit`）は `node.Name` を書き換えるが安定キー（`StableKey`）を振り直さないので、次の HIERARCHY の
+  `RestoreSelectionAfterSync` が古い名前のキーで引けず「消えた」とみなして行の選択を外す（インスペクタは同じ番号のまま残る）。
+  エディタの GUI では確かめていない。直すなら確定の時に `RefreshStableKeys()` を呼ぶ。
+- [ ] **Undo/Redo 以外で選んでいたアクタが消えたとき、ヒエラルキーは選択を外すがインスペクタは古い番号のまま残る（未確認）** — 2026-10-03（同上）。
+  `RestoreSelectionAfterSync` の「消えた」の経路はインスペクタへ知らせない。Undo/Redo と削除はランタイムが `SELECTED:-1` を送るのでそろうが、
+  Play 中のスクリプトの `Destroy` などでランタイムが `SELECTED:-1` を送らない経路があれば、インスペクタの次の値の編集が古い番号の別のアクタへ当たる
+  （Play 中の変更は止めると戻る）。どの経路が送っていないかは調べていない。
 - [ ] **ヘッドレスで `game_input_*` からタイトルのシーン遷移を起こせない** — 2026-09-09。
   `title.scene` を Play して Enter / 左クリックを注入しても `TitleFlow` が反応せず、
   遷移（title → prologue → mainGame）をヘッドレスで再現できなかった。
@@ -1232,6 +1251,22 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   （`dotnet run --project editor/tools/SeedTemplateThumbnails`）。撮り忘れは窓のプローブ（`TemplateActorPickerPreviewProbe` の 01）が
   「全件に画像がある」で気付くが、古い絵のままかどうかは分からない。必要になったら、部品・テーマの変更を検知して撮り直しを促す仕組みを考える。
 
+- [x] **サムネイルの道具の `--work` が中身を確かめずに `<work>/assets` を再帰削除する・既定の置き場が固定名で同時実行が互いを壊す** — 2026-10-02
+  （docs/reviews/2026-10-02_code_review.md #2）。→ **2026-10-03 に済（lane2）**: 道具が作った印 `<work>/.seed_thumbnails` のある置き場の中身だけを消し、
+  印の無いプロジェクト（`assets/project_settings.json`）・`*.seedproj` のあるフォルダ・印の無い中身のあるフォルダ・ファイルは断って終了コード 4。
+  使用中は錠 `.seed_thumbnails.lock`（`FileShare.None`・閉じると消える）で 2 つ目の実行を断る。既定の置き場は実行ごとの
+  `%TEMP%\seed_template_thumbnails\run_<PID>_<乱数>`（成功したら消す・失敗したら残す）。判定は純粋な `WorkFolderPolicy`、テストは
+  `editor/tests/TemplateThumbnailsTests`（道具とランタイムは起動しない）。docs/template_library.md §9.10「作業の置き場の安全装置」。
+  同じ直しで #17（見張りのスレッドが Dispose 後の `Process.Id` を読む → 起動時に控えた ID を使い、Join してから Process を捨てる）と
+  #19（結果を並べる `ToDictionary` が同じファイル名で落ちる → 鍵をライブラリ相対パスに。`ThumbnailResultOrder`）も済。
+  残り: 実際に道具を走らせての確認はしていない（ランタイムを起動しない方針。判定・後片付け・並べ方は単体テスト 12 件）。
+
+- [ ] **サムネイルの道具が、同じカタログのフォルダの別の下位フォルダにある同じファイル名のテンプレートを見分けられない** — 2026-10-03（#19 の直しで気付いた。
+  コードを読んで確認・実行はしていない）。舞台のシーンの名前が `__thumbnails/<カタログのフォルダ>_<ファイル名>.scene`（`StageSceneBuilder`）なので、
+  `ui/prefabs/button.actor` と `ui/samples/button.actor` のような 2 件は同じシーンに書かれ、前の件は合図の札が合わずに時間切れ（起動し直しを含む）で撮れない見込み。
+  既定の見本の画像の置き場（`<フォルダ>/thumbnails/<ファイル名>.png`。`TemplateActorCatalog.DefaultThumbnailRelPath`）も重なる。今のカタログには無い。
+  直すならシーンの名前に件の札（`t01` など）かライブラリ相対パス全体を入れる。
+
 - [ ] **一覧の行（list_row）が見本のスクリプトをプロジェクトへコピーする** — 2026-10-01。`templates/ui/prefabs/list_row.actor` の
   ルートのスクリプトは見本の `assets://ui/scripts/UiGalleryListRow.cs`（フルスワイプで削除）なので、追加するとその `.cs` が
   プロジェクトへ入り、プロジェクトのスクリプトとしてコンパイルされる。エンジンのスクリプト（`SEED.UI.*`）に削除の動きを持たせれば
@@ -1279,12 +1314,19 @@ Lv9 の魚が掛かったら（直接ヒット・わらしべ乗り換えのど�
   その数だけ Ctrl+Z が要る（`CompositeCommand` は木の組み直しを 1 世界線分しか返さないため束ねていない）。
 - [ ] **差し込み先の表にプロジェクトのスクリプト（`PopupPlane`）を載せている** — 2026-10-02。表（`editor/config/screen_preview_hosts.json`）はエンジン側に 1 つで、
   Wake or Pay の `PopupPlane` もクラス名で載せた。プロジェクトごとに案内を足す仕組み（プロジェクトの表を重ねて読む）は無い。
-- [ ] **地形ルートの部分木の中のプレビューは Play を止めても戻らない** — 2026-10-02。地形は Play をまたいで現物のまま保つ（`PlaySnapshotEntry::Keep`）ので、
+- [x] **地形ルートの部分木の中のプレビューは Play を止めても戻らない** — 2026-10-02。地形は Play をまたいで現物のまま保つ（`PlaySnapshotEntry::Keep`）ので、
   Play の開始で外したプレビューを戻す写しが無い。地形の下に UI のプレビューを置くことはまず無いので放置。
+  → **2026-10-03 に地形の中へ出すこと自体を断るようにした**（レビュー #7。Undo の写しも地形を現物のまま Keep するので、Ctrl+Z でも消えず DFS をずらし、
+  前の Undo が別のアクタへ当たっていた）。`editor_preview/ops.rs::resolve_insert_target` が差し込み先か祖先に地形ルートがあれば `PREVIEW_ERROR`。
+  通し確認（`C:\Users\k023g\.claude\jobs\434062fd\tmp\l1_review\e2e_terrain_preview.py`）: 直す前は地形ルート・チャンクの下へ `PREVIEW_ADDED`、直した後は断る。
 - [ ] **木の編集の拒否は表示中の世界線で DFS を数える** — 2026-10-02。`ADD_ACTOR:{world_line},{親}` は命令の世界線を使うので、エディタが表示中でない世界線へ
   送ったときだけ判定が食い違う（エディタは表示中の世界線へしか送らない）。関連: `runtime/src/engine/core/app_base/app/editor_preview/guard.rs`。
 - [ ] **プレビューの中のノード（根でない）を `EXPORT_ACTOR` するとランタイムは断らない** — 2026-10-02。根は `actor_file::save` が断るが、中のノードは
-  プレハブの中身の写しとしてファイルになる（データは失われない）。エディタはプレビューのノードのドラッグ（＝アクタファイル化）とメニューを出さない。
+  プレハブの中身の写し（入れ子のプレハブのリンクを外したもの）としてファイルになる。元のプレハブへ上書き保存すると入れ子のインスタンスが平坦化される。
+  エディタはヒエラルキーでプレビューのノードのドラッグ（＝アクタファイル化）とメニューを出さず、**シーンビューの右クリック「アクタファイル化」も
+  2026-10-03 からプレビューの中では断ってトーストを出す**（レビュー #14。`HierarchyPanel.ShowExportActorDialog` が false を返す）。
+  （2026-10-02 の記述「メニューを出さない」はヒエラルキーだけの話で、シーンビューの右クリックには出ていた。）残るのは MCP の `seed_send_ipc` などで
+  `EXPORT_ACTOR` を直接送る経路。ランタイムで断るなら `actor_ops.rs::handle_export_actor` に `is_dfs_in_preview` の判定を足す。
 - [ ] **シーンビューのギズモではプレビューを動かせる** — 2026-10-02。読み取り専用にしたのはインスペクタとヒエラルキーだけ。ギズモ・モーダル変形（G/R/S）で
   プレビューのアクタを動かすと、メモリの中だけの変更（保存されない）なのに普通の編集として Undo に積まれ、未保存の印が付きうる（未確認）。
   直すならドラッグ開始（`app/drag_handler.rs`・`gizmo_handler.rs`）で選択がプレビューの中なら始めない。
@@ -3601,7 +3643,7 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 
 ### W3: Wake or Pay の移植で見つかったエンジンの不具合・制限（2026-09-30〜。移植先は D:\SEED_projects\WakeOrPay）
 
-- [ ] **パッケージの収録が末尾 `/` のフォルダ参照を拾わない（Android でデータファイルが APK に入らない）** — 2026-09-30（W3-0 で発見）。
+- [x] **パッケージの収録が末尾 `/` のフォルダ参照を拾わない（Android でデータファイルが APK に入らない）** — 2026-09-30（W3-0 で発見）。
   スクリプトの `"assets://common/data/"` のような末尾が `/` のフォルダの参照が収録されず、Wake or Pay の APK にデータの JSON が 1 つも入らなかった
   （pak の収録 27 件。プロジェクトの `packaging_settings.json` の `additional_folders` に `common/data`・`common/themes` を足して 47 件にして回避）。
   原因（コードを読んで確認・直していない）: `editor/src/Packaging/Collect/AssetPathUtil.NormalizeRelative` が末尾の `/` を落とさず
@@ -3609,6 +3651,12 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   （`CollectFrom` の `_dirsOnDisk.Contains(rel)`、参照の候補の照合 `_dirsOnDisk.Contains(cand)` も同じ形の見込み）。
   案: `NormalizeRelative` で末尾の `/` を落とす（ファイルの参照には影響しない）＋単体テスト。PC の Play はディスクから直接読むので気づけない。
   W3-D/W3-S の DomainSmoke も Android では同じ理由で動かない見込み（推測）。
+  → **2026-10-03 に済（lane2）**: 見立てどおり。`AssetPathUtil.NormalizeRelative` で末尾の `/` を落とした（ファイルの参照の正規形は変わらない）。
+  再現テスト（`editor/tests/PackagingCollectorTests/FolderReferenceTests.cs`。走査の候補・`Collect` の閉包・`CollectFrom` の起点・`additional_folders`）が直す前に 4 件落ち、直した後に通る。
+  Wake or Pay のドライラン（既定の収録ルール＝`additional_folders` なし）で `common/data/` 14 件・`common/themes/` 4 件がすべて入ることを確かめた（APK は作っていない）。
+  **収録が増える変更**: 末尾 `/` 付きの連結の前半（`"assets://ui/" + name`）もフォルダごと入るようになった（docs/packaging.md §2）。2026-10-03 時点の該当は Wake or Pay の 2 つだけ。
+  残り: Wake or Pay の `packaging_settings.json` の `additional_folders`（`common/data`・`common/themes`）の回避は外してよい（プロジェクト側。外さなくても害は無い）。
+  DomainSmoke の Android での確認は未（上の見込みはこの直しで解消するはず・推測）。
 - [x] **PC の 1 倍で小さな文字の細い横線が消える・かすれる** — 2026-09-30（W3-0 で発見）。→ **2026-10-01 に済**（下の項目と一緒に直した。docs/ui_components.md §12）。16 px 以下で長音符「ー」が消えたりかすれたりする
   （「トークン」が「ト クン」、「データ」が「デ タ」。1.3139 倍の模擬では正常）。上の「W2 の手直し P2-3 の残り」(1)・「P2-1 の残り」(1) と同じ見立て
   （SDF を画素の中心で 1 回だけ読む）。実機（2.625 倍）では未確認。
@@ -3686,8 +3734,13 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   → **(1) は 2026-10-02 に済（lane3）**: `ModalHost.CloseAll(animate = true)`・`CloseAll(ModalKind, animate)`（ダイアログ → シート → 覆いの順・同じ種類は新しい順。
   ダイアログは `Dismissed`・シートと覆いは null。閉じない設定の面も閉じる。`animate: false` なら出る動きなしでこの中で閉じ、手札の知らせもこの中で届く。作りかけの面は
   見せずに取りやめる。docs/ui_navigation.md §3.1・`Model/ModalCloseOrder.cs`）。**(4) は 2026-10-02 に docs/ui_navigation.md §2 の「入れ替わりの知らせの順」へ仕様として書いた（lane3）**
-  （順そのものは変えていない＝新しい画面の Enter → 動き〈古い画面は Update が回る〉→ 古い画面の Exit/Hidden → 新しい画面の Shown）。(2)(3)(7) は残り。
+  （順そのものは変えていない＝新しい画面の Enter → 動き〈古い画面は Update が回る〉→ 古い画面の Exit/Hidden → 新しい画面の Shown）。(2)(3) は残り（(7) は下）。
   Wake or Pay の `AppNavigator.DismissModals`（戻るの繰り返し）は `CloseAll(animate: false)` に替えられる（アプリ側は未着手）。
+  → **(7) は 2026-10-03 に済（lane2）**: `.cs` のコメント（`//`・`///`・`/* */`）の中にだけ書かれ実体の無い参照は、警告（`MissingReferences`）ではなく
+  `IgnoredCommentReferences` へ入れ、ログは「参考:」の件数 1 行だけにした（`CSharpCommentSpans`・`AssetReferenceCandidate.OnlyInComments`。docs/packaging.md §2・§6）。
+  **収録は変えない**（コメントの中でも実在すれば従来どおり入る）。誤検出の 2 件は `GameData.cs` の `"assets://common/data/xxx.json"` と `SoundDef.cs` の
+  `"assets://common/audio/&lt;id&gt;.wav"`。再現テスト（`CommentReferenceTests.cs`）が直す前に落ち、Wake or Pay のドライランで警告 0 件・参考 2 件になった。
+  コメントの判定は Roslyn と 1,792 本・209,814 か所で突き合わせて食い違い 0。残した制限: `.cs` 以外（WGSL など）のコメントは見ない・`#if` で外れた部分はコード扱い。
 - [ ] **W2-6 の実機の確認（2026-09-30・Pixel 6a・Simeji）の結果と残り** — 2026-09-30（W2-6 の実機の確認で発見）。手順 1〜10 は期待どおり、手順 11（根の画面の欄で戻る 2 回）が NG
   （2 回目でアプリが背面へ）。原因は (a) 戻るのジェスチャーが奪った指（`Cancelled`）を欄の外のタップと数えていた、(b) `TextField.HandleBack` がキーボードを閉じた後の戻るを
   根でも後ろへ回していた。ログからもう 1 点、Simeji は `set_text_input_state` の返りを送らない（キーボードが隠れている間の差し替え）ので、500 ms 以内の最初の打鍵を
@@ -4055,8 +4108,9 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   ④Android では端末の言語が null で既定の言語から始まる、を確かめる。
 - [ ] **【低】Android の数・日付の書式は不変文化** — 2026-10-02。言語ごとの書式は表に書く運用（docs/localization.md §9）。言語どおりの書式を
   自動で出すなら ICU を APK に同梱する（`System.Globalization.AppLocalIcu`。APK が数 MB 増える）案。
-- [ ] **【低】テンプレートのカテゴリの表示名が「locale」のまま（editor 側）** — 2026-10-02。`editor/src/Templates/TemplateCategoryNames.cs` の表に
+- [x] **【低】テンプレートのカテゴリの表示名が「locale」のまま（editor 側）** — 2026-10-02。`editor/src/Templates/TemplateCategoryNames.cs` の表に
   `["locale"] = "多言語（文字列の表）"` を 1 行足す。取り込みそのものは今のままで動く（`LocalizationTests` が計画・コピー・読み込みまで確かめている）。
+  → **2026-10-03 済（L2-7）**: 表示名は「ローカライズ」（`["locale"] = "ローカライズ"`。並びは UI 部品の次）。
 - [ ] **【低】`index.json` だけを選んで取り込むと言語の表が付いてこない** — 2026-10-02。言語の表は参照（assets:// のパス）で辿れないので、
   取り込みでは `locale` のカテゴリごと選ぶ運用。直すなら `TemplateImporter` に「同じフォルダの言語の表を同伴する」規則を足す（editor 側）。
 - [ ] **【低】SEED.UI の部品の既定の文字列を L10n から引くか** — 2026-10-02。`DialogOptions.DefaultPositiveText`（"OK"）・`TimeWheel` の
@@ -4072,6 +4126,30 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   `zh-CN` → `zh-Hans` のような書記体系の対応は無い（一覧に `zh-CN` か `zh` を書く）。更新の印は秒の単位なので同じ秒の 2 回目の保存は拾わない。
 - [ ] **【参考】§7.21（Localization）も AI 補完に届かない** — 2026-10-02。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」
   の範囲（`ScriptApiReference.MaxChars = 12000` に対し、Compact の後は約 203,000 字。2026-10-02 に数えた）。
+- [ ] **【中】文字列表（ローカライズ）パネルの GUI での確かめ（未検証）** — 2026-10-03（L2-7）。確かめたのはビルド・モデルの単体テスト
+  （`editor/tests/LocalizationPanelTests` 47 件）・オフスクリーン描画（`LocalizationPanelPreviewProbe` の PNG 5 枚と表明）だけ。エディタを起動して
+  ①「表示 → パネル → 文字列表」とレイアウトの保存・復元（旧 layout.xml に無いときの補完）②升目の編集（ダブルクリック / F2 / 文字の入力・Enter・Escape・
+  Tab）と保存・Ctrl+S（シーンが保存されないこと）③プロジェクトパネルで `assets/locale/en.json` をダブルクリック ④テキストエディタで JSON を書き換えて
+  黙って読み直す／未保存のときは帯 ⑤終了時の確認 ⑥「見本から作る」・言語の追加/外す/既定/fallback（列の見出しの右クリック）⑦浮かせたパネルの
+  スクロールバーの色（MainWindow の暗いスクロールバーの書式が浮いた窓に届くか）、を見る。docs/localization.md §15。
+- [ ] **【低】文字列表のパネルに元に戻す（Undo）が無い** — 2026-10-03（L2-7）。「読み直す」で保存した状態へ戻るだけ。モデル（`LocaleTableModel`）の
+  書き換えは文書（`LocaleJsonDocument`）の項目の並びを替えるだけなので、書き換えの前の文書の写しを積めば作れる。
+- [ ] **【低】文字列表のパネルの保存で JSON のコメント（`//` `/* */`）が消える** — 2026-10-03（L2-7）。読み込みは `LocaleJson.ReadOptions`
+  （コメントを許す）だが、項目の並びにはコメントが残らない。`\u3042` のようなエスケープも文字に戻る・同じ鍵が 2 つある JSON は後の値の 1 つになる。
+  変わったファイルだけを書くので、開いて保存しただけでは消えない。説明は `_` の鍵（`_about`）で書く運用（docs/localization.md §15.7）。
+- [ ] **【低】文字列表のパネルで書けないもの** — 2026-10-03（L2-7）。説明（`_` の鍵）の編集・言語の culture の編集・升目での改行の入力
+  （今は Enter が確定）・キーの並べ替え・一括の検索置換・CSV などの入出力（翻訳者とのやり取り）・ほかの言語の文の写し、は無い（テキストエディタで直す）。
+- [ ] **【低】対になっていないサロゲートのエスケープ（`"\ud800"`）を含む言語の表で、実行中の読み込みが例外を出す（scripting 側）** — 2026-10-03（L2-7 で発見）。
+  `LocaleTable.Parse`・`LocaleIndex.Parse` は `JsonException` しか捕まえないが、`JsonDocument.Parse` はこの JSON で `ArgumentException`
+  （"Cannot transcode invalid UTF-16 string to UTF-8 JSON text."）を投げる（小さなコンソールで確かめた）。「例外を投げない」約束が破れ、
+  `L10n` の読み込みが落ちる。直すなら両方の catch に `ArgumentException` を足す（scripting/src/Api/Localization/Model/）。エディタ側は
+  `editor/src/Localization/Model/LocaleSafeParse.cs` で受け止めて、その表を読み取り専用にしている（LocalizationPanelTests で確かめた）。
+- [ ] **【低】アイコン＋文字のボタンは無効のとき減光しない（エディタ全体の既存の不具合）** — 2026-10-03（L2-7 のオフスクリーン描画で発見）。
+  共通書式のテンプレート（`Theme/SeedButtonStyles.xaml`）は状態の文字色を ContentPresenter の `TextElement.Foreground` に当てるが、
+  ボタンの中身に置いた要素（`AppIcon.WithText` の StackPanel や XAML の StackPanel）は論理の親＝ボタンから文字色を継ぐので届かない
+  （無効のボタンが押せる見た目のまま）。文字列表のパネルは中身の TextBlock・AppIcon の Foreground を ContentPresenter の文字色へ結び付けて
+  回避した（`LocalizationPanel.xaml` の `L10n.ButtonLabel`・`L10n.ButtonIcon`）。直すなら共通書式側で同じ結び付けを持つ部品（または
+  `AppIcon.WithText` が結び付ける）にして、ほかのパネルも揃える。
 - [ ] **【中・アプリ側】Wake or Pay の `StringTable` を L10n へ移す** — 2026-10-02。データの形（入れ子・`_` の説明・`{名前}`・`{{ }}`）は同じなので、
   `assets/common/data/strings.ja.json` → `assets/locale/ja.json` と `index.json`、`Strings.Get/Format` → `L10n.Get` の置き換えで移せる
   （手順は docs/localization.md §11。欠けの印は `⟦key⟧` → `[key]`）。W3 のアプリ側の作業。
