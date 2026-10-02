@@ -330,6 +330,9 @@ public static class Program
         // ── 2026-10-03 の手直し（lane3）: スライダの刻みの点・不定の進捗が切り抜きの外で回らない判定 ──
         SliderSpinnerTests.Register(h, theme);
 
+        // ── 2026-10-03（lane3。L3-6）: 方向キー・パッドのフォーカスの移動（最寄りの選び方・連続移動・範囲の絞り込み・枠の置き場）──
+        KeyNavigationTests.Register(h, theme);
+
         return h.Run();
     }
 }

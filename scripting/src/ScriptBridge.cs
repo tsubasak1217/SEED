@@ -491,6 +491,8 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 方向キー・パッドの移動（2026-10-03）: 今のフォーカス・足した部品とアダプタの作り方（旧アセンブリの型を握りうる）を捨てる。
+            SEED.UI.UiNavigation.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
             // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。
@@ -534,6 +536,8 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 方向キー・パッドの移動（2026-10-03）: 今のフォーカス・足した部品とアダプタの作り方（旧アセンブリの型を握りうる）を捨てる。
+            SEED.UI.UiNavigation.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
             // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。
@@ -577,6 +581,8 @@ public static unsafe class ScriptBridge
             SEED.UI.UiTheme.ResetForReload();
             // 戻るの段（W2 の手直し 3b）: 受ける層の有無を次のフレームで送り直し、予測型の戻るのプレビューを捨てる。
             SEED.UI.BackDispatcher.ResetForReload();
+            // 方向キー・パッドの移動（2026-10-03）: 今のフォーカス・足した部品とアダプタの作り方（旧アセンブリの型を握りうる）を捨てる。
+            SEED.UI.UiNavigation.ResetForReload();
             // 多言語（SEED.Localization）: 表と置き場を捨て、次に使われたときに読み直す（書き換えたデータファイルもここで拾う）。
             SEED.Localization.L10n.ResetForReload();
             // 結び付け（SEED.Binding）: フレームの区切りを待っている仕事（旧アセンブリのデリゲートを握る）を捨てる。

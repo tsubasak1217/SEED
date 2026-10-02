@@ -360,9 +360,13 @@ public sealed class TimeWheel : UiWidget
     private bool AnyColumnTouched()
         => (_hour?.IsUserInteracting ?? false) || (_minute?.IsUserInteracting ?? false) || (_meridiem?.IsUserInteracting ?? false);
 
-    /// <summary>キーボードの左右の矢印: 相手のホイールがこの部品の列なら、隣の列へ移す。</summary>
+    /// <summary>
+    /// キーボードの左右の矢印: 相手のホイールがこの部品の列なら、隣の列へ移す。
+    /// シーンで UiNavigator が方向キーを読んでいる間は読まない（列の間は UiNavigation の左右の移動で移る＝二重に移らない。2026-10-03）。
+    /// </summary>
     private void HandleFocusKeys()
     {
+        if (UiNavigation.DrivesKeys) return;
         var focused = WheelFocus.Current;
         if (focused is null || !IsEnabled) return;
         int delta = 0;

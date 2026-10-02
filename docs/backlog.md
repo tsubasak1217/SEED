@@ -4146,3 +4146,31 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   ため触っていない。`GetScript` は OnStart 前のものも返すので、置き換えるときは「OnStart 済み（部品の準備ができている）」を前提にしている所に注意する。
 - [ ] **【参考】§7「スクリプトを引く」も AI 補完に届かない** — 2026-10-03。既存の「AI 補完へ届くスクリプト API の文書が §2 の途中で切れている」の範囲
   （`ScriptApiReference.MaxChars = 12000`）。
+
+## 方向キー・パッドの移動（UiNavigator・UiNavigation）— 2026-10-03 実装時の残件（L3-6。正典: docs/ui_navigation.md §7.2）
+
+- [ ] **【中】Play・実機での確かめ（未検証）** — 2026-10-03。確かめたのは C# のビルドと純粋な計算の単体テスト（`editor/tests/UiComponentsTests` の
+  `KeyNavigationTests.cs` 19 件: 最寄りの選び方・Wrap・連続移動・同時押しとスティック・入力の扱い・範囲の絞り込みと覚え・枠の置き場）まで。
+  エンジンの上では動かしていない。①`UiKeyNavigationDemo.cs` の格子で矢印・Enter・Space が効き、端で止まる ②枠が部品にぴったり重なる
+  （親の座標の写し・`CanvasLayoutItem.Translate` が ignore_layout のノードに効くか・枠の Sprite が指の当たりを取らないか）③マウスで押すと枠が隠れ、
+  次の矢印は枠を出すだけ ④ダイアログを開くと中の最初のボタンへ移り、閉じると開いたボタンへ戻る ⑤画面を積む・下ろす・タブの切り替えで覚えへ戻る
+  ⑥一覧（ListView）を下まで送れる（窓の外の行へ移ってスクロール）⑦入力欄は Enter で入力を始め、Esc で外れ、確定の Enter で決定が二重に走らない
+  ⑧ホイール・時刻ホイールが二重に動かない、をエディタの Play で確かめる。パッド（D-pad・South／East・左スティックの Y の符号〈gilrs の上 = 正は記憶による〉）は
+  実機のパッドで確かめる。
+- [ ] **【中】テンプレートのサムネイル** — 2026-10-03。`template_actors.json` の `prefabs/ui_navigator.actor`（方向キー・パッドの操作）と
+  `prefabs/focus_ring.actor`（フォーカスの枠）の `thumbnail` は空（撮っていない）。枠の見本の撮り方（ボタンに枠を重ねた絵）を `thumbnail_sample` で決めて撮り直す。
+- [ ] **【中】Esc が画面の組み立ての部品の無いシーンでも戻るの段へ届く** — 2026-10-03。UiNavigator はキャンセル（Escape）を `BackDispatcher.PollBackKey` へ回すので、
+  ScreenStack・ModalHost の無いゲームのシーンでも戻るの段が動き、どの層も受けなければ `App.MoveTaskToBack()`（Android では背面へ。PC はログだけ）。
+  ゲームが自分で Esc を読むなら `BackDispatcher.AddLayer` で受けるか `UiNavigationOptions.CancelDispatchesBack = false`。既定を false にするか、
+  「戻るの段に層が 1 つも無ければ背面へ回さない」にするかは使い方を見て決める。
+- [ ] **【低】InputMap のアクションの有無を問えない** — 2026-10-03。`InputMap` は知らない名前を false で返すだけ（`action_map.rs` の `eval_action`）なので、
+  `InputSource = Auto` は「InputMap コンポーネントがあるか」で決めている（アクションごとに素の入力へ落とせない）。`ScriptHost` に「アクションがあるか」の問い合わせを足せば
+  アクションごとに選べる（L1 側）。ゲームパッドの素の入力（`SEED.Input` にパッドの口が無い）も同じく L1 側。
+- [ ] **【低】枠が 1 フレーム遅れて付いてくる・跳ぶ** — 2026-10-03。矩形は前のフレームの描画のレイアウトなので、スクロール・出入りの動きの間は 1 フレーム遅れる。
+  移るときは動かずに跳ぶ（`motion.short` で滑らせるなら FocusRing に UiTween を足す）。
+- [ ] **【低】候補を集めるのは押すたびに登録簿の全部** — 2026-10-03。部品が数百あると 1 回の押下で数千の FFI（範囲と見え方の祖先のたどり）になる見込み（未計測）。
+  重ければ範囲ごとの候補の写しを UiRegistry.Version と範囲の替わりで作り直す。
+- [ ] **【低】入れ子の部品と縦のラジオ** — 2026-10-03。行（ListView の行）の中のトグルへは行から右で入れない（起点が行の右の辺）。縦に並べたラジオも左右で選び、
+  上下は外へ移る（指示どおり）。Unity の Explicit のような「この向きはこの部品へ」の上書き（IUiNavigable に向きごとの相手）や、グループの並びの向きで軸を決める案は未実装。
+- [ ] **【低】`UiNavigationDemo.cs` の名前** — 2026-10-03。指示の見本の名前 `templates/ui/scripts/UiNavigationDemo.cs` は画面の組み立ての見本（W2-7）が既に使っているので、
+  `UiKeyNavigationDemo.cs` にした。見本のシーン（`ui_key_navigation.scene`）は作っていない（画面いっぱいの Canvas に付ければ子を作る）。

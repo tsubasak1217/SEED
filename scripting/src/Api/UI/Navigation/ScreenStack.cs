@@ -265,7 +265,7 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         {
             UiFocus.BringToFront(top.Scope);
             NavigatorRegistry.BringNestedToFront(top.Frame);
-            if (top.Entered) top.Screen?.OnScreenShown();
+            if (top.Entered) top.Screen?.NotifyShown();
         }
         else
         {
@@ -506,7 +506,7 @@ public sealed partial class ScreenStack : UiWidget, INavigator
         screen.Enter(instance.Entry.Args);
         // 既に落ち着いていて上の画面で、スタックが見えている（選んでいないタブではない）なら、見えたことも知らせる
         if (_current is null && _runs.Count == 0 && _model.Top?.Id == instance.Entry.Id && NavigatorRegistry.IsActiveNode(Owner))
-            screen.OnScreenShown();
+            screen.NotifyShown();
     }
 
     /// <summary>枠の背景（不透明な画面は背景の色・透ける画面は透明）と幕の色を当てる。</summary>
@@ -670,7 +670,7 @@ public sealed partial class ScreenStack : UiWidget, INavigator
                 NavigatorRegistry.BringNestedToFront(top.Frame);
             }
             else UiFocus.SendToBack(top.Scope);
-            if (active && top.Entered) top.Screen?.OnScreenShown();
+            if (active && top.Entered) top.Screen?.NotifyShown();
         }
         Debug.Log($"{LogPrefix} {gameObject.Name} settled depth={_model.Count} top={_model.Top?.ToString() ?? "-"}");
         Redraw.Request();

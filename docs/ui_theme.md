@@ -275,6 +275,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `color.scrim` | 色 | #000000 | 〃 | Dialog・BottomSheet・TopSheet（幕） |
 | `color.inverse_surface` | 色 | #ECE6F5 | #322F3A | Toast（面）・LineChart・BarChart（吹き出しの面） |
 | `color.on_inverse_surface` | 色 | #1E1B26 | #F4EFFA | Toast（文字・図形のアイコンの既定の色）・LineChart・BarChart（吹き出しの文字） |
+| `color.focus_ring` | 色 | #CBBEFF | #4A2FD6 | UiNavigator（方向キー・パッドのフォーカスの枠の線） |
 | `color.chart_series_1` | 色 | #7C5CFF | #6C4BFF | LineChart・BarChart（系列 1） |
 | `color.chart_series_2` | 色 | #FF5252 | #E53935 | LineChart・BarChart（系列 2） |
 | `color.chart_series_3` | 色 | #4DD0E1 | #00838F | LineChart・BarChart（系列 3） |
@@ -299,6 +300,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `radius.toast` | 数 | 8 | 〃 | Toast |
 | `radius.popup` | 数 | 28 | 〃 | Popup（札） |
 | `radius.tab_indicator` | 数 | 16 | 〃 | TabBar（選択の印） |
+| `radius.focus_ring` | 数 | 4 | 〃 | UiNavigator（フォーカスの枠の角丸。角丸でない部品のとき） |
 | `radius.chart_bar` | 数 | 4 | 〃 | BarChart（棒の先） |
 | `radius.chart_tooltip` | 数 | 8 | 〃 | LineChart・BarChart（吹き出し） |
 | `space.xs` | 数 | 4 | 〃 | （部品は読まない。プレハブ・画面の寸法の目安） |
@@ -348,6 +350,8 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `size.toast_height` | 数 | 48 | 〃 | Toast（高さ） |
 | `size.drag_dismiss` | 数 | 96 | 〃 | Toast・TopSheet（引いて閉じる距離） |
 | `size.back_preview_shift` | 数 | 8 | 〃 | BackDispatcher（予測型の戻るのプレビューで画面をずらす量） |
+| `size.focus_ring_width` | 数 | 3 | 〃 | UiNavigator（フォーカスの枠の線の太さ） |
+| `size.focus_ring_gap` | 数 | 2 | 〃 | UiNavigator（フォーカスの枠の線と部品の辺の間） |
 | `size.chart_line` | 数 | 2 | 〃 | LineChart（線の太さ） |
 | `size.chart_dot` | 数 | 2.5 | 〃 | LineChart（点の半径） |
 | `size.chart_dot_selected` | 数 | 5 | 〃 | LineChart（選んだ点の半径） |
@@ -446,6 +450,7 @@ SEED.Platform.PlatformDiagnostics.SimulateUiMode(SystemUiMode.Light);   // PC �
 | `layer.sheet` | 数 | 2000000 | 〃 | ModalHost（下からのシートの帯） |
 | `layer.dialog` | 数 | 3000000 | 〃 | ModalHost（ダイアログの帯） |
 | `layer.toast` | 数 | 4000000 | 〃 | ToastHost（トーストの帯） |
+| `layer.focus_ring` | 数 | 5000000 | 〃 | UiNavigator（フォーカスの枠。いちばん手前） |
 <!-- token-table:end -->
 
 値の出典: 色は Wake or Pay の既定のテーマ midnight（seedColor #6C4BFF・dark）から作った暗い配色（W2-4）と、同じ種の色の明るい配色（W2-9。

@@ -96,6 +96,11 @@
     <Compile Include="..\..\..\scripting\src\Api\UI\Navigation\Model\*.cs">
       <Link>Linked\Navigation\%(Filename)%(Extension)</Link>
     </Compile>
+    <!-- 2026-10-03（lane3。L3-6）: 方向キー・パッドのフォーカスの移動の純粋な計算（向き・最寄りの選び方・連続移動の時計・同時押しとスティック・
+         入力の扱い・範囲の絞り込みと覚え・枠の置き場。KeyNavigationTests.cs） -->
+    <Compile Include="..\..\..\scripting\src\Api\UI\Navigation\KeyNav\Model\*.cs">
+      <Link>Linked\KeyNav\%(Filename)%(Extension)</Link>
+    </Compile>
     <!-- 3b: プレビューの移り変わりが読む手ぶりの列挙（SEED.Platform の値だけの型。3a） -->
     <Compile Include="..\..\..\scripting\src\Api\Platform\App\BackEdge.cs">
       <Link>Linked\Platform\BackEdge.cs</Link>

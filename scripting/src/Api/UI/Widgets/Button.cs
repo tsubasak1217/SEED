@@ -157,7 +157,12 @@ public sealed class Button : UiWidget
     public override void OnGesturePressUp(GestureEvent e) => EndPress();
 
     /// <inheritdoc />
-    public override void OnGestureTap(GestureEvent e)
+    public override void OnGestureTap(GestureEvent e) => PerformClick();
+
+    /// <summary>
+    /// 押す（指のタップと同じ: 押せるなら触感と Clicked。2026-10-03。方向キー・パッドの決定〈UiNavigation の ButtonNav〉もここを通る）。
+    /// </summary>
+    internal void PerformClick()
     {
         if (!IsEnabled) return;
         if (Haptic) SEED.Platform.Haptics.Tap();

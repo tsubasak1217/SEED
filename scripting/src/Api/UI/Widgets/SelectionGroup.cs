@@ -86,6 +86,21 @@ public abstract class SelectionGroup : UiWidget
         if (Model.Tap(i)) OnSelectionChanged();
     }
 
+    /// <summary>
+    /// 方向キーで選択を左右へ 1 つ動かす（2026-10-03。UiNavigation の SelectionGroupNav から。1 つ選ぶ選び方のセグメント・ラジオ用）。
+    /// 選べない項目は飛ばし、端では動かない。指のタップと同じく SelectionChanged を知らせる。動いたら true。
+    /// </summary>
+    /// <param name="delta">−1 = 前（左）・+1 = 後ろ（右）。</param>
+    internal bool NavStep(int delta)
+    {
+        if (!IsEnabled || _items.Count == 0) return false;
+        SyncDisabled();
+        int next = Model.NextSelectable(Model.SelectedIndex, delta);
+        if (next < 0) return false;
+        if (Model.Tap(next)) OnSelectionChanged();
+        return true;
+    }
+
     /// <summary>項目の「選べない」を選択の状態へ写す（項目の Disabled・Interactable はスクリプトから変わり得る）。</summary>
     private void SyncDisabled()
     {

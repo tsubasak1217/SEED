@@ -130,6 +130,23 @@ public sealed class SelectionModel
         return true;
     }
 
+    /// <summary>
+    /// from から delta の向き（正 = 後ろ・負 = 前）へ進んで最初に見つかる選べる項目（2026-10-03。方向キーでセグメント・ラジオの
+    /// 選択を左右へ動かす。UiNavigation）。from が −1（何も選んでいない）なら、正の向きは先頭から・負の向きは末尾から探す。
+    /// 端を越えたら回らずに −1。
+    /// </summary>
+    /// <param name="from">今の項目（−1 = 無し）。</param>
+    /// <param name="delta">向き（0 なら −1）。</param>
+    public int NextSelectable(int from, int delta)
+    {
+        if (delta == 0 || _selected.Count == 0) return -1;
+        int step = delta > 0 ? 1 : -1;
+        int i = from < 0 || from >= _selected.Count ? (step > 0 ? 0 : _selected.Count - 1) : from + step;
+        for (; i >= 0 && i < _selected.Count; i += step)
+            if (!IsDisabled(i)) return i;
+        return -1;
+    }
+
     /// <summary>項目 i だけを選ぶ。</summary>
     private void SelectOnly(int i)
     {

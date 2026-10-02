@@ -89,7 +89,12 @@ public sealed class DialogItem : UiWidget
     public override void OnGesturePressUp(GestureEvent e) => EndPress();
 
     /// <inheritdoc />
-    public override void OnGestureTap(GestureEvent e)
+    public override void OnGestureTap(GestureEvent e) => PerformTap();
+
+    /// <summary>
+    /// 選ぶ（指のタップと同じ: 選べるなら触感と Tapped。2026-10-03。方向キー・パッドの決定〈UiNavigation の DialogItemNav〉もここを通る）。
+    /// </summary>
+    internal void PerformTap()
     {
         if (!IsEnabled) return;
         if (Haptic) SEED.Platform.Haptics.Tap();

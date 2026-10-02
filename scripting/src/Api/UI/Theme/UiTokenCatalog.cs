@@ -73,6 +73,7 @@ public static class UiTokenCatalog
         new(NavTokens.ColorScrim, UiTokenKind.Color, "Dialog・BottomSheet・TopSheet（幕）"),
         new(NavTokens.ColorInverseSurface, UiTokenKind.Color, "Toast（面）・" + Charts + "（吹き出しの面）"),
         new(NavTokens.ColorOnInverseSurface, UiTokenKind.Color, "Toast（文字・図形のアイコンの既定の色）・" + Charts + "（吹き出しの文字）"),
+        new(NavTokens.ColorFocusRing, UiTokenKind.Color, "UiNavigator（方向キー・パッドのフォーカスの枠の線）"),
         new(ChartTokens.ColorSeries1, UiTokenKind.Color, Charts + "（系列 1）"),
         new(ChartTokens.ColorSeries2, UiTokenKind.Color, Charts + "（系列 2）"),
         new(ChartTokens.ColorSeries3, UiTokenKind.Color, Charts + "（系列 3）"),
@@ -99,6 +100,7 @@ public static class UiTokenCatalog
         new(NavTokens.RadiusToast, UiTokenKind.Number, "Toast"),
         new(NavTokens.RadiusPopup, UiTokenKind.Number, "Popup（札）"),
         new(NavTokens.RadiusTabIndicator, UiTokenKind.Number, "TabBar（選択の印）"),
+        new(NavTokens.RadiusFocusRing, UiTokenKind.Number, "UiNavigator（フォーカスの枠の角丸。角丸でない部品のとき）"),
         new(ChartTokens.RadiusBar, UiTokenKind.Number, "BarChart（棒の先）"),
         new(ChartTokens.RadiusTooltip, UiTokenKind.Number, Charts + "（吹き出し）"),
 
@@ -152,6 +154,8 @@ public static class UiTokenCatalog
         new(NavTokens.SizeToastHeight, UiTokenKind.Number, "Toast（高さ）"),
         new(NavTokens.SizeDragDismiss, UiTokenKind.Number, "Toast・TopSheet（引いて閉じる距離）"),
         new(NavTokens.SizeBackPreviewShift, UiTokenKind.Number, "BackDispatcher（予測型の戻るのプレビューで画面をずらす量）"),
+        new(NavTokens.SizeFocusRingWidth, UiTokenKind.Number, "UiNavigator（フォーカスの枠の線の太さ）"),
+        new(NavTokens.SizeFocusRingGap, UiTokenKind.Number, "UiNavigator（フォーカスの枠の線と部品の辺の間）"),
         new(ChartTokens.SizeLine, UiTokenKind.Number, "LineChart（線の太さ）"),
         new(ChartTokens.SizeDot, UiTokenKind.Number, "LineChart（点の半径）"),
         new(ChartTokens.SizeDotSelected, UiTokenKind.Number, "LineChart（選んだ点の半径）"),
@@ -266,6 +270,7 @@ public static class UiTokenCatalog
         new(NavTokens.LayerSheet, UiTokenKind.Number, "ModalHost（下からのシートの帯）"),
         new(NavTokens.LayerDialog, UiTokenKind.Number, "ModalHost（ダイアログの帯）"),
         new(NavTokens.LayerToast, UiTokenKind.Number, "ToastHost（トーストの帯）"),
+        new(NavTokens.LayerFocusRing, UiTokenKind.Number, "UiNavigator（フォーカスの枠。いちばん手前）"),
     };
 
     /// <summary>名前 → 表の行。</summary>

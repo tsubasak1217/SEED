@@ -315,6 +315,15 @@
       "requires": ["prefabs/toast.actor"]
     },
     {
+      "path": "prefabs/ui_navigator.actor",
+      "name": "方向キー・パッドの操作",
+      "description": "方向キー・ゲームパッドで UI 部品のフォーカスを移し、決定で押し、キャンセルで戻る仕組み（SEED.UI.UiNavigator。アプリの根に 1 つ）。フォーカスの枠 ui/prefabs/focus_ring.actor がコピーされる。パッドは同じアクターに InputMap（templates/input/uiNavigation.inputmap）を付ける。",
+      "category": "UI/ナビゲーション",
+      "tags": ["navigation", "keyboard", "gamepad", "focus", "d-pad", "方向キー", "キーボード", "ゲームパッド", "パッド", "フォーカス", "十字キー"],
+      "thumbnail": "",
+      "requires": ["prefabs/focus_ring.actor"]
+    },
+    {
       "path": "prefabs/dialog.actor",
       "name": "ダイアログ（見た目を作る用）",
       "description": "ダイアログの面そのもの（SEED.UI.Dialog。確認・選択肢の一覧・進捗の札）。普段は受け皿が実行中に作るので、シーンに置いたままだと Play で消える。見た目を調整したらアクタファイル化し、ModalHost の DialogPrefab に指定する。",
@@ -405,6 +414,14 @@
         "patch": {"": {"ToastHost": {"fields": {"BottomOffset": "140"}}}},
         "script": {"Action": "toast", "Message": "通信に失敗しました"}
       }
+    },
+    {
+      "path": "prefabs/focus_ring.actor",
+      "name": "フォーカスの枠（見た目を作る用）",
+      "description": "方向キー・パッドで選んでいる部品に重ねる枠（縁だけの角丸の Sprite）。UiNavigator が実行中に 1 つ作る部品。見た目を作ったらアクタファイル化して UiNavigator の設定の「枠のプレハブ」に指定する（色・太さ・間・角丸はテーマの color.focus_ring・size.focus_ring_width・size.focus_ring_gap・radius.focus_ring が上書きする）。",
+      "category": "UI/重ねる面の見た目",
+      "tags": ["focus ring", "focus", "outline", "フォーカス", "枠", "見た目"],
+      "thumbnail": ""
     },
     {
       "path": "prefabs/line_chart.actor",

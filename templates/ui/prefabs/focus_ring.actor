@@ -1,0 +1,73 @@
+{
+ "name": "FocusRing",
+ "actor_kind": "Actor2D",
+ "canvas_transform": {
+  "position": [
+   0.0,
+   0.0
+  ],
+  "rotation": 0.0,
+  "scale": [
+   1.0,
+   1.0
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "anchor": [
+   0.0,
+   0.0
+  ],
+  "scale_transform": true,
+  "scale_size": true,
+  "keep_aspect_ratio": false,
+  "aspect_ratio_axis": "width"
+ },
+ "components": [
+  {
+   "name": "Sprite",
+   "component": {
+    "type": "SpriteComponent",
+    "data": {
+     "texture_path": "",
+     "color": [
+      0.597202,
+      0.514918,
+      1.0,
+      0.0
+     ],
+     "width": 126.0,
+     "height": 54.0,
+     "layer": 0,
+     "shape": {
+      "kind": "rect",
+      "corner_radii": [
+       17.0,
+       17.0,
+       17.0,
+       17.0
+      ],
+      "border_width": 3.0,
+      "border_color": [
+       0.597202,
+       0.514918,
+       1.0,
+       1.0
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "LayoutItem",
+   "component": {
+    "type": "CanvasLayoutItemComponent",
+    "data": {
+     "ignore_layout": true
+    }
+   }
+  }
+ ],
+ "children": []
+}

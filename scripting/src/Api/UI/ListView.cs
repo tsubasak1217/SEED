@@ -119,6 +119,17 @@ public sealed class ListView
         Bind = bind;
         _count = Math.Max(0, count);
         _rowExtent = rowExtent;
+        // 方向キー・パッドの移動（UiNavigation）の候補に行を出す（弱く登録。2026-10-03。L3-6）
+        ListViewNavSource.Register(this);
+    }
+
+    /// <summary>
+    /// 見せている行（番号が付いて表示している行の根。2026-10-03。方向キーの移動の候補を集める ListViewNavSource から）。
+    /// </summary>
+    internal IEnumerable<GameObject> ShownRows()
+    {
+        foreach (var slot in _slots)
+            if (slot.Shown) yield return slot.Row;
     }
 
     /// <summary>スクロールの軸（窓の CanvasScroll の向き。横なら Horizontal、それ以外は Vertical）。</summary>

@@ -21,6 +21,11 @@ public static class NavTokens
     public const string ColorInverseSurface = "color.inverse_surface";
     /// <summary>トーストの文字。</summary>
     public const string ColorOnInverseSurface = "color.on_inverse_surface";
+    /// <summary>
+    /// 方向キー・パッドのフォーカスの枠（focus ring。2026-10-03。L3-6。docs/ui_navigation.md §7.2）。背景・面のどちらの上でも
+    /// 見分けられる明るさ（暗い方は明るい紫、明るい方は濃い紫。主の色と同じ色相）。
+    /// </summary>
+    public const string ColorFocusRing = "color.focus_ring";
 
     // ── 角丸 ────────────────────────────────────────────────
     /// <summary>ダイアログの札。</summary>
@@ -33,10 +38,16 @@ public static class NavTokens
     public const string RadiusPopup = "radius.popup";
     /// <summary>タブの選択の印（丸い帯）。</summary>
     public const string RadiusTabIndicator = "radius.tab_indicator";
+    /// <summary>フォーカスの枠の角丸（部品が角丸でないとき。角丸の部品には部品の角丸 + 間 + 太さの同心の角丸を使う。2026-10-03）。</summary>
+    public const string RadiusFocusRing = "radius.focus_ring";
 
     // ── 大きさ（キャンバスの単位＝dp）──────────────────────────
     /// <summary>下のタブの高さ（安全領域の分は別に足す）。</summary>
     public const string SizeTabBar = "size.tab_bar";
+    /// <summary>フォーカスの枠の線の太さ（2026-10-03。Material 3 の focus indicator の 3 dp。記憶による）。</summary>
+    public const string SizeFocusRingWidth = "size.focus_ring_width";
+    /// <summary>フォーカスの枠の線の内側と部品の辺の間（2026-10-03。Material 3 の focus indicator の外側の 2 dp。記憶による）。</summary>
+    public const string SizeFocusRingGap = "size.focus_ring_gap";
     /// <summary>タブの選択の印の幅。</summary>
     public const string SizeTabIndicatorWidth = "size.tab_indicator_width";
     /// <summary>タブの選択の印の高さ。</summary>
@@ -176,13 +187,16 @@ public static class NavTokens
     public const string LayerSheet = "layer.sheet";
     /// <summary>ダイアログの帯。</summary>
     public const string LayerDialog = "layer.dialog";
-    /// <summary>トーストの帯（いちばん手前）。</summary>
+    /// <summary>トーストの帯。</summary>
     public const string LayerToast = "layer.toast";
+    /// <summary>フォーカスの枠（いちばん手前。トーストより上。2026-10-03）。</summary>
+    public const string LayerFocusRing = "layer.focus_ring";
 
     /// <summary>数のトークン（既定のテーマが持つかの検査用）。</summary>
     private static readonly string[] Numbers =
     {
-        RadiusDialog, RadiusSheet, RadiusToast, RadiusPopup, RadiusTabIndicator,
+        RadiusDialog, RadiusSheet, RadiusToast, RadiusPopup, RadiusTabIndicator, RadiusFocusRing,
+        SizeFocusRingWidth, SizeFocusRingGap,
         SizeTabBar, SizeTabIndicatorWidth, SizeTabIndicatorHeight, SizeDialogWidth, SizeDialogPadding, SizeDialogTitleGap, SizeDialogActionsGap,
         SizeDialogButtonHeight, SizeDialogMargin, SizeDialogActionsOverflowGap, SizeDialogItemHeight, SizeDialogItemsInset,
         SizePopupMargin, SizePopupMaxWidth, SizePopupPadding,
@@ -190,11 +204,11 @@ public static class NavTokens
         MotionPush, MotionCover, MotionFade, MotionOverlay, MotionDialog, MotionSheet, MotionToast, MotionToastShort, MotionToastLong,
         OpacityScrim, OpacityDialogScrim,
         RatioPushParallax, RatioDialogScaleFrom, RatioSheetMaxHeight, RatioPopupMaxHeight, RatioBackPreviewScale, SpeedFlingDismiss, CountToastVisible,
-        LayerStackStep, LayerModalStep, LayerOverlay, LayerSheet, LayerDialog, LayerToast,
+        LayerStackStep, LayerModalStep, LayerOverlay, LayerSheet, LayerDialog, LayerToast, LayerFocusRing,
     };
 
     /// <summary>色のトークン。</summary>
-    private static readonly string[] Colors = { ColorScrim, ColorInverseSurface, ColorOnInverseSurface };
+    private static readonly string[] Colors = { ColorScrim, ColorInverseSurface, ColorOnInverseSurface, ColorFocusRing };
 
     /// <summary>曲線のトークン（4 つの成分を持つ）。</summary>
     public static readonly string[] Curves =

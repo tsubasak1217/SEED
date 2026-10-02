@@ -45,6 +45,8 @@ public static class UiLayers
     public const int DefaultDialogBand = 3_000_000;
     /// <summary>テーマに無いときのトーストの帯。</summary>
     public const int DefaultToastBand = 4_000_000;
+    /// <summary>テーマに無いときのフォーカスの枠（方向キー・パッドの移動。2026-10-03。トーストより上＝いちばん手前）。</summary>
+    public const int DefaultFocusRingBand = 5_000_000;
     /// <summary>底上げの上限（CanvasLayoutItem.LayerBias が受ける範囲 = f32 で正確な整数）。</summary>
     public const int MaxBias = 16_777_216;
 
@@ -68,6 +70,10 @@ public static class UiLayers
 
     /// <summary>トーストの帯。</summary>
     public static int ToastBand(UiThemeData theme) => ToInt(theme.Number(NavTokens.LayerToast, DefaultToastBand), DefaultToastBand);
+
+    /// <summary>フォーカスの枠の底上げ（2026-10-03。layer.focus_ring）。</summary>
+    public static int FocusRingBand(UiThemeData theme)
+        => ToInt(theme.Number(NavTokens.LayerFocusRing, DefaultFocusRingBand), DefaultFocusRingBand);
 
     /// <summary>帯の中の j 番の底上げ（帯のノードからの相対。帯そのものは帯のノードが持つ）。</summary>
     public static int ModalEntryBias(int index, int step) => ScreenBias(index, step);

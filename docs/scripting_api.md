@@ -4483,7 +4483,7 @@ wheel.RowPrefab                        // string（行のプレハブ。子に L
 1 つのシーンに画面をプレハブとして出し入れするための部品です（正典は docs/ui_navigation.md）。見本は `templates/ui/scenes/ui_navigation.scene`
 （テンプレートライブラリの「UI 部品」から取り込むと `assets/ui/...`）。部品のプレハブ: `screen_stack.actor`・`screen_frame.actor`・`tab_host.actor`・
 `modal_host.actor`・`dialog.actor`・`dialog_item.actor`（選択肢の一覧の行。2026-10-02）・`bottom_sheet.actor`・`top_sheet.actor`・`popup.actor`（中央のポップアップ。2026-10-02）・
-`toast_host.actor`・`toast.actor`。
+`toast_host.actor`・`toast.actor`・`ui_navigator.actor` と `focus_ring.actor`（方向キー・パッドの移動。2026-10-03。見本 `templates/ui/scripts/UiKeyNavigationDemo.cs`）。
 2026-10-02 の拡充（危険のボタン・選択肢の一覧・ボタンの縦積み・進捗の札・長い本文のスクロール・アイコンつきのトースト）の見本は `templates/ui/scenes/ui_gallery.scene` の
 「画面の組み立て」の段の 2 行目のボタン。同日の画面の遷移・面の口（lane3: 作り置き `Prewarm`・渡された中身 `Push(GameObject)`・`ModalHost.CloseAll`・
 動きなしの開閉・覆いの高さいっぱい・任意の面のプレハブ `ShowPlane`・中央のポップアップ `Popup`・覆いを全画面の下に残す `ModalHost.Park`・
@@ -4650,7 +4650,43 @@ public class MyPanel : IBackPreviewTarget
 // ── フォーカス（キーボードで動かす相手と、画面ごとの範囲）──
 UiFocus.Request(item)  UiFocus.Release(item)  UiFocus.Current  UiFocus.TopScope  UiFocus.Changed
 public class MyField : UiWidget, IFocusable, IBackConsumer { … }   // FocusOwner・OnFocusChanged・HandleBack（W2-6 の入力欄の形）
+
+// ── 方向キー・パッドの移動（2026-10-03。L3-6。正典は docs/ui_navigation.md §7.2）──
+// シーン（アプリの根）に UiNavigator を 1 つ置く（templates/ui/prefabs/ui_navigator.actor。フォーカスの枠 focus_ring.actor を 1 つ作って重ねる）。
+// 矢印キー・D-pad・左スティックで部品を移り、Enter・Space・South で押し、Esc・East で戻るの段（BackDispatcher）へ。指・マウスで触ると枠は隠れる。
+// 入力: 同じアクターに InputMap があればアクション ui.up / ui.down / ui.left / ui.right / ui.submit / ui.cancel と ui.move（Axis2D・スティック）、
+//       無ければ素の入力（矢印・Enter／Space・Escape。パッドは InputMap でだけ読める → templates/input/uiNavigation.inputmap）
+var nav = gameObject.GetScript<UiNavigator>()!;
+nav.Options.InputSource = NavInputSource.Auto;    // Auto（InputMap があれば）・InputMap・Raw・Both
+nav.Options.Wrap = false;                         // 端で止まる（true = 反対側の端へ回る）
+nav.Options.CancelDispatchesBack = true;          // キャンセルを BackDispatcher へ（false = ゲームが自分で扱う）
+nav.Options.ScrollIntoView = true;                // スクロールの中の部品へ移ったら見える位置まで ScrollTo
+nav.Options.UpAction = "ui.up";                   // アクション名・FocusRingPrefab（枠のプレハブ。空 = 枠なし）も変えられる
+
+UiNavigation.Focus(buttonNode);                   // ノード（か祖先）の部品へフォーカスして枠を出す（Focus(node, showRing: false) で枠なし）
+UiNavigation.FocusFirstIn(screenRoot);            // 下の部品のうち読む順の最初へ（測れるまで数フレーム待つ）。FocusFirstIn(scope) も
+IUiNavigable? cur = UiNavigation.Current;         // 今のフォーカス（CurrentNode = そのノード）。UiNavigation.CurrentChanged += c => { };
+UiNavigation.Enabled = false;                     // ゲームの操作中は止める（枠も隠れる。ホイールは以前どおり自分で矢印キーを読む）
+UiNavigation.Move(FocusDirection.Down);           // スクリプトから移す（値の軸の向きなら値を増減）
+UiNavigation.Submit();                            // 今のフォーカスを押す（決定のキーと同じ）
+UiNavigation.Cancel();                            // = BackDispatcher.Dispatch()
+UiNavigation.Clear();  UiNavigation.IsRingVisible  UiNavigation.HasNavigator  UiNavigation.Candidates()  UiNavigation.Describe()
+public class MyScreen : UiScreen { }              // インスペクタの AutoFocusFirst = true で、上の画面になったら最初の部品へ
+
+// 部品ごとの振る舞い: Button・TabItem・DialogItem = 決定で押す / Toggle・Checkbox = 決定で切り替え / Slider = 左右で Step（連続なら範囲の 5%）/
+// NumberField = 左右で StepBy（子の −・＋ は移り先にしない）/ SegmentedControl・RadioGroup = 左右で選択 / ChipGroup = 札ごとに移り決定で選ぶ・外す /
+// TextField = 決定で入力を始める（入力の間は方向キーを読まない）/ WheelPicker（時刻ホイールの列も）= 上下で 1 つずつ / ListView の行 = 決定で行のタップ
+// 独自の部品: IUiNavigable（NavNode・CanvasRect〈画面の画素〉・IsNavigable・AdjustAxis・OnNavFocus・OnNavSubmit・OnNavAdjust(±1)）を実装して
+using var reg = UiNavigation.Register(myNavigable);            // 候補に足す（Dispose で外す）
+UiNavigation.RegisterAdapter<MyWidget>(w => new MyWidgetNav(w));   // UiWidget の派生の型ごとのアダプタ（null を返すと移り先にしない）
 ```
+
+**方向キー・パッドの移動の決まり（2026-10-03。正典は docs/ui_navigation.md §7.2）**: 移り先は Unity の Navigation = Automatic と同じ点数（今の矩形の押した向きの辺の中点から、
+候補の中心への内積 ÷ 距離²。内積が正の候補だけ。同点は上 → 左）で、候補はいちばん前のフォーカスの範囲（とそれを中に含む範囲。シェルの中のタブの画面からタブのバーへ移れる）の
+部品だけ（ダイアログが開いていれば下の画面へ移らない）。端では止まる（`Wrap` で反対側へ）。押し続けると 0.5 秒の後 0.1 秒ごとに続けて動く（スティックは 0.5 で倒した・
+0.3 未満で放した）。枠を隠している（指・マウスの後）ときの最初の 1 回は枠を出すだけ。ダイアログを閉じる・画面を下ろすと、その前に選んでいた部品へ戻る。
+**注意**: UiNavigator を置くと Esc（Android の戻る）は画面の組み立ての部品が無いシーンでも戻るの段へ届き、どの層も受けなければ `App.MoveTaskToBack()` になる
+（ポーズメニューなどは `BackDispatcher.AddLayer` で受けるか、`CancelDispatchesBack = false`）。
 
 **戻るの段の順**（`BackOrder`）: Focus（100。今のフォーカスが `IBackConsumer` なら。W2-6 の入力欄が IME を閉じる）→ Dialog（200）→ Sheet（300）→
 Overlay（400）→ Navigation（500。画面のスタック・タブを**内側から**: 上の画面の `IgnoreBack`・`OnBackPressed` → 1 つ下ろす → 最初のタブ以外なら最初のタブへ）→
