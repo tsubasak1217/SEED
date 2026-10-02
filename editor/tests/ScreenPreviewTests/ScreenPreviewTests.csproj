@@ -68,6 +68,10 @@
     <Compile Include="..\..\src\Preview\PreviewDeletionPlanner.cs">
       <Link>Linked\Preview\PreviewDeletionPlanner.cs</Link>
     </Compile>
+    <!-- AI ツール（MCP の seed_preview の host）の行の選択（2026-10-02） -->
+    <Compile Include="..\..\src\Preview\PreviewHostSlotSelector.cs">
+      <Link>Linked\Preview\PreviewHostSlotSelector.cs</Link>
+    </Compile>
     <!-- 仮想パスの変換（PrefabPreviewCatalog が使う。ProjectPanelLogicTests もリンクしている WPF 非依存のファイル） -->
     <Compile Include="..\..\src\Assets\AssetUriPath.cs">
       <Link>Linked\Assets\AssetUriPath.cs</Link>

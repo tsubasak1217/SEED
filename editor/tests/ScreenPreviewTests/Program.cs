@@ -26,6 +26,7 @@ public static class Program
         RecentTests.Register(harness);
         FlagsTests.Register(harness);
         DeletionPlannerTests.Register(harness);
+        HostSlotSelectorTests.Register(harness);
         return harness.Run();
     }
 }

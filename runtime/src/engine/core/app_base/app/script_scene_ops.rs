@@ -88,6 +88,22 @@ impl App {
                 ScriptSceneCommand::SetName { entity, name } => {
                     self.apply_script_set_name(entity, &name);
                 }
+                // ── 動的ノード API（script_node_ops.rs。発行順に当てるので、Create → AddComponent → SetSiblingIndex の順に積めばその順に効く）──
+                ScriptSceneCommand::CreateActor { entity, name, parent, is_2d } => {
+                    self.apply_script_create_actor(entity, &name, parent, is_2d);
+                }
+                ScriptSceneCommand::SetSiblingIndex { entity, index } => {
+                    self.apply_script_set_sibling_index(entity, index);
+                }
+                ScriptSceneCommand::AttachSlot { root, slot } => {
+                    self.apply_script_attach_slot(root, slot);
+                }
+                ScriptSceneCommand::RemoveSlot { root, slot_entity } => {
+                    self.apply_script_remove_slot(root, slot_entity);
+                }
+                ScriptSceneCommand::AddScript { root, type_name } => {
+                    self.apply_script_add_script(root, &type_name);
+                }
                 ScriptSceneCommand::CancelGestures { entity } => {
                     // 行とその子孫の押下・ドラッグを取り消す（イベントは次のフレームのジェスチャーの配達で届く。W2-3）
                     self.cancel_gestures_under(entity);

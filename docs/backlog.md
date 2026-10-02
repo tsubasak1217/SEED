@@ -207,6 +207,36 @@
 
 - [ ] **`seed_launch` が起動したエディタは MCP サーバー終了後も残る** — 2026-09-07。ジョブオブジェクトで括っていないため、`seed_shutdown` を忘れるとプロセスが残る。必要なら Job Object + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を検討。関連: `editor/SeedMcpServer/Launcher.cs`。
 
+## エディタ MCP の確かめ・計測ツール（2026-10-02 L2-4 実装時の残件）
+
+`seed_platform_sim` / `seed_gpu_mem_report` / `seed_preview` / `seed_template_actor` と `seed_launch(gpu_mem_log)` を足した（正典 docs/editor_mcp.md §4・§5.6・§7.2）。
+
+- [ ] **新ツールの実通信（MCP → エディタ → ランタイム）は未検証** — 2026-10-02。単体テスト（AiSafetyTests 44 件・ScreenPreviewTests 61 件・TemplateImportTests 50 件）と、MCP サーバーの実プロセスでの tools/list の形・未束縛での拒否までは確かめたが、`seed_launch` したヘッドレスエディタで 4 ツールを実際に呼ぶ往復はしていない（別レーンがランタイムを編集中で、このレーンでは cargo を走らせない方針だったため）。次にヘッドレスを動かすときに docs/editor_mcp.md §5.6 の A〜C を一度通すこと。特に (a) `PREVIEW_PREFAB` の応答の順（HIERARCHY → SELECTED → PREVIEW_ADDED）の後で `seed_hierarchy` が新しい木を返すか、(b) `template_actor_add` の `SCENE_MODIFIED` 待ち、(c) `SEED_GPU_MEM_LOG` が Play のランタイム（常駐 Play を含む）まで届くか（.NET の子プロセスへの受け継ぎは AiSafetyTests で実プロセスを起動して確かめ済み）。
+
+- [ ] **描画の構成（render profile）を単独で問い合わせる IPC が無い** — 2026-10-02。`App::render_profile_summary`（`runtime/src/engine/core/app_base/app/render_profile_ops.rs`）は GPU メモリの内訳の `context` にしか出ない。そのため `seed_state` に `render_profile` を足せなかった。今は `seed_launch(gpu_mem_log:true)` → `seed_gpu_mem_report` の要約の「文脈」か、起動ログ `[SEED RENDER PROFILE]`（`seed_log`）で見る。足すなら `GET_RENDER_PROFILE` → `RENDER_PROFILE:{json}`（name・止めた旗）と、エディタの `get_editor_state`（`EditorCommandExecutor.Visual.cs::ExecuteGetEditorState`）での最後の値のキャッシュ。エディタ側の `editor/src/ProjectSettings/RenderProfileCatalog.cs`（project_settings.json から決める）で代用もできるが、起動オプション `--render-profile=` を含まないのでランタイムの実効値と食い違いうる。
+
+- [ ] **MCP 化の候補: `PREFAB_LIVE_PATCH_PATH` / `PREFAB_WRITE_BACK`** — 2026-10-02。別レーンで作っている Play 中のプレハブの当て直し・書き戻しの IPC（応答 `PREFAB_LIVE_PATCH_DONE` / `_ERROR`・`PREFAB_WRITE_BACK_DONE` / `_ERROR`）は未合流のため、今回は触っていない。合流後にツール化を検討する（応答待ちは `MainWindow.AiHost.Tools.cs::AwaitRuntimeReplyAsync` に乗せられる。書き戻しはプレハブのファイルを書く変更系なので `AiOperationPolicy` では拒否側、`confirm` 必須も検討）。
+
+- [ ] **応答待ちに相関 ID が無い（とくにテンプレートアクタの追加）** — 2026-10-02。`PLATFORM_SIM` / `GPU_MEM_REPORT` / `PREVIEW_*` は応答に要求の ID を持たないので、同じ頭の応答を待つ命令が並行すると取り違えうる（MCP は 1 コールずつなので通常は起きない）。`ADD_TEMPLATE_ACTOR` は専用の応答が無く、`SCENE_MODIFIED`（ほかの編集でも届く）と `LOAD_ERROR:`（シーンの読み込みの失敗でも届く）を合図に代用している。利用者が同じエディタで同時に編集していると誤った成否を返しうる（ヘッドレスでは起きない）。直すならランタイムに `ADD_TEMPLATE_ACTOR_DONE:{wl},{root_dfs}` / `_ERROR:{理由}` のような専用の応答を足す（`runtime/.../app/template_actor_ops.rs`）。
+
+- [ ] **`seed_launch` で模擬の起動時の状態を渡せない** — 2026-10-02。権限の初期値・答え・OS の版（`SEED_PLATFORM_SIM_PERMISSIONS` / `SEED_PLATFORM_SIM_PERMISSION_ANSWER` / `SEED_PLATFORM_SIM_OS_VERSION`）や `SEED_SIM_WINDOW_SIZE` は環境変数でしか与えられず、MCP サーバーの環境に入れておく必要がある（エディタ → ランタイムへは受け継がれる）。任意の環境変数を渡せる引数は作らない（`SEED_RUNTIME_EXE` などで任意の exe を起動できてしまう）ので、足すなら名前の許可リスト付き（例 `sim_env:{…}`）で。関連: `editor/SeedMcpServer/Launcher.cs::BuildLaunchEnvironment`。
+
+- [ ] **Pause 中の `seed_platform_sim` / `seed_gpu_mem_report` は時間切れになるかもしれない（未確認）** — 2026-10-02。エディタの Pause（最小化の検知・`PAUSE_RENDER`）の間にランタイムが IPC を読み続けるかを確かめていない。読まないなら応答待ち（5 秒・10 秒）が時間切れになる（エラーの文には「Pause 中」の可能性を書いてある）。実通信の確認のときに一緒に見る。
+
+## 端末プリセット（PC の Play を端末の模擬で）— 2026-10-02 L2-5 実装時の残件（正典: docs/editor_device_presets.md）
+
+実行先セレクタに「PC（端末の模擬: …）」の行（`editor/config/device_presets.json` の 1 件 1 行）を足し、選んで実行すると `SEED_SIM_*` と `--render-quality` 付きの別ウィンドウの Play になるようにした。
+
+- [ ] **【高】実起動の確認（GUI）** — 2026-10-02。環境変数と引数の組み立て・行・選択の復元・常駐の使い回しの判断は単体テスト（`AndroidRunUiTests` の `DevicePreset*Tests` 16 件）だけで、ランタイムを実際に起動していない（このレーンではランタイムを起動しない方針）。「Pixel 6a 半分」で Play し、Output の `[SEED INIT] 窓の大きさを 540x1200 にします`・`PC のキーボードの模擬: 高さ 490 px`・引数の `--render-quality=mobile`、`Screen.DPI` と `Screen.SafeArea`、窓が 540×1200 になること、Stop → 同じ端末で Play（常駐の使い回し）→ 別の端末で Play（作り直し）→ PC（埋め込み）で Play（模擬の常駐を閉じる。Output の「端末の模擬で起動した常駐 Play を閉じる」）の流れを見る。収まらない窓のトースト（「Pixel 6a 実寸」）も。
+- [ ] **一時停止すると模擬の窓がシーンパネルへ取り込まれ、大きさが変わる** — 2026-10-02。従来の別ウィンドウ Play の Pause（`RuntimeManager.Pause` → `EmbedRuntimeWindow`）と同じ仕組みで、取り込んでいる間はビューポートの大きさになる（再開で戻る）。模擬の間は取り込まずに `PAUSE` だけ送る（埋め込み Play と同じ扱い）案があるが、Pause 中のシーン編集の流れ（取り込んで編集する）が変わるので見送った。
+- [ ] **手で大きさを変えた模擬の窓が、同じ端末の次の Play でもその大きさのまま** — 2026-10-02。常駐の Play は起動の条件（環境変数と引数の Key）が同じなら使い回すが、窓の大きさは起動時にしか与えない。案: 使い回すとき（`ReusePersistentPlayRuntime`）に、窓のクライアント領域をプリセットの大きさへ戻す（`AdjustWindowRectEx` ＋ `SetWindowPos`。Key と一緒に窓の大きさを覚える）。
+- [ ] **画面に収まるかを主画面とエディタの DPI で測っている** — 2026-10-02（低）。`SystemParameters.WorkArea`（主画面）× エディタの窓の DPI なので、DPI の違う複数の画面では誤差がある。窓が実際に出る画面の作業領域を Win32（`MonitorFromPoint` / `GetMonitorInfo`）で物理ピクセルのまま取れば正確になる。
+- [ ] **小さい電話・タブレットの値の確認** — 2026-10-02。依頼の「小さい電話 360×800 @2」「タブレット 800×1280 @1.5」を **dp の大きさ × 倍率**と読み、窓を 720×1600 px・1200×1920 px にした（画素と読むと 180×400 dp・533×853 dp で電話・タブレットにならないため）。安全領域（24 dp）とキーボード（≒ 373 dp）は仮の値。意図と違えば `device_presets.json` を直す（コードは変えなくてよい）。
+- [ ] **横向き・回転・3 ボタンのナビゲーション・切り欠きの形は模擬しない** — 2026-10-02（低）。ランタイムの模擬（`platform/screen/simulated.rs`）が縦の自然な向き・回転なしだけ。要れば JSON に `orientation` を足し、ランタイムに向きの模擬（`SEED_SIM_ROTATION` など）を足す。
+- [ ] **プリセットの JSON はエディタの起動中に 1 回だけ読む** — 2026-10-02（低）。書き換えたらエディタを開き直す。要れば `FileSystemWatcher` で読み直して実行先の一覧を作り直す（`MainWindow.DevicePresets.cs` の `_devicePresetCatalog` を差し替えて `RebuildRunTargetsKeepingSelection`）。
+- [ ] **MCP の `seed_play` で端末を選べない** — 2026-10-02（低）。`seed_play` は実行先セレクタで選んでいるものに従う（端末の模擬なら模擬の別ウィンドウ Play）。AI が端末の大きさで確かめるには `seed_play(device_preset:"pixel6a-half")` のような引数があると楽（`seed_launch` の模擬の環境変数の件と合わせて。docs/editor_mcp.md）。
+- [ ] **「ウィンドウを出してプレイ」のチェックが、端末の模擬の行では効かないことが画面から分からない** — 2026-10-02（低）。行のツールチップには書いたが、チェックボックスの側には出ていない。実行先が端末の模擬のときはチェックボックスのツールチップに注記を足す案。
+
 ## 2D パーティクル（2026-09-08 実装の残件）
 
 `ParticleEmitter` を 2D キャンバスアクターへ付けられるようにし、UI の統合描画列
@@ -3601,6 +3631,19 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
   (2) `ChipGroup`・`RadioGroup`・`SegmentedControl` の `LabelSize`（トークンの名前か数）、(3) `DialogButtonKind.Danger`（`ButtonTone.Danger`）と選択肢の一覧のダイアログ
   （`Dialog.ShowMenu`・`DialogMenuItem`・`DialogResult.Selected`・`SelectedIndex`）。Wake or Pay の `FullWidthSlider` の刻みの点（divisions）は SEED の Slider に無い（下の別項目）。
   (4)〜(9) は残り。
+  → **(6) は 2026-10-03 に済**（動的ノード API: `GameObject.ChildCount`・`GetChild`・`Children`・`SiblingIndex`・`SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling`・
+  `GameObject.Create` / `Create2D` / `Create3D`・`AddComponent<T>()` / `RemoveComponent<T>()` / `AddScript<T>()`・`CanvasTransform.Size`。docs/scripting_api.md §7「動的ノード」）。
+- [ ] **動的ノード API（2026-10-03）の残した制限** — 2026-10-03（実装時に決めた範囲。直していない）。
+  (1) **`AddScript<T>()` のインスタンスを受け取る口が無い**（インスタンスはフレーム末尾にでき、`GetScript<T>()` に当たる API も無い。値は足したスクリプトの OnStart で自分から読む。
+  `[SerializeField]` の参照フィールドの解決〈`ResolveScriptInstance`〉はあるので、型名で引く `GetScript<T>()` を足すのが次の手）。
+  (2) **`AddComponent<T>()` で足せない種別**: Model・Skybox（GPU の資源・ファイルの読み込みが要る）、Camera・InputMap・Canvas・物理・水・ControlPoint（エディタで設定する前提）。
+  足すなら `runtime/src/engine/core/scripting/host_api/component_kinds.rs` の表と docs の表に 1 行ずつ。
+  (3) **スクリプトのスロットは `RemoveComponent` で外せない**（`RemoveScript<T>()` が無い。外すならエディタの削除と同じ `remove_slot_components` を通す）。
+  (4) **Play 中に選択中のアクタへスクリプトが足した・外したコンポーネントは、インスペクタ（`ACTOR_COMPONENTS`）を送り直さない**（ヒエラルキーは送る。次に選び直すと出る）。
+  (5) **`CanvasTransform.Size` は `CanvasLayoutItem.PreferredSize` の近道**で、効くのはレイアウトが測るノードの並べる矩形だけ（自由なノードの大きさ・Sprite の描く大きさは変わらない）。
+  CanvasTransform に大きさの欄を足すのは形式の変更（`.actor` / `.scene` の欄の追加・レイアウトの測り方の段の追加・インスペクタ）になるので見送った。
+  (6) **読み（`ChildCount` 等）はフレームの始めの木**（同じフレームに作った子は数えない）。同じフレームの生成・並べ替えを読みに反映するには、`node_pending` のような保留の表を木の形で持つ必要がある。
+  (7) Play 中の `HIERARCHY` は 400 ms ごとにまとめて送るので、エディタのヒエラルキーは並べ替えの途中の順を飛ばして最後の順だけを表示する（既存の間引き。`hierarchy_sync.rs`）。
 - [x] **PC の 1 倍で小さな文字の横線が欠けて別の字に見える** — 2026-09-30（W3-1 で発見。上の「PC の 1 倍で小さな文字の細い横線が消える・かすれる」の続き）。
   → **2026-10-01 に済**: 原因は text.wgsl が平滑化の幅を距離場の値の微分 fwidth(d) から決めていたこと（線の尾根を 2×2 の画素の組が挟むと fwidth ≒ 0 → しきい値の
   切り捨て）。測定: 17 px の「ー」を 0.1 dp ずつ下げた行で、横画のいちばん濃い alpha が 0.94〜0.98 → +0.5 dp で 0.25 → +0.6 dp で 0.00（消える）。
@@ -3963,6 +4006,15 @@ roadmap §2.8 の各行の「未実施」のとおり。任意の W1-9（解除�
 ## Play 中のプレハブのホットリロード — 2026-10-02 実装時の残件（正典: docs/editor_prefab.md 8 章）
 
 - [ ] **Play 中にプレハブを保存する UI の経路が無い** — 2026-10-02。`DoQuickSave` は `State != Edit` で何もしない・アクタータブのタブバーは Edit 以外で無効・`OnActorFileOpened` も Edit 限定（Play の世界とアクタータブは同じランタイムの別の世界線で、Play 中は EDIT_VIEW を無視するため）。保存に続く `PREFAB_LIVE_PATCH_PATH` の配線（`MainWindow.Prefab.cs::PropagateSavedPrefabToScene`）は入れたが、いま当て直しが走るのは書き戻しの続きと IPC（MCP `seed_send_ipc`）だけ。候補: (a) Play 中だけ `.actor` を監視して外部の書き換え（テキストエディタ・AI）で当て直す（`AutoReloadPolicy` と同じ流儀の監視クラス。自分の書き戻しは除外）、(b) Play 中もアクタータブを表示・保存できるようにする（ランタイムの EDIT_VIEW の扱いから要設計）。
+  → **(a) は 2026-10-03 に済**（docs/editor_auto_reload.md §7.1。`PrefabAutoReloader`・`PrefabExternalChangeTracker`。Play 中に限らず Edit でも `PREFAB_REAPPLY_PATH` / `PREFAB_STATUS` を送る。設定「プレハブを自動再読込」）。(b) は残り。
+- [ ] **アクタータブで開いているプレハブを外部で書き換えても、タブの中身は古い版のまま** — 2026-10-03（A の外部変更の取り込みの実装で気付いた。直していない）。
+  シーンのインスタンスへは当て直す（§7.1）が、そのファイルを開いているアクタータブは読み直さない。そのままタブで保存すると外部の変更を上書きする
+  （取り込み以前からの挙動）。書き戻しの `MarkActorTabStale` と同じ印を付ける案があるが、タブに未保存の編集があると読み直しで消えるので、
+  タブの未保存の判定（今は `_isDirty` がシーンとタブで共有）を分けてから。関連: `editor/src/MainWindow.PrefabAutoReload.cs`・`MainWindow.Prefab.cs`。
+- [ ] **アクタファイル化（`EXPORT_ACTOR`）は自己書き込みの「開始」を知らない** — 2026-10-03（同上）。パネル（ヒエラルキー・プロジェクト）が直接送るため、
+  監視は `EXPORT_ACTOR_OK` を受けた時点で終了として除外する。ランタイムは書いた直後に OK を返すのでデバウンス（600 ms）の満了に間に合うが、
+  エディタの UI スレッドが 600 ms 以上詰まると、書き出したばかりのプレハブへ 1 回 `PREFAB_REAPPLY_PATH` が飛ぶ（元のアクタが再展開される。中身は同じで Undo できる）。
+  直すなら送る口を `RuntimeManager` に 1 本化して開始を知らせる。書き戻し（`PREFAB_WRITE_BACK`）もプレハブの参照パスが分からないときは開始の窓を開けない（同じ扱い）。
 - [ ] **Play 中の「プレハブから更新」（`PREFAB_REAPPLY` / `_PATH` / `_ALL`）は丸ごとの再展開のまま** — 2026-10-02。ヒエラルキーの右クリックは Play 中も出るので、押すとスクリプトが作り直されて OnStart が走り直し、スクリプトが持っていた根のハンドルも無効になる（今回の当て直しを作った理由そのもの）。Play 中は当て直しへ振り替えるか、メニューを出さないのが筋。ランタイムの `handle_reapply_prefab*` にもモードの判定が無い。
 - [ ] **3D の子ノードの Transform は当て直さない** — 2026-10-02（仕様）。子の Transform・インスタンス行列はワールド空間で持つため、ファイル（原点基準）の値を当てると位置が飛ぶ。根の配置行列 × ファイルの根の逆行列で変換すれば当てられる（新しく作るノードはそうしている）。2D（CanvasTransform は親基準）は当てている。
 - [ ] **名前の突き合わせの限界** — 2026-10-02。ファイルでノードの名前を変えると「消えて増えた」扱い（3 方向は消して作る。2 方向は古い方を残して新しい方を作る＝二重に見える）。スクリプトが `GameObject.Name` で名前を変えたノードは「実行中に足されたノード」扱いになり、以後そのノードへは当たらない（ファイル側の同名ノードは「実行中に消された」扱いで作り直さない）。

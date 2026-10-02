@@ -362,7 +362,7 @@ editor/src/Android/
 | 記録 | 置き場 | 中身 |
 |---|---|---|
 | 置き場の中身（`AndroidStepStamps`） | `runtime/android/app/build/seed/step_stamps.json`（エンジン側。`gradlew clean` で消える＝全部作り直すだけ） | 工程ごとに「作ったときの入力の指紋と出力の同一性」、最後の APK の SHA-256・ABI・アプリ ID |
-| 実行状態（`AndroidRunState`） | `<プロジェクト>/cache/android/run_state.json`（[project_system.md](project_system.md) §1 の `cache/`。プロジェクトが無ければ `runtime/android/app/build/seed/run_state.json`） | 前回の実行先（シリアル・種類・機種・ABI・アプリ ID）、エディタの実行先セレクタで最後に選んだもの（`editor_target`: `"pc"` かシリアル。段階C-2。SeedAndroid は読まずに保つ）、端末ごとに自分が入れた APK（SHA-256・`pm path`）、前回の実行の結果・工程ごとの判断・指紋 |
+| 実行状態（`AndroidRunState`） | `<プロジェクト>/cache/android/run_state.json`（[project_system.md](project_system.md) §1 の `cache/`。プロジェクトが無ければ `runtime/android/app/build/seed/run_state.json`） | 前回の実行先（シリアル・種類・機種・ABI・アプリ ID）、エディタの実行先セレクタで最後に選んだもの（`editor_target`: `"pc"`・`"pcsim:<端末プリセットの id>"`・`"auto"` かシリアル。段階C-2。SeedAndroid は読まずに保つ）、端末ごとに自分が入れた APK（SHA-256・`pm path`）、前回の実行の結果・工程ごとの判断・指紋 |
 
 - 置き場の記録をプロジェクトの `cache/` に置かないのは、Gradle の置き場（jniLibs・assets/seed・seedDotnet・APK）がリポジトリに 1 つずつしかなく、
   別のプロジェクトをビルドすると中身が入れ替わるため（置き場と一緒に持たないと、切り替えた後に別のプロジェクトの pak のまま「変更なし」と判断してしまう）。
@@ -2091,6 +2091,7 @@ Output パネルへ流す。停止ボタンで端末のアプリを止める。2
 | 行 | 文言（例） | 選べるか | ツールチップ |
 |---|---|---|---|
 | PC | `PC` | いつも | この PC で実行（従来の Play） |
+| PC（端末の模擬）（2026-10-02。端末プリセット 1 件 1 行・PC の直後） | `PC（端末の模擬: Pixel 6a 半分）` | いつも（Android を使えない環境でも） | 窓・表示倍率・安全領域・キーボード・描画の品質（模擬の別ウィンドウの Play。正典 [editor_device_presets.md](editor_device_presets.md)） |
 | Android（自動）（C-3。Android の既定） | `Android（自動）` | いつも（Android を使える環境なら。端末の一覧が無くても） | 決め方（実機 → 起動中のエミュレータ → AVD を起動）と起動する AVD（設定の値か既定の規則。§20.9） |
 | 使える端末 | `Pixel_6a（実機）`・`emulator-5554（エミュレータ）`（実機は機種、エミュレータはシリアル） | ○ | 種類・機種・シリアル・ビルドする ABI |
 | 使えない状態の端末 | `R58M…（未許可）`・`emulator-5556（応答なし）`・`（権限なし）`・`（接続中）` | × | 状態ごとの理由と対処（`AndroidDeviceSelector.DescribeNotReady`） |
@@ -3873,6 +3874,10 @@ PC の Play（エディタ埋め込み・単体起動の SEED.exe）では、And
 に従ってエンジンの中の `DesktopSimBridge` が答える（`IsSimulated == true`）。命令は表（`SIM_COMMANDS`）の 1 行ずつで、W1-1 は `platform.ping`（pid は SEED.exe）・
 `platform.version`・`platform.emit_test_event`（イベントは模擬の箱に積まれ、次のフレームでスクリプトへ届く）。W1-3 以降の模擬（目覚ましをタイマーで鳴らす等）は
 表に行を足し、時刻で起きるものは `poll_events`（フレームの頭）の中で積む。エディタの Play の開始・停止では、前の回のイベントを捨てる（`play_mode_ops.rs`）。
+
+画面の側の模擬（窓の大きさ `SEED_SIM_WINDOW_SIZE`・表示倍率 `SEED_SIM_SCALE_FACTOR`・安全領域 `SEED_SIM_SAFE_AREA`・キーボード `SEED_SIM_KEYBOARD_HEIGHT`・
+`--render-quality=mobile`）は、エディタの実行先セレクタで「**PC（端末の模擬: Pixel 6a 半分）**」などを選んで実行すると、まとめて付けた別ウィンドウの Play になる
+（端末は `editor/config/device_presets.json`。正典 [editor_device_presets.md](editor_device_presets.md)）。
 
 ### 25.6 マニフェスト
 

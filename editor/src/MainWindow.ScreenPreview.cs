@@ -10,6 +10,8 @@
 //    - 未保存にしない印: HIERARCHY_QUIET → 直後の HIERARCHY 1 通は未保存にしない（SendNavCommand と同じ数の仕組み）
 //    - プレハブ保存後の作り直し: PropagateSavedPrefabToScene から RequestPreviewRefresh（自動反映の設定に関わらず）
 //    - Delete: プレビューの根は PREVIEW_CLEAR、中は消さない、普通のノードは番号のずれを直して従来どおり
+//    - AI ツール（MCP の seed_preview）: MainWindow.AiHost.Tools.cs が PreviewNotEditableReason・SendPreviewRequest・
+//      SendPreviewClear を呼ぶ（UI と同じ道筋。違いは「最近使ったもの」へ足さないことと、結果をトーストでなく戻り値で返すこと）
 // ============================================================
 
 using System;
@@ -53,6 +55,9 @@ public partial class MainWindow
 
     /// <summary>差し込み先を見失ったが理由が分からないときのトースト。</summary>
     private const string PreviewTargetLostToast = "差し込み先が見つかりません。ヒエラルキーで選び直してください";
+
+    /// <summary>ランタイムの管理がまだ無い（起動の途中）ときの理由。</summary>
+    private const string PreviewRuntimeMissingReason = "ランタイムがまだ準備できていません";
 
     /// <summary>元のプレハブが見つからないときの文言の書式（{0} = パス）。</summary>
     private const string PreviewSourceMissingFormat = "元のプレハブが見つかりません:\n{0}";
@@ -198,16 +203,31 @@ public partial class MainWindow
             if (RefusePreviewIfNotEditable()) return;
         }
 
+        // ── 親の引き直し → 最近の一覧 → 送信（AI ツールと共通の道筋）。断ったら理由をトーストで出す ──
+        if (SendPreviewRequest(target, prefab, rememberRecent: true) is { } refused)
+            ShowToast(refused);
+    }
+
+    /// <summary>
+    /// 中身が決まった差し込み先を、送る直前にいまの木で引き直してから PREVIEW_PREFAB を送る
+    /// （ヒエラルキーの右クリック・インスペクタの案内・AI ツール seed_preview の共通の道筋。
+    /// Edit か・閲覧専用かの判定は呼び出し側が先に済ませる）。
+    /// </summary>
+    /// <param name="target">差し込み先（作った時点のもの）。</param>
+    /// <param name="prefab">中身のプレハブ（assets:// 仮想パスか絶対パス）。</param>
+    /// <param name="rememberRecent">「最近使ったもの」へ足すか（利用者の操作なら true。AI ツールは false）。</param>
+    /// <returns>送れなかった理由（送れたら null）。</returns>
+    private string? SendPreviewRequest(PreviewInsertTarget target, string prefab, bool rememberRecent)
+    {
         // ── 親をいまの木で引き直す（窓の間の編集で番号がずれても同じノードへ。見失ったら断る）──
         var resolved = PanelHierarchy.TryResolvePreviewParent(target);
         if (resolved.ParentDfs is not int parentDfs)
         {
             var reason = resolved.Reason ?? PreviewTargetLostToast;
             EditorLog.Write($"{PreviewLogPrefix} 差し込みをやめました: {reason}");
-            ShowToast(reason);
-            return;
+            return reason;
         }
-        if (_runtimeManager is null) return;
+        if (_runtimeManager is null) return PreviewRuntimeMissingReason;
 
         string command;
         try
@@ -217,14 +237,18 @@ public partial class MainWindow
         catch (ArgumentException ex)
         {
             EditorLog.Write($"{PreviewLogPrefix} 命令を組み立てられません: {ex.Message}");
-            return;
+            return ex.Message;
         }
 
-        // ── 最近の一覧へ足してから送る ──
-        _previewRecent?.Push(AssetsPath, prefab);
-        if (_previewRecent?.LastError is { } saveError) EditorLog.Write($"{PreviewLogPrefix} {saveError}");
+        // ── 最近の一覧へ足してから送る（利用者の操作のときだけ）──
+        if (rememberRecent)
+        {
+            _previewRecent?.Push(AssetsPath, prefab);
+            if (_previewRecent?.LastError is { } saveError) EditorLog.Write($"{PreviewLogPrefix} {saveError}");
+        }
         _runtimeManager.SendToRuntime(command);
         EditorLog.Write($"{PreviewLogPrefix} 差し込み: {prefab}（{target.Label}・DFS {parentDfs}）");
+        return null;
     }
 
     /// <summary>
@@ -233,15 +257,31 @@ public partial class MainWindow
     /// <param name="dfs">プレビューの根、または中のノードの DFS 番号（表示中のタブ）。</param>
     private void RequestPreviewClear(int dfs)
     {
-        if (dfs < 0 || RefusePreviewIfNotEditable()) return;
-        _runtimeManager?.SendToRuntime(ScreenPreviewIpc.BuildClear(PanelHierarchy.ActiveWorldLine, dfs));
+        if (dfs < 0) return;
+        if (SendPreviewClear(dfs) is { } refused) ShowToast(refused);
     }
 
     /// <summary>表示中のタブのプレビューを全部消す。</summary>
     private void RequestPreviewClearAll()
     {
-        if (RefusePreviewIfNotEditable()) return;
-        _runtimeManager?.SendToRuntime(ScreenPreviewIpc.BuildClearAll(PanelHierarchy.ActiveWorldLine));
+        if (SendPreviewClear(dfs: null) is { } refused) ShowToast(refused);
+    }
+
+    /// <summary>
+    /// プレビューを消す命令を送る（UI と AI ツール seed_preview の共通の道筋）。
+    /// </summary>
+    /// <param name="dfs">消すプレビューの根か中のノードの DFS 番号（null なら表示中のタブのプレビューを全部）。</param>
+    /// <returns>送れなかった理由（送れたら null）。</returns>
+    private string? SendPreviewClear(int? dfs)
+    {
+        if (PreviewNotEditableReason() is { } reason) return reason;
+        if (_runtimeManager is null) return PreviewRuntimeMissingReason;
+
+        var worldLine = PanelHierarchy.ActiveWorldLine;
+        _runtimeManager.SendToRuntime(dfs is int target
+            ? ScreenPreviewIpc.BuildClear(worldLine, target)
+            : ScreenPreviewIpc.BuildClearAll(worldLine));
+        return null;
     }
 
     /// <summary>
@@ -286,17 +326,20 @@ public partial class MainWindow
     /// <returns>断ったら true。</returns>
     private bool RefusePreviewIfNotEditable()
     {
-        if (_runtimeManager?.State != EditorState.Edit)
-        {
-            ShowToast(PreviewNotEditToast);
-            return true;
-        }
-        if (CurrentReadOnlyState.DeniesEdit)
-        {
-            ShowToast(PreviewReadOnlyToast);
-            return true;
-        }
-        return false;
+        if (PreviewNotEditableReason() is not { } reason) return false;
+        ShowToast(reason);
+        return true;
+    }
+
+    /// <summary>
+    /// プレビューを使えない状態（Edit 以外・閲覧専用の表示中）なら、その理由を返す（UI と AI ツールの共通の判定）。
+    /// </summary>
+    /// <returns>使えない理由。使えるなら null。</returns>
+    private string? PreviewNotEditableReason()
+    {
+        if (_runtimeManager?.State != EditorState.Edit) return PreviewNotEditToast;
+        if (CurrentReadOnlyState.DeniesEdit) return PreviewReadOnlyToast;
+        return null;
     }
 
     // ============================================================

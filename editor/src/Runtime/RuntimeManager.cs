@@ -42,6 +42,11 @@ namespace SEEDEditor.Runtime;
 ///   （GPU・モデルキャッシュが温かいため数秒で再生できる）。保持プロセスがクラッシュ／
 ///   終了していれば従来どおり新規起動へフォールバックする。初回 Play はコールドのまま。
 ///
+/// 端末の模擬（<see cref="PlayLaunchOverrides"/>。docs/editor_device_presets.md）:
+///   実行先が「PC（端末の模擬: …）」のとき、ウィンドウ Play を模擬の環境変数（SEED_SIM_*）と --render-quality 付きで
+///   起動する（埋め込みの設定でも別プロセス）。常駐 Play は起動の条件（Key）が同じときだけ使い回し、違えば閉じて
+///   新しく起動する。埋め込みの Play に戻るときは模擬で起動した常駐を閉じる（判断は PlayRuntimeReusePolicy）。
+///
 /// 画面プレビューの知らせ（HIERARCHY_QUIET・PREVIEW_*）の振り分けは RuntimeManager.ScreenPreview.cs。
 /// </summary>
 public sealed partial class RuntimeManager : IDisposable
@@ -145,9 +150,29 @@ public sealed partial class RuntimeManager : IDisposable
 
     /// <summary>
     /// 埋め込みインプレース Play（フェーズ2）を使うかどうか。MainWindow が Play 開始前に設定する。
-    /// true のとき、PlayAsync は別プロセスを起動せず現 Edit ランタイムへ ENTER_PLAY を送る。
+    /// true のとき、PlayAsync は別プロセスを起動せず現 Edit ランタイムへ ENTER_PLAY を送る
+    /// （ただし <see cref="PlayLaunchOverrides"/> があるときは埋め込みにしない）。
     /// </summary>
     public bool EmbeddedPlay { get; set; }
+
+    /// <summary>
+    /// 次の Play の起動に足す環境変数と起動引数（端末の模擬。docs/editor_device_presets.md）。null なら従来どおり。
+    /// MainWindow が Play 開始前に毎回設定する。上書きは別プロセスの起動時にしか与えられないので、これがあるときは
+    /// <see cref="EmbeddedPlay"/> が true でもウィンドウ Play にする。Edit のランタイムの起動には使わない。
+    /// </summary>
+    public RuntimeLaunchOverrides? PlayLaunchOverrides { get; set; }
+
+    /// <summary>
+    /// いまの Play プロセス（ウィンドウ Play）を起動したときの条件の Key（<see cref="RuntimeLaunchOverrides.Key"/>。
+    /// 上書きなしの従来の起動は null）。Stop で常駐へ移すときに <see cref="_persistentPlayLaunchKey"/> へ引き継ぐ。
+    /// </summary>
+    private string? _playLaunchKey;
+
+    /// <summary>
+    /// 常駐保持している Play プロセスを起動したときの条件の Key（上書きなしなら null）。
+    /// 次の Play で使い回してよいか・埋め込みの Play の前に閉じるかの判断（PlayRuntimeReusePolicy）に使う。
+    /// </summary>
+    private string? _persistentPlayLaunchKey;
 
     /// <summary>
     /// 現在、埋め込みインプレース Play 中か（ENTER_PLAY 済みで EXIT_PLAY 前）。
@@ -881,12 +906,23 @@ public sealed partial class RuntimeManager : IDisposable
             return;
         }
 
+        // 起動に足す上書き（端末の模擬）。別プロセスの起動時の環境変数でしか与えられないので、あれば埋め込みにしない
+        var launchOverrides = PlayLaunchOverrides;
+        var requestedLaunchKey = launchOverrides?.Key;
+
         // ── 埋め込みインプレース Play（フェーズ2）─────────────────────────────
         // 現 Edit ランタイムが生きていれば、別プロセスを起動せず ENTER_PLAY で
         // その場で Play 化する。地形・散布・GPU リソースを作り直さないため即座に再生できる。
         // EnterPlayEmbedded が _isLaunching を立て、PLAY_ENTERED 受信時に降ろす。
-        if (EmbeddedPlay && _process is { HasExited: false } && _state == EditorState.Edit)
+        if (EmbeddedPlay && launchOverrides is null && _process is { HasExited: false } && _state == EditorState.Edit)
         {
+            // 端末の模擬で起動した常駐の Play は埋め込みの Play では使い回せない（端末の大きさの窓と GPU の資源を
+            // 握ったまま隠れ続けるだけ）ので閉じる。上書きなしの常駐の Play は従来どおり残す（PlayRuntimeReusePolicy）
+            if (PlayRuntimeReusePolicy.MustReleaseBeforeEmbeddedPlay(_persistentPlayProcess is not null, _persistentPlayLaunchKey))
+            {
+                EditorLog.Write("PlayAsync — 端末の模擬で起動した常駐 Play を閉じる（埋め込みの Play では使い回せない）");
+                DisposePersistentPlayRuntime(killProcess: true);
+            }
             EnterPlayEmbedded();
             return;
         }
@@ -926,8 +962,10 @@ public sealed partial class RuntimeManager : IDisposable
             // 保持プロセスが生きていて、かつ再ロードすべきシーンパスが確定している場合のみ
             // 再利用する。PlayScenePath が null（「開始シーンからプレイ」時はエディタ側が
             // 開始シーンの実パスを持たない）のときは LOAD_SCENE を送れないため新規起動する。
-            var canReuse = _persistentPlayProcess is { HasExited: false }
-                        && !string.IsNullOrEmpty(PlayScenePath);
+            // 起動の条件（端末の模擬の環境変数と引数の Key。従来の起動は null）が違うときも使い回さない
+            // （窓の大きさ・表示倍率・安全領域はプロセスの起動時にしか与えられないため。PlayRuntimeReusePolicy）。
+            var canReuse = PlayRuntimeReusePolicy.CanReuse(
+                _persistentPlayProcess is { HasExited: false }, PlayScenePath, _persistentPlayLaunchKey, requestedLaunchKey);
             if (canReuse)
             {
                 EditorLog.Write("PlayAsync — 常駐 Play プロセスを再利用（LOAD_SCENE で高速再生）");
@@ -935,10 +973,10 @@ public sealed partial class RuntimeManager : IDisposable
                 return;
             }
 
-            // 保持プロセスが消滅していた（クラッシュ/終了）場合は破棄してから新規起動する
+            // 保持プロセスが消滅していた（クラッシュ/終了）・起動の条件が違う場合は破棄してから新規起動する
             if (_persistentPlayProcess is not null)
             {
-                EditorLog.Write("PlayAsync — 常駐 Play プロセスが消滅、または再ロード先シーン未確定。新規起動へフォールバック");
+                EditorLog.Write("PlayAsync — 常駐 Play プロセスが消滅、再ロード先シーン未確定、または起動の条件（端末の模擬）が違う。新規起動へフォールバック");
                 DisposePersistentPlayRuntime(killProcess: true);
             }
             else
@@ -1004,14 +1042,16 @@ public sealed partial class RuntimeManager : IDisposable
     {
         EditorLog.Write($"ReusePersistentPlayRuntime — hwnd=0x{_persistentPlayHwnd:X}  scene={PlayScenePath}");
 
-        // フィールドを保持 Play から復元する
-        _process     = _persistentPlayProcess;
-        _pipe        = _persistentPlayPipe;
-        _runtimeHwnd = _persistentPlayHwnd;
+        // フィールドを保持 Play から復元する（起動の条件の Key も引き継ぐ。次の Stop で常駐へ戻すときに使う）
+        _process       = _persistentPlayProcess;
+        _pipe          = _persistentPlayPipe;
+        _runtimeHwnd   = _persistentPlayHwnd;
+        _playLaunchKey = _persistentPlayLaunchKey;
 
-        _persistentPlayProcess = null;
-        _persistentPlayPipe    = null;
-        _persistentPlayHwnd    = IntPtr.Zero;
+        _persistentPlayProcess   = null;
+        _persistentPlayPipe      = null;
+        _persistentPlayHwnd      = IntPtr.Zero;
+        _persistentPlayLaunchKey = null;
 
         // イベントを再購読する（保持中は誤発火防止のため解除していた）
         if (_process is not null)
@@ -1452,17 +1492,19 @@ public sealed partial class RuntimeManager : IDisposable
         if (_runtimeHwnd != IntPtr.Zero)
             Win32.ShowWindow(_runtimeHwnd, SW_HIDE);
 
-        // 常駐フィールドへ退避する
-        _persistentPlayProcess = _process;
-        _persistentPlayPipe    = _pipe;
-        _persistentPlayHwnd    = _runtimeHwnd;
+        // 常駐フィールドへ退避する（起動の条件の Key も。次の Play で使い回してよいかの判断に使う）
+        _persistentPlayProcess   = _process;
+        _persistentPlayPipe      = _pipe;
+        _persistentPlayHwnd      = _runtimeHwnd;
+        _persistentPlayLaunchKey = _playLaunchKey;
 
         // 現フィールドをクリアする（RestoreEditRuntime が Edit を設定する）
-        _process     = null;
-        _pipe        = null;
-        _runtimeHwnd = IntPtr.Zero;
+        _process       = null;
+        _pipe          = null;
+        _runtimeHwnd   = IntPtr.Zero;
+        _playLaunchKey = null;
 
-        EditorLog.Write($"HidePlayRuntime — Play を常駐保持  hwnd=0x{_persistentPlayHwnd:X}  PID={_persistentPlayProcess?.Id}");
+        EditorLog.Write($"HidePlayRuntime — Play を常駐保持  hwnd=0x{_persistentPlayHwnd:X}  PID={_persistentPlayProcess?.Id}  端末の模擬={_persistentPlayLaunchKey is not null}");
     }
 
     /// <summary>
@@ -1488,9 +1530,10 @@ public sealed partial class RuntimeManager : IDisposable
         }
         _persistentPlayPipe?.Dispose();
         _persistentPlayProcess.Dispose();
-        _persistentPlayProcess = null;
-        _persistentPlayPipe    = null;
-        _persistentPlayHwnd    = IntPtr.Zero;
+        _persistentPlayProcess   = null;
+        _persistentPlayPipe      = null;
+        _persistentPlayHwnd      = IntPtr.Zero;
+        _persistentPlayLaunchKey = null;
     }
 
     // ── プライベート: 残存プロセス終了 ──────────────────────────
@@ -1634,6 +1677,10 @@ public sealed partial class RuntimeManager : IDisposable
         var args = editMode
             ? $"--mode=edit --pipe={_pipe.PipeName} --parent-hwnd={_viewportContainerHwnd}{assetsRootArg}{editorResourcesArg}{parentPidArg}"
             : $"--mode=play --pipe={_pipe.PipeName}{assetsRootArg}{sceneArg}{editorResourcesArg}{playColliderDrawArg}{parentPidArg}";
+        // 起動に足す上書き（端末の模擬の環境変数と --render-quality。docs/editor_device_presets.md）。
+        // Play のときだけ当てる（Edit のランタイムはエディタに埋め込むので模擬しない）。従来の引数・既定はそのまま残る
+        var launchOverrides = editMode ? null : PlayLaunchOverrides;
+        if (launchOverrides is not null) args = launchOverrides.AppendArguments(args);
 
         var workDir = ResolveWorkingDirectory(_runtimeExePath);
         EditorLog.Write($"Process.Start — exe={_runtimeExePath}  args={args}  workDir={workDir}");
@@ -1661,9 +1708,17 @@ public sealed partial class RuntimeManager : IDisposable
         //（＝非表示でもシミュレーションが進み、GPU 読み戻しの撮影も成立する）。
         if (SEEDEditor.Headless.EditorStartupOptions.IsHeadless)
             startInfo.Environment[RUNTIME_HEADLESS_ENV] = RUNTIME_HEADLESS_ENV_VALUE;
+        // 端末の模擬の環境変数（エディタ自身の環境から受け継いだ同じ名前の値は上書きするか消す）
+        if (launchOverrides is not null)
+        {
+            launchOverrides.ApplyEnvironment(startInfo.Environment);
+            EditorLog.Write($"LaunchAsync — {launchOverrides.Label}: {launchOverrides.Describe()}");
+        }
 
         _process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Failed to start runtime.");
+        // この Play プロセスの起動の条件を覚える（Stop で常駐へ移すときに引き継ぎ、次の Play で使い回せるかを決める）
+        if (!editMode) _playLaunchKey = launchOverrides?.Key;
 
         EditorLog.Write($"Process started — PID={_process.Id}");
 
@@ -1906,6 +1961,10 @@ public sealed partial class RuntimeManager : IDisposable
         {
             // 画面プレビューの知らせ（HIERARCHY_QUIET・PREVIEW_*）。処理は RuntimeManager.ScreenPreview.cs。
             // HIERARCHY_QUIET は直後の HIERARCHY より先に数えるため、この受信スレッドで同期的に上げている。
+        }
+        else if (TryHandleAiToolReplyMessage(msg))
+        {
+            // AI ツールの応答（PLATFORM_SIM_* / GPU_MEM_REPORT_*）。記録だけ（RuntimeManager.AiToolReplies.cs）。
         }
         else if (msg.Equals("HIERARCHY_RESET", StringComparison.Ordinal))
         {

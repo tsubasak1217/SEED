@@ -108,7 +108,13 @@ public partial class MainWindow
     /// プレハブの保存を開始したことを記録する（<c>ExecuteActorSave</c> から呼ぶ）。
     /// </summary>
     /// <param name="path">保存先の絶対パス。</param>
-    private void NotifyActorSaveStarted(string path) => _savingActorPath = path;
+    private void NotifyActorSaveStarted(string path)
+    {
+        _savingActorPath = path;
+        // プレハブの外部変更の監視へ「これから自分が書く」と伝える（書き込むのはランタイム。SAVE_OK / SAVE_ERROR まで＋余韻。
+        // 自分の保存を外部変更と取り違えて二重に再展開・当て直ししないため。MainWindow.PrefabAutoReload.cs）
+        _prefabAutoReloader?.NotifySelfWriteStarted(path);
+    }
 
     /// <summary>
     /// プレハブの保存が完了したときに、シーン内インスタンスへの自動反映を行う
@@ -228,6 +234,8 @@ public partial class MainWindow
         if (answer != MessageBoxResult.OK) return;
 
         _runtimeManager.SendToRuntime($"{PrefabWriteBackCommandPrefix}{actorDfsId}");
+        // 書き込むのはランタイム。監視が自分の書き戻しを外部変更と取り違えて当て直しを二重に送らないよう知らせる
+        NotifyPrefabWriteBackStartedToPrefabWatcher(source);
         EditorLog.Write($"[Prefab] Play 中の変更の書き戻しを要求: DFS {actorDfsId}（{target}）");
     }
 
@@ -242,6 +250,8 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
         {
+            // 書いたのはランタイム（＝自分の書き込み）。監視の窓を閉じ、今の内容を「知っている内容」として覚えさせる
+            NotifyPrefabWriteBackFinishedToPrefabWatcher(source);
             MarkActorTabStale(source);
             RememberPrefabChangedDuringPlay(source);
             ShowToast(string.Format(WriteBackToastFormat, PrefabDisplayName(source), count, AfterStopNote()));
@@ -255,6 +265,8 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
         {
+            // ファイルは書かれていないが、開けた自己書き込みの窓は閉じる（開けっぱなしだと外部変更を取りこぼす）
+            NotifyPrefabWriteBackFinishedToPrefabWatcher(null);
             EditorLog.Write($"[Prefab] 書き戻しに失敗: {reason}");
             MessageBox.Show(string.Format(WriteBackFailedFormat, reason), WriteBackConfirmTitle,
                 MessageBoxButton.OK, MessageBoxImage.Error);

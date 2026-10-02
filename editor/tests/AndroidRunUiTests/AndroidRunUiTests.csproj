@@ -14,6 +14,9 @@
       - OutputLineClassifier                              : 従来の Output パネルの色分け（本文の印）を変えていないこと
       - AndroidRunEnvironment / AndroidToolchainReport    : Android の実行先を使えるか・道具の一覧
       - AndroidApkOutput / AndroidEditorRunRequests       : パッケージ化ウィンドウの Android 出力の名前と中核への指定
+      - DevicePresets / RuntimeLaunchOverrides /
+        PlayRuntimeReusePolicy                            : 実行先「PC（端末の模擬: …）」（端末プリセットの JSON・行・選択の復元・
+                                                            起動の環境変数と引数・常駐 Play の使い回し・画面に収まるか）
 
     AndroidPipelineTests と同じ流儀:
       - 外部パッケージを足さず、素のコンソールアプリ + 自前アサート（SpriteRigTests の TestHarness）で回す
@@ -44,6 +47,17 @@
     <!-- PC のランタイムの状態（プレイバーの判断の材料） -->
     <Compile Include="..\..\src\Runtime\EditorState.cs">
       <Link>Linked\Runtime\EditorState.cs</Link>
+    </Compile>
+    <!-- 端末プリセット（実行先「PC（端末の模擬: …）」の行・JSON の読み込み・起動の環境変数・画面に収まるか。
+         docs/editor_device_presets.md）と、別ウィンドウ Play の起動に足すもの・常駐 Play の使い回しの判断 -->
+    <Compile Include="..\..\src\DevicePresets\**\*.cs">
+      <Link>Linked\DevicePresets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\..\src\Runtime\RuntimeLaunchOverrides.cs">
+      <Link>Linked\Runtime\RuntimeLaunchOverrides.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\Runtime\PlayRuntimeReusePolicy.cs">
+      <Link>Linked\Runtime\PlayRuntimeReusePolicy.cs</Link>
     </Compile>
     <!-- パッケージ化ウィンドウの Android 出力の決まりと、その設定の型 -->
     <Compile Include="..\..\src\Packaging\AndroidApkOutput.cs">

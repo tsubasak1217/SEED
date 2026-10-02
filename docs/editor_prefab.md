@@ -291,9 +291,11 @@ Play 停止（OnStateChanged → Edit）
 
 - 設定「プレハブ保存時にシーンのインスタンスへ自動反映」（`PrefabAutoPropagateOnSave`）は **Edit のシーンへの反映**
   だけに効く。Play 中の当て直しは Play の表示だけを変えて停止で消えるので、設定に関わらず行う。
-- **現状、Play 中にアクタータブで保存する操作は無い**（Ctrl+S は Edit 以外では何もしない・タブ切り替えも Edit だけ）。
-  保存に続く当て直しの配線は入れてあるが、Play 中の当て直しが実際に走るのは、書き戻しの続き・IPC（MCP の
-  `seed_send_ipc` など）から送ったときになる（docs/backlog.md 参照）。
+- **Play 中にアクタータブで保存する操作は無い**（Ctrl+S は Edit 以外では何もしない・タブ切り替えも Edit だけ）。
+  代わりに、エディタの外（テキストエディタ・AI・別ツール）で `.actor` / `.actor2d` を書き換えると、監視が拾って
+  Play 中なら `PREFAB_LIVE_PATCH_PATH` を送る（2026-10-03。Edit なら `PREFAB_REAPPLY_PATH` か `PREFAB_STATUS`）。
+  エディタ自身の保存・書き戻し・アクタファイル化は自己書き込みとして除外する。正典は docs/editor_auto_reload.md §7.1。
+  ほかに書き戻しの続き・IPC（MCP の `seed_send_ipc` など）からも当て直しが走る。
 
 ### MCP 化の候補（別レーンでまとめて行う）
 

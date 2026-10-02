@@ -56,6 +56,9 @@ pub mod camera_project;
 // GameObject.Visible の set を遅延適用するまでの保留値テーブル
 pub mod name_pending;
 pub mod visible_pending;
+// 動的ノード API: AddComponent / RemoveComponent の同じフレームの保留の表と、子の列挙・兄弟の順番の木の計算（純関数）
+pub mod node_pending;
+pub mod node_tree;
 // SCRIPT_DEBUG IPC → SEED.Debug.OnCommand の待ち行列
 pub mod debug_command;
 pub use clr_host::EmbeddedClrHost;

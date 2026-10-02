@@ -338,6 +338,7 @@ public partial class MainWindow : IEditorAiHost
         {
             case "play":
                 // seed_play は PC の実行だけを扱う（実行先セレクタが Android でも PC の Play）。
+                // 実行先が PC（端末の模擬: …）なら、プレイバーと同じく模擬の別ウィンドウ Play になる（docs/editor_device_presets.md）。
                 // Android の実行中は PC の Play を始めない（プレイバーと同じ排他。docs/editor_mcp.md 6.4）。
                 if (IsAndroidRunActive)
                     return AndroidRunBlocksPcPlayMessage;

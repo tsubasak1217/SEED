@@ -404,3 +404,4 @@ image.Source = FileTypeIcons.GetFolderImage(isEmpty);
 | `Icon.Platform.iOS` | `apple-ios` |
 | `Icon.Platform.PlayStation` | `sony-playstation` |
 | `Icon.Platform.Switch` | `nintendo-switch` |
+| `Icon.Platform.DeviceSimulation` | `monitor-cellphone`（実行先セレクタの「PC（端末の模擬: …）」の行。[editor_device_presets.md](editor_device_presets.md)） |

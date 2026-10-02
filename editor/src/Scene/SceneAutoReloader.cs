@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Security.Cryptography;
 using System.Windows.Threading;
 using SEEDEditor.Reload;
 
@@ -478,22 +477,9 @@ public sealed class SceneAutoReloader : IDisposable
     /// <summary>
     /// ファイル内容の SHA-256 を 16 進文字列で返す。
     /// 読めない（書き込み中でロックされている等）場合は null。
+    /// 実体はプレハブの自動再読込と共有する <see cref="FileContentHash.TryCompute"/>。
     /// </summary>
-    private static string? TryComputeHash(string path)
-    {
-        try
-        {
-            using var stream = new FileStream(
-                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var sha = SHA256.Create();
-            return Convert.ToHexString(sha.ComputeHash(stream));
-        }
-        catch (Exception)
-        {
-            // ファイルが無い / ロック中 / 権限不足。呼び出し側が再試行または中止を決める。
-            return null;
-        }
-    }
+    private static string? TryComputeHash(string path) => FileContentHash.TryCompute(path);
 
     /// <summary>監視とタイマーを停止する（エディタ終了時）。</summary>
     public void Dispose()

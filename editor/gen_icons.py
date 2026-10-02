@@ -243,6 +243,8 @@ CATALOG = [
     ("Icon.Platform.iOS", "apple-ios"),
     ("Icon.Platform.PlayStation", "sony-playstation"),
     ("Icon.Platform.Switch", "nintendo-switch"),
+    # 実行先セレクタの「PC（端末の模擬: …）」の行（PC の画面に端末を写す絵。docs/editor_device_presets.md）。
+    ("Icon.Platform.DeviceSimulation", "monitor-cellphone"),
 ]
 
 OUT_PATH = "resources/icons/Icons.xaml"

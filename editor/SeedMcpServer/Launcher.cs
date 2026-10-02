@@ -5,7 +5,8 @@
 //  AI が「エディタを自分で起動 → 操作 → 撮影 → 終了」まで完結できるようにする。
 //
 //  ここが担うのは 2 つだけ:
-//    1. SEEDEditor.exe の場所を突き止めて --headless 付きで起動し、
+//    1. SEEDEditor.exe の場所を突き止めて --headless 付きで起動し（環境変数の受け渡しは
+//       BuildLaunchEnvironment。GPU メモリの計測の旗 SEED_GPU_MEM_LOG もここで渡す）、
 //       「使える状態」になるまで待つ。具体的には HTTP ブリッジ（http://localhost:7234）が
 //       応答し、かつランタイムが接続済み（scene 指定時はその読み込みも完了）になるまで。
 //       ブリッジは MainWindow 生成直後から応答するので、そこで返すと撮影・再生が失敗する。
@@ -16,6 +17,7 @@
 // ============================================================
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -83,6 +85,21 @@ internal static class Launcher
 
     /// <summary>AI ブリッジのトークンを渡す環境変数（引数の保険）。</summary>
     private const string ENV_AI_TOKEN = "SEED_AI_TOKEN";
+
+    /// <summary>
+    /// GPU メモリの内訳の計測を有効にする環境変数（ランタイムの <c>gpu_mem::GPU_MEM_LOG_ENV</c> と一致させる）。
+    ///
+    /// <para>
+    /// エディタ自身は読まない。エディタがランタイム（SEED.exe）を <c>UseShellExecute=false</c> で起動するとき
+    /// 環境変数はそのまま受け継がれる（<c>ProcessStartInfo.Environment</c> は親の環境の写しから始まる）ので、
+    /// エディタへ渡しておけば Edit・Play のどちらのランタイムでも計測が有効になる。
+    /// 起動時にだけ読まれる（後から有効にはできない）。docs/rendering_profiles.md §4。
+    /// </para>
+    /// </summary>
+    public const string ENV_GPU_MEM_LOG = "SEED_GPU_MEM_LOG";
+
+    /// <summary>旗の環境変数（SEED_HEADLESS・SEED_GPU_MEM_LOG）を「有効」にする値。</summary>
+    public const string ENV_FLAG_ON = "1";
 
     /// <summary>ヘッドレス用に確保するポート範囲の下限。</summary>
     private const int INSTANCE_PORT_MIN = 7300;
@@ -315,9 +332,13 @@ internal static class Launcher
     /// null なら環境変数 <c>SEED_PROJECT</c> を見る。それも無ければ <c>--project</c> を
     /// 渡さず、エディタ側の解決（最近のプロジェクトの先頭）に委ねる。
     /// </param>
+    /// <param name="gpuMemLog">
+    /// GPU メモリの内訳の計測（<c>SEED_GPU_MEM_LOG</c>）。true = 有効にして起動、false = 受け継いだ値を消して無効で起動、
+    /// null = MCP サーバーの環境のまま（既定）。<see cref="BuildLaunchEnvironment"/>。
+    /// </param>
     /// <returns>結果の JSON 文字列（ok / pid / port / state など）。</returns>
     public static async Task<string> LaunchAsync(
-        bool headless, string? scenePath, double waitSeconds, string? projectPath = null)
+        bool headless, string? scenePath, double waitSeconds, string? projectPath = null, bool? gpuMemLog = null)
     {
         // すでにこの MCP サーバーがインスタンスを束縛しているなら、二重起動しない。
         // 「ポートに誰か居るか」ではなく「自分が起動した相手が生きているか」で判断する。
@@ -325,8 +346,14 @@ internal static class Launcher
         {
             var alive = await FetchInstanceStateAsync(SeedInstance.ApiBase, SeedInstance.Token);
             if (alive is not null)
+            {
+                // 計測の旗は起動時にしか効かない。黙って無視せず、効いていないことを返す。
+                var warning = gpuMemLog is null
+                    ? ""
+                    : $",\"warning\":{JsonString(GPU_MEM_LOG_ALREADY_RUNNING_WARNING)}";
                 return $"{{\"ok\":true,\"already_running\":true,\"instance\":{SeedInstance.ToJson()},"
-                     + $"\"state\":{JsonOrString(alive)}}}";
+                     + $"\"state\":{JsonOrString(alive)}{warning}}}";
+            }
             // 死んでいたら束縛を捨てて起動し直す。
             SeedInstance.Clear();
         }
@@ -379,9 +406,8 @@ internal static class Launcher
                 UseShellExecute  = false,
                 CreateNoWindow   = true,
             };
-            if (headless) psi.Environment[ENV_HEADLESS] = "1";
-            psi.Environment[ENV_AI_PORT]  = port.Value.ToString();
-            psi.Environment[ENV_AI_TOKEN] = token;
+            // ヘッドレス・ポート・トークン・計測の旗（純関数で作った変更を当てる。単体テストと同じ関数）
+            ApplyEnvironment(psi, BuildLaunchEnvironment(headless, port.Value, token, gpuMemLog));
 
             process = Process.Start(psi)
                    ?? throw new InvalidOperationException("Process.Start が null を返しました。");
@@ -432,6 +458,7 @@ internal static class Launcher
                 return $"{{\"ok\":true,\"already_running\":false,\"pid\":{process.Id},"
                      + $"\"port\":{port.Value},"
                      + $"\"exe\":{JsonString(exePath)},\"headless\":{(headless ? "true" : "false")},"
+                     + $"\"gpu_mem_log\":{JsonBoolOrNull(gpuMemLog)},"
                      + $"\"state\":{JsonOrString(editorState)}}}";
             }
 
@@ -525,6 +552,58 @@ internal static class Launcher
             return false;
         }
     }
+
+    /// <summary>既に起動しているインスタンスへ gpu_mem_log を渡されたときの注意。</summary>
+    public const string GPU_MEM_LOG_ALREADY_RUNNING_WARNING =
+        "gpu_mem_log は起動時にだけ効くため、既に起動しているインスタンスには反映されません。"
+      + "計測を切り替えるには seed_shutdown してから seed_launch(gpu_mem_log:…) で起動し直してください。";
+
+    /// <summary>
+    /// 起動するエディタへ渡す環境変数の変更を作る（純関数。単体テストで確かめる）。
+    ///
+    /// <para>
+    /// 値が null の項目は「MCP サーバーから受け継いだ値を消す」を表す。
+    /// <c>gpuMemLog</c> が null のときは計測の旗に触れない（MCP サーバーの環境のまま）。
+    /// </para>
+    /// </summary>
+    /// <param name="headless">ヘッドレスで起動するか（true なら SEED_HEADLESS=1）。</param>
+    /// <param name="port">AI ブリッジのポート。</param>
+    /// <param name="token">AI ブリッジのトークン。</param>
+    /// <param name="gpuMemLog">計測の旗（true = 有効・false = 消す・null = 触れない）。</param>
+    /// <returns>(名前, 値または null) の並び。</returns>
+    public static IReadOnlyList<KeyValuePair<string, string?>> BuildLaunchEnvironment(
+        bool headless, int port, string token, bool? gpuMemLog)
+    {
+        var changes = new List<KeyValuePair<string, string?>>();
+        if (headless) changes.Add(new(ENV_HEADLESS, ENV_FLAG_ON));
+        // ポートとトークンは引数と環境変数の両方で渡す（どちらか一方でも届けば成立する）。
+        changes.Add(new(ENV_AI_PORT,  port.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        changes.Add(new(ENV_AI_TOKEN, token));
+        if (gpuMemLog is { } enabled) changes.Add(new(ENV_GPU_MEM_LOG, enabled ? ENV_FLAG_ON : null));
+        return changes;
+    }
+
+    /// <summary>
+    /// 環境変数の変更を起動情報へ当てる（値が null の項目は受け継いだ値を消す）。
+    /// </summary>
+    /// <param name="psi">起動情報（Environment は親の環境の写しから始まる）。</param>
+    /// <param name="changes">変更（<see cref="BuildLaunchEnvironment"/> の戻り値）。</param>
+    public static void ApplyEnvironment(ProcessStartInfo psi, IReadOnlyList<KeyValuePair<string, string?>> changes)
+    {
+        foreach (var (name, value) in changes)
+        {
+            if (value is null) psi.Environment.Remove(name);
+            else psi.Environment[name] = value;
+        }
+    }
+
+    /// <summary>bool? を JSON の true / false / null にする。</summary>
+    private static string JsonBoolOrNull(bool? value) => value switch
+    {
+        true  => "true",
+        false => "false",
+        null  => "null",
+    };
 
     /// <summary>
     /// 応答本文が JSON ならそのまま、そうでなければ JSON 文字列として埋め込めるよう整形する。

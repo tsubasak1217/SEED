@@ -23,6 +23,8 @@ namespace AiSafetyTests;
 ///   <item>空きポート選択 — 既定ポートを避けた専用レンジから空きを選べる</item>
 ///   <item>シーンロック — 死んだプロセスのロックは無効、生きているロックは有効</item>
 ///   <item>バックアップ世代 — 最新 N 件だけ残し、別ファイルの世代を巻き込まない</item>
+///   <item>2026-10-02 の MCP ツール — 新コマンドの分類・部品（IPC の組み立てと解釈・要約表・起動時の環境変数）・
+///         MCP サーバーの実プロセスの tools/list と未束縛での拒否（McpToolPartsTests / McpServerProcessTests）</item>
 /// </list>
 /// </summary>
 public static class Program
@@ -74,6 +76,11 @@ public static class Program
         harness.Add("バックアップは最新 N 世代だけ残る",                  BackupRotationKeepsNewest);
         harness.Add("バックアップ判定は別ファイルを巻き込まない",         BackupNameMatchingIsExact);
         harness.Add("上書き保存で旧版がバックアップされる",               WriteCreatesBackupOfPrevious);
+
+        // ── 7. 2026-10-02 の MCP ツール（模擬・GPU メモリ・画面プレビュー・テンプレートアクタ）──
+        harness.Add("新コマンドの分類: 観測系は読み取り専用でも通り、変更系は拒否される", NewCommandsClassification);
+        McpToolPartsTests.Register(harness);
+        McpServerProcessTests.Register(harness);
 
         return harness.Run();
     }
@@ -177,7 +184,11 @@ public static class Program
         SeedInstance.Clear();
         foreach (var tool in new[] { "seed_save_scene", "seed_batch", "seed_play",
                                      "seed_select", "seed_send_ipc", "seed_shutdown",
-                                     "seed_anim_preview", "seed_anim_reload" })
+                                     "seed_anim_preview", "seed_anim_reload",
+                                     // 2026-10-02 追加。gpu_mem_report・template_actor(list) はエディタ側では観測系だが、
+                                     // 未束縛（＝利用者の対話エディタ）へは送らない（SeedInstance.ReadOnlyTools の注記）
+                                     "seed_platform_sim", "seed_preview", "seed_template_actor",
+                                     "seed_gpu_mem_report" })
         {
             var denial = SeedInstance.CheckToolAllowed(tool);
             Check.True(denial is not null, $"{tool} は未束縛では拒否されるはず");
@@ -234,6 +245,41 @@ public static class Program
 
         Check.True(!Launcher.IsExpectedInstance(null, pid, token), "応答なしは false");
         Check.True(!Launcher.IsExpectedInstance("これはJSONではない", pid, token), "壊れた応答は false");
+    }
+
+    // ============================================================
+    //  7. 2026-10-02 の MCP ツールの分類（判定表は AiOperationPolicy の 1 か所）
+    // ============================================================
+
+    /// <summary>
+    /// 新しいコマンドの分類を固定する（docs/editor_mcp.md §7.2）。
+    /// 観測系: gpu_mem_report（一時フォルダへ書くだけ）・template_actor_list（カタログを読むだけ）。
+    /// 変更系: platform_sim（ゲームの状態）・preview（Undo 履歴・選択・DFS が動く）・template_actor_add（シーンとファイル）。
+    /// </summary>
+    private static void NewCommandsClassification()
+    {
+        // 対話エディタ（既定は読み取り専用）
+        AiOperationPolicy.Configure(port: null, token: null, isHeadless: false);
+        foreach (var cmd in new[] { "gpu_mem_report", "template_actor_list" })
+        {
+            Check.True(AiOperationPolicy.IsReadOnlyCommand(cmd), $"{cmd} は観測系のはず");
+            Check.True(AiOperationPolicy.CheckAllowed(cmd, AiCommandOrigin.Remote) is null,
+                       $"{cmd} は読み取り専用でも通るはず");
+        }
+        foreach (var cmd in new[] { "platform_sim", "preview", "template_actor_add" })
+        {
+            Check.True(!AiOperationPolicy.IsReadOnlyCommand(cmd), $"{cmd} は変更系のはず");
+            Check.Equal(AiOperationPolicy.DENY_READ_ONLY, AiOperationPolicy.CheckAllowed(cmd, AiCommandOrigin.Remote),
+                        $"{cmd} の拒否理由");
+            // パネル内蔵 AI（利用者自身の依頼）は従来どおり通る
+            Check.True(AiOperationPolicy.CheckAllowed(cmd, AiCommandOrigin.UserInitiated) is null,
+                       $"{cmd} は利用者操作なら通るはず");
+        }
+
+        // ヘッドレス（seed_launch で起動したインスタンス）は変更系も通る
+        AiOperationPolicy.Configure(port: 7304, token: "t", isHeadless: true);
+        foreach (var cmd in new[] { "platform_sim", "preview", "template_actor_add", "gpu_mem_report", "template_actor_list" })
+            Check.True(AiOperationPolicy.CheckAllowed(cmd, AiCommandOrigin.Remote) is null, $"ヘッドレスの {cmd} は通るはず");
     }
 
     // ============================================================

@@ -128,6 +128,20 @@ public sealed class EditorPreferences
     public bool PrefabAutoPropagateOnSave { get; set; } = true;
 
     /// <summary>
+    /// アセットルート配下のプレハブ（.actor / .actor2d）がエディタの外（テキストエディタ・AI・別ツール）で
+    /// 書き換えられたときに、自動でシーンのインスタンスへ取り込むかどうか。既定はオン。
+    ///
+    /// オンのとき、Edit では <see cref="PrefabAutoPropagateOnSave"/> がオンなら PREFAB_REAPPLY_PATH
+    /// （Undo 1 操作・件数のトースト）、オフなら PREFAB_STATUS（版ずれのバナーだけ）を送る。
+    /// Play / Pause 中は PREFAB_LIVE_PATCH_PATH（状態を保つ当て直し）を送り、停止後に Edit のシーンへも反映する。
+    /// エディタ自身の保存・書き戻し・アクタファイル化は自己書き込みとして除外する。
+    /// オフにすると何もしない（保留もしない）。正典は docs/editor_auto_reload.md §7.1。
+    /// UI 上の「表示 > シーン > プレハブを自動再読込」と 1 対 1 に対応する。
+    /// </summary>
+    [JsonPropertyName("auto_reload_prefabs")]
+    public bool AutoReloadPrefabs { get; set; } = true;
+
+    /// <summary>
     /// ロジック配置ダイアログで最後に使ったパターン指定。
     ///
     /// 「円形に 12 個」「5×5 グリッド」といった指定は同じ設定を続けて使うことが多く、

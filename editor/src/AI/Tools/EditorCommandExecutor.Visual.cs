@@ -26,6 +26,8 @@
 //    save_scene        : 現在のシーンを保存（Ctrl+S 相当）
 //    get_editor_state  : エディタ状態のスナップショット
 //    game_input_*      : ゲーム入力の注入（別ファイル: EditorCommandExecutor.GameInput.cs）
+//    platform_sim / gpu_mem_report / preview / template_actor_list / template_actor_add
+//                      : 端末なしの確かめ・計測（別ファイル: .PlatformSim.cs / .GpuMem.cs / .ScreenPreview.cs / .TemplateActors.cs）
 // ============================================================
 
 using System;
@@ -166,6 +168,18 @@ public partial class EditorCommandExecutor
         // デバッグコマンド（script_debug）も別ファイル。
         if (ExecuteScriptDebugTool(command, args) is { } scriptDebugTask)
             return await scriptDebugTask;
+
+        // 端末なしの確かめ・計測（2026-10-02）もそれぞれ別ファイル:
+        // platform_sim（.PlatformSim.cs）・gpu_mem_report（.GpuMem.cs）・preview（.ScreenPreview.cs）・
+        // template_actor_list / template_actor_add（.TemplateActors.cs）。
+        if (ExecutePlatformSimTool(command, args) is { } platformSimTask)
+            return await platformSimTask;
+        if (ExecuteGpuMemTool(command, args) is { } gpuMemTask)
+            return await gpuMemTask;
+        if (ExecuteScreenPreviewTool(command, args) is { } previewTask)
+            return await previewTask;
+        if (ExecuteTemplateActorTool(command, args) is { } templateActorTask)
+            return await templateActorTask;
 
         return command switch
         {

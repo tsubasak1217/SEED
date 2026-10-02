@@ -154,6 +154,8 @@ mod physics_ops;
 mod physics_timeline;
 mod tab_physics;
 mod script_scene_ops;
+/// 動的ノード API（GameObject.Create・SetSiblingIndex・AddComponent / RemoveComponent / AddScript）の遅延コマンドの適用。
+mod script_node_ops;
 /// モデル非同期ロード（ストリーミング）の App 側グルー。
 /// ワーカー完成品の GPU 反映・プリフェッチ開始・保留スロット台帳を担う。
 pub(crate) mod model_streaming;

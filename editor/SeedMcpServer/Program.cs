@@ -29,6 +29,11 @@
 //     seed_log(lines?)               → エディタログ末尾（ランタイム stderr 込み）
 //     seed_save_scene()              → シーン保存（Ctrl+S 相当）
 //     seed_send_ipc(command)         → 生 IPC 送信（低レベルの逃げ道）
+//   ■ 端末なしの確かめ・計測（2026-10-02 追加。いずれも応答の 1 行を待って結果を返す）
+//     seed_platform_sim(verb, args?) → SEED.Platform のデスクトップの模擬を変える（Play 中のみ・変更系）
+//     seed_gpu_mem_report(top?)      → GPU メモリの内訳の要約表＋完全な JSON（観測系。seed_launch(gpu_mem_log:true) が前提）
+//     seed_preview(action, …)        → Edit 上の画面プレビューを差し込む・消す（Edit 中のみ・変更系）
+//     seed_template_actor(action, …) → テンプレートアクタの一覧（観測系）・追加（変更系）
 //
 //  【なぜ編集系は seed_batch に集約しているか】
 //    エージェントはツール呼び出しごとに API コールを 1 回消費する。
@@ -210,6 +215,18 @@ static async Task<string> HandleToolCallAsync(JsonElement id, JsonElement root, 
 
             // 図鑑（魚カタログ）画像の一括生成: 変更系なので束縛済みインスタンスが必須
             "seed_generate_fish_thumbnails" => await PostCmdAsync(http, "generate_fish_thumbnails", args),
+
+            // SEED.Platform のデスクトップの模擬（PLATFORM_SIM）: Play 中のみ・変更系
+            "seed_platform_sim"      => await PostCmdAsync(http, "platform_sim",      args),
+
+            // GPU メモリの内訳（GPU_MEM_REPORT）: 応答 JSON を要約表へ整形する専用経路
+            "seed_gpu_mem_report"    => await HandleGpuMemReportAsync(http, args),
+
+            // Edit 上の画面プレビュー（PREVIEW_*）: action（add / clear / clear_all）はエディタ側で分ける
+            "seed_preview"           => await PostCmdAsync(http, "preview",           args),
+
+            // テンプレートアクタ: action でエディタ側のコマンド（一覧 = 観測系 / 追加 = 変更系）を分ける
+            "seed_template_actor"    => await HandleTemplateActorAsync(http, args),
 
             _ => $"ERROR: 不明なツール '{name}'"
         };
@@ -422,6 +439,7 @@ static async Task<string> HandleLaunchAsync(JsonElement args)
     var headless = true;
     string? scene = null;
     string? project = null;
+    bool? gpuMemLog = null;   // null = MCP サーバーの環境のまま（Launcher.BuildLaunchEnvironment）
     var waitSeconds = SeedMcpServer.Launcher.DEFAULT_WAIT_SECONDS;
 
     if (args.ValueKind == JsonValueKind.Object)
@@ -438,9 +456,64 @@ static async Task<string> HandleLaunchAsync(JsonElement args)
 
         if (args.TryGetProperty("wait_seconds", out var wEl) && wEl.ValueKind == JsonValueKind.Number)
             waitSeconds = wEl.GetDouble();
+
+        // GPU メモリの内訳の計測（起動時にだけ効く。エディタ → ランタイムへ環境変数で受け継がれる）
+        if (args.TryGetProperty("gpu_mem_log", out var gEl)
+            && (gEl.ValueKind == JsonValueKind.True || gEl.ValueKind == JsonValueKind.False))
+            gpuMemLog = gEl.GetBoolean();
     }
 
-    return await SeedMcpServer.Launcher.LaunchAsync(headless, scene, waitSeconds, project);
+    return await SeedMcpServer.Launcher.LaunchAsync(headless, scene, waitSeconds, project, gpuMemLog);
+}
+
+/// <summary>
+/// seed_gpu_mem_report: エディタの gpu_mem_report を呼び、内訳の JSON を「合計・分類ごと・上位 N 件」の
+/// 要約表＋完全な JSON へ整形して返す（整形は GpuMemReportFormatter。単体テストあり）。
+/// 失敗（計測が無効・未接続など）はエディタの応答をそのまま返す。
+/// </summary>
+static async Task<string> HandleGpuMemReportAsync(HttpClient http, JsonElement args)
+{
+    var raw = await PostCmdAsync(http, "gpu_mem_report", args);
+    if (IsErrorResult(raw)) return raw;
+
+    var top = SeedMcpServer.GpuMemReportFormatter.DEFAULT_TOP;
+    if (args.ValueKind == JsonValueKind.Object
+        && args.TryGetProperty("top", out var topEl)
+        && topEl.ValueKind == JsonValueKind.Number
+        && topEl.TryGetInt32(out var requestedTop))
+    {
+        top = requestedTop;
+    }
+    return SeedMcpServer.GpuMemReportFormatter.Format(raw, top);
+}
+
+/// <summary>seed_template_actor の action: カタログの一覧（観測系）。</summary>
+const string TEMPLATE_ACTOR_ACTION_LIST = "list";
+
+/// <summary>seed_template_actor の action: シーンへの追加（変更系）。</summary>
+const string TEMPLATE_ACTOR_ACTION_ADD = "add";
+
+/// <summary>
+/// seed_template_actor: action でエディタ側のコマンドを分けて転送する。
+///
+/// エディタの許可判定（AiOperationPolicy）はコマンド名だけを見るので、観測系の一覧
+/// （template_actor_list）と変更系の追加（template_actor_add）を別のコマンドにしてある。
+/// こうしておくと、読み取り専用の対話エディタでも一覧だけは取れる。
+/// </summary>
+static async Task<string> HandleTemplateActorAsync(HttpClient http, JsonElement args)
+{
+    var action = args.ValueKind == JsonValueKind.Object
+              && args.TryGetProperty("action", out var aEl) && aEl.ValueKind == JsonValueKind.String
+        ? aEl.GetString()
+        : null;
+
+    return action switch
+    {
+        TEMPLATE_ACTOR_ACTION_LIST => await PostCmdAsync(http, "template_actor_list", args),
+        TEMPLATE_ACTOR_ACTION_ADD  => await PostCmdAsync(http, "template_actor_add",  args),
+        _ => $"ERROR: action は \"{TEMPLATE_ACTOR_ACTION_LIST}\" か \"{TEMPLATE_ACTOR_ACTION_ADD}\" を指定してください"
+           + $"（指定: '{action ?? "(なし)"}'）。",
+    };
 }
 
 /// <summary>
@@ -777,6 +850,10 @@ static object[] BuildToolList() => new[]
     GameInputSequenceTool(),
     GameInputReleaseAllTool(),
     SeedScriptDebugTool(),
+    SeedPlatformSimTool(),
+    SeedGpuMemReportTool(),
+    SeedPreviewTool(),
+    SeedTemplateActorTool(),
 };
 
 /// <summary>引数を取らないツールの共通スキーマ。</summary>
@@ -820,6 +897,14 @@ static object SeedLaunchTool() => new
             {
                 type        = "number",
                 description = "AI ブリッジが応答するまで待つ上限秒数（既定 60、最大 300）。"
+            },
+            gpu_mem_log = new
+            {
+                type        = "boolean",
+                description = "GPU メモリの内訳の計測（環境変数 SEED_GPU_MEM_LOG）。true で有効にして起動する"
+                            + "（seed_gpu_mem_report の前提。資源の作成を記録するので少し重くなる）。"
+                            + "false で MCP サーバーから受け継いだ値を消して無効で起動。省略時は MCP サーバーの環境のまま。"
+                            + "起動時にだけ効く（既に起動中なら warning を返して何もしない）。"
             }
         }
     }
@@ -945,7 +1030,15 @@ static object SeedBatchTool() => new
                                 // アクタ検索（名前 → DFS ID。後続操作の宛先を得る）
                                 "find_actor",
                                 // プレハブインスタンスの再展開（破壊的。Undo 可能）
-                                "prefab_reapply"
+                                "prefab_reapply",
+                                // SEED.Platform のデスクトップの模擬（Play 中のみ）
+                                "platform_sim",
+                                // GPU メモリの内訳（要約表は seed_gpu_mem_report だけが付ける。batch では生の JSON）
+                                "gpu_mem_report",
+                                // Edit 上の画面プレビュー（action: add / clear / clear_all）
+                                "preview",
+                                // テンプレートアクタの一覧・追加（seed_template_actor の action ごとのコマンド）
+                                "template_actor_list", "template_actor_add"
                             },
                             description = "コマンド名"
                         },
@@ -962,12 +1055,19 @@ static object SeedBatchTool() => new
                         content        = new { type = "string",  description = "write_asset_file: ファイル内容" },
                         clip_path      = new { type = "string",  description = "anim_preview / anim_reload: .anim のパス（絶対 or seed://）" },
                         time           = new { type = "number",  description = "anim_preview: プレビュー時刻（秒）" },
-                        action         = new { type = "string",  description = "play_control: play / pause / resume / stop" },
+                        action         = new { type = "string",  description = "play_control: play / pause / resume / stop、preview: add / clear / clear_all" },
                         command        = new { type = "string",  description = "send_ipc: 生 IPC 文字列" },
                         op             = new { type = "string",  description = "save_data: get / set / delete / save" },
                         type           = new { type = "string",  description = "save_data(set): int / float / string（省略時は value から推論）" },
                         flush          = new { type = "boolean", description = "save_data(set): true なら書き込み後にディスクへ書き出す" },
-                        components     = new { type = "boolean", description = "find_actor: コンポーネント一覧も返すか（既定 true）" }
+                        components     = new { type = "boolean", description = "find_actor: コンポーネント一覧も返すか（既定 true）" },
+                        verb           = new { type = "string",  description = "platform_sim: 動詞（permission / permission_answer / lifecycle）" },
+                        args           = new { type = "array",   items = new { type = "string" }, description = "platform_sim: 動詞の引数の並び" },
+                        prefab_path    = new { type = "string",  description = "preview(add): 中身のプレハブ（assets:// か絶対パス）" },
+                        parent         = new { description = "preview(add) / template_actor_add: 親（DFS ID の整数か \"Root/Child\" 形式の名前パス）" },
+                        host           = new { type = "string",  description = "preview(add): 差し込み先の行の見出し（\"画面\"・\"ModalHost/ダイアログ\" など）" },
+                        dfs            = new { type = "integer", description = "preview(clear): 消すプレビューの根か中のノードの DFS ID" },
+                        path           = new { type = "string",  description = "template_actor_add: テンプレートのライブラリ相対パス（template_actor_list の path）" }
                     }
                 }
             }
@@ -1514,6 +1614,142 @@ static object GameInputReleaseAllTool() => new
       + "スクリプトの状態機械が押しっぱなしのまま取り残されない。"
       + "一連の操作を終えたら Play を止める前にこれを呼ぶこと。",
     inputSchema = EmptySchema()
+};
+
+// ── 端末なしの確かめ・計測（2026-10-02 追加）─────────────────────────────────
+//  いずれもエディタ側が IPC を 1 行送り、応答の 1 行を待ってから返す（待ちの仕組みは
+//  MainWindow.AiHost.Tools.cs。応答の書式の解釈は editor/src/AI/Tools/RuntimeIpc/）。
+//  読み取り専用の分類（対話エディタで通すか）は AiOperationPolicy の 1 か所。docs/editor_mcp.md §7.2。
+
+/// <summary>
+/// <c>seed_platform_sim</c> — SEED.Platform のデスクトップの模擬（権限の状態と答え・前面と背面）を Play 中に変える。
+/// IPC <c>PLATFORM_SIM:{verb},{args…}</c>。変更系（ゲームの状態を変える）。
+/// </summary>
+static object SeedPlatformSimTool() => new
+{
+    name        = "seed_platform_sim",
+    description =
+        "PC の Play の SEED.Platform の模擬（デスクトップの模擬）を実行中に変える（Play 中のみ。変更系）。"
+      + "IPC PLATFORM_SIM:{verb},{args…} を送り、ランタイムの返答の JSON をそのまま reply に入れて返す。"
+      + "動詞: permission（args: [kind, status]。状態を変える。変われば platform.permission_changed が届く）/ "
+      + "permission_answer（args: [kind か all, status か none]。Permissions.Request のときの模擬の利用者の答え）/ "
+      + "lifecycle（args: [resumed か paused]。前面・背面の出入り＝platform.resumed / paused）。"
+      + "kind: post_notifications / exact_alarm / full_screen_intent。"
+      + "status: granted / denied / denied_permanently / needs_settings / not_applicable。"
+      + "Play を止める・始めると実行中の変更は捨てられ、起動時の設定（環境変数 SEED_PLATFORM_SIM_PERMISSIONS / "
+      + "SEED_PLATFORM_SIM_PERMISSION_ANSWER / SEED_PLATFORM_SIM_OS_VERSION）へ戻る。OS の版は起動時の環境変数でしか変えられない。"
+      + "例: 通知を拒否した画面を撮る → seed_play(play) → seed_platform_sim(verb:\"permission\", args:[\"post_notifications\",\"denied\"]) → seed_screenshot。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            verb = new { type = "string", description = "動詞（permission / permission_answer / lifecycle）。空白・カンマ不可。" },
+            args = new
+            {
+                type        = "array",
+                items       = new { type = "string" },
+                description = "動詞の引数の並び（各要素にカンマ・改行は使えない）。"
+            }
+        },
+        required = new[] { "verb" }
+    }
+};
+
+/// <summary>
+/// <c>seed_gpu_mem_report</c> — GPU メモリの内訳（IPC <c>GPU_MEM_REPORT</c>）を取り、要約表＋完全な JSON を返す。
+/// 観測系。計測は seed_launch(gpu_mem_log:true) で起動したインスタンスでのみ有効。
+/// </summary>
+static object SeedGpuMemReportTool() => new
+{
+    name        = "seed_gpu_mem_report",
+    description =
+        "GPU メモリの内訳を取り、要約の表（理由・描画の構成〈文脈〉・追跡した資源の合計・wgpu-hal の確保・実際のヒープ使用量・"
+      + "スワップチェイン・分類ごとの合計・大きい順の上位 N 件）と完全な JSON を返す（観測系。Edit・Play のどちらでも取れる）。"
+      + "計測はランタイムの起動時に有効にしておく必要がある: seed_launch(gpu_mem_log:true) で起動したインスタンスで呼ぶこと"
+      + "（無効なら『計測が無効です』のエラーが返る）。JSON はエディタが OS の一時フォルダ（seed_mcp/）へ書かせ、そのパスも返す。"
+      + "大きさは論理値と推定（解放は追えない）なので、比較は同じ手順・同じ時点どうしで行う。docs/rendering_profiles.md §4。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            top = new { type = "integer", description = "上位の表に出す件数（既定 20。ランタイムが JSON に入れるのも 20 件まで）。" }
+        }
+    }
+};
+
+/// <summary>
+/// <c>seed_preview</c> — Edit 上の画面プレビュー（保存されないプレビュー）を差し込む・消す。
+/// IPC <c>PREVIEW_PREFAB</c> / <c>PREVIEW_CLEAR</c> / <c>PREVIEW_CLEAR_ALL</c>。変更系（Undo 履歴へ積まれ、選択も動く）。
+/// </summary>
+static object SeedPreviewTool() => new
+{
+    name        = "seed_preview",
+    description =
+        "Edit 上の画面プレビュー（保存されないプレビュー）を差し込む・消す（Edit 中のみ。変更系）。"
+      + "action=\"add\": parent（DFS ID か \"Root/Child\" 形式の名前パス）の下へ prefab_path（assets:// か絶対パス）を出す。"
+      + "host を省くとヒエラルキーの右クリック「プレハブをプレビュー」と同じ（枠なし・親の直下）。"
+      + "host を付けるとインスペクタの「プレビュー」の欄と同じ: parent が持つ ScreenStack / ModalHost / PopupPlane の"
+      + "差し込み先の行を見出しで選ぶ（\"根の画面\"・\"画面\"・\"ダイアログ\"・\"シート\"・\"覆い\"・\"中身\"。"
+      + "\"ModalHost/ダイアログ\" のようにスクリプト名で絞れる）。ScreenStack の行は枠（FramePrefab）→ 中身の 2 段で入る。"
+      + "行に既定のプレハブ（RootPrefab・DialogPrefab など）があれば prefab_path は省略できる。"
+      + "action=\"clear\": dfs（プレビューの根か中のノード）を含むプレビューを 1 つ消す。action=\"clear_all\": 表示中のタブのプレビューを全部消す。"
+      + "シーンは未保存にならず保存もされないが、Undo 履歴へ 1 件ずつ積まれ、出したプレビューの根が選択される"
+      + "（そのため対話エディタでは既定で拒否。docs/editor_mcp.md §7.2）。差し込んだら seed_screenshot(target:\"viewport\") で確かめる。"
+      + "正典 docs/editor_screen_preview.md。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            action      = new
+            {
+                type        = "string",
+                @enum       = new[] { "add", "clear", "clear_all" },
+                description = "add = 差し込む / clear = 1 つ消す / clear_all = 表示中のタブのプレビューを全部消す"
+            },
+            prefab_path = new { type = "string",  description = "add: 中身のプレハブ（assets:// 仮想パスか絶対パス。.actor / .actor2d）" },
+            parent      = new { description = "add: 親（DFS ID の整数か \"Root/Child\" 形式の名前パス。ルートへは出せない）" },
+            host        = new { type = "string",  description = "add: 差し込み先の行の見出し（\"画面\"・\"根の画面\"・\"ダイアログ\"・\"ModalHost/シート\" など）" },
+            dfs         = new { type = "integer", description = "clear: 消すプレビューの根か、その中のノードの DFS ID" }
+        },
+        required = new[] { "action" }
+    }
+};
+
+/// <summary>
+/// <c>seed_template_actor</c> — テンプレートアクタの一覧（観測系）と追加（変更系）。
+/// 追加はヒエラルキー右クリック「テンプレートアクタ...」の窓と同じ道筋（TemplateActorAddFlow）を通る。
+/// </summary>
+static object SeedTemplateActorTool() => new
+{
+    name        = "seed_template_actor",
+    description =
+        "テンプレートアクタ（templates/*/template_actors.json に載った、コンポーネントとスクリプトが付いた部品）を一覧する・シーンへ追加する。"
+      + "action=\"list\": カタログの {path, name, category, tags, description, is_2d} の一覧を返す（観測系）。"
+      + "action=\"add\": path（list の path）を parent（DFS ID か \"Root/Child\" 形式の名前パス。省略でルート）の子として追加する"
+      + "（変更系。Edit 中のみ。対話エディタでは既定で拒否）。ヒエラルキー右クリック「テンプレートアクタ...」の窓と同じ道筋で、"
+      + "プレハブにせず『まっさらなアクタ』として入れ、動かすのに要るファイル（モデル・画像・入力の割り当てなど）を"
+      + "プロジェクトの assets へコピーする（既にあるファイルは触らない）。Undo 1 件。"
+      + "2D の部品は 2D アクタか Canvas を持つ 3D アクタの下（またはルート）へしか入れられない。"
+      + "追加の結果は seed_hierarchy で確かめる。docs/template_library.md §9。",
+    inputSchema = new
+    {
+        type       = "object",
+        properties = new
+        {
+            action = new
+            {
+                type        = "string",
+                @enum       = new[] { "list", "add" },
+                description = "list = カタログの一覧 / add = シーンへ追加"
+            },
+            path   = new { type = "string", description = "add: テンプレートのライブラリ相対パス（list の path。例 \"ui/prefabs/button.actor\"）" },
+            parent = new { description = "add: 親（DFS ID の整数か \"Root/Child\" 形式の名前パス。省略でルート）" }
+        },
+        required = new[] { "action" }
+    }
 };
 
 // ── seed_profile: 応答 JSON の要約整形 ────────────────────────────────────────

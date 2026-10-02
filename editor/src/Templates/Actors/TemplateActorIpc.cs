@@ -27,6 +27,15 @@ public static class TemplateActorIpc
     /// <summary>ルートへ入れることを表す親の番号。</summary>
     public const int RootParentId = -1;
 
+    /// <summary>
+    /// 追加できたときにランタイムが送る知らせ（HIERARCHY の直後。template_actor_ops.rs の handle_add_template_actor）。
+    /// ADD_TEMPLATE_ACTOR 専用の応答は無いので、AI ツールはこの知らせを「入った」の合図として待つ。
+    /// </summary>
+    public const string AddedNotice = "SCENE_MODIFIED";
+
+    /// <summary>入れられない・読めないときにランタイムが送る行の頭（既存のアクタ追加の拒否と同じ経路）。</summary>
+    public const string RejectedPrefix = "LOAD_ERROR:";
+
     /// <summary>欄の区切り。</summary>
     private const char FieldSeparator = ',';
 

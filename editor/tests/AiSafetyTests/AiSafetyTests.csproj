@@ -8,8 +8,10 @@
       - SceneLock         : ロックの置き場（cache/editor/scene_locks）・stale 判定
                             （別プロセス死亡／別マシン）・旧位置（<scene>.lock）の後始末
       - SafeFileWriter    : バックアップ世代の切り詰めと原子的書き込み
-      - Launcher          : 空きポート選択・起動インスタンスの同一性検証
+      - Launcher          : 空きポート選択・起動インスタンスの同一性検証・起動時の環境変数（gpu_mem_log）
       - SeedInstance      : 束縛が無いときの変更系ツール拒否
+      - GpuMemReportFormatter / RuntimeIpc（PlatformSimIpc・GpuMemReportIpc・AiIpcReply）: 2026-10-02 の MCP ツールの部品
+      - MCP サーバーの実プロセス: tools/list のスキーマの形・seed_batch の enum・未束縛での新ツールの拒否
 
     SpriteRigTests と同じ流儀:
       - xunit 等の外部パッケージを足さず、素のコンソールアプリ + 自前アサートで回す
@@ -45,10 +47,37 @@
     <Compile Include="..\..\SeedMcpServer\Launcher.cs">
       <Link>Linked\Mcp\Launcher.cs</Link>
     </Compile>
+    <!-- MCP サーバー側: GPU メモリの内訳の要約表（seed_gpu_mem_report。2026-10-02） -->
+    <Compile Include="..\..\SeedMcpServer\GpuMemReportFormatter.cs">
+      <Link>Linked\Mcp\GpuMemReportFormatter.cs</Link>
+    </Compile>
+    <!-- エディタ側: AI ツールの IPC の組み立てと応答の解釈（WPF 非依存。2026-10-02） -->
+    <Compile Include="..\..\src\AI\Tools\RuntimeIpc\AiIpcReply.cs">
+      <Link>Linked\AI\RuntimeIpc\AiIpcReply.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\AI\Tools\RuntimeIpc\PlatformSimIpc.cs">
+      <Link>Linked\AI\RuntimeIpc\PlatformSimIpc.cs</Link>
+    </Compile>
+    <Compile Include="..\..\src\AI\Tools\RuntimeIpc\GpuMemReportIpc.cs">
+      <Link>Linked\AI\RuntimeIpc\GpuMemReportIpc.cs</Link>
+    </Compile>
     <!-- テストランナー（SpriteRigTests と共用） -->
     <Compile Include="..\SpriteRigTests\TestHarness.cs">
       <Link>Linked\TestHarness.cs</Link>
     </Compile>
+  </ItemGroup>
+
+  <!--
+    MCP サーバーを実際に起動して tools/list の形（名前・引数スキーマ）と、未束縛での拒否を確かめるテスト（McpServerProcessTests）用。
+    アセンブリとしては参照せず（ReferenceOutputAssembly=false）ビルドの順番だけ揃え、
+    出力の場所をアセンブリのメタデータでテストへ渡す（構成〈Debug / Release〉はテスト自身と同じ）。
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\SeedMcpServer\SeedMcpServer.csproj" ReferenceOutputAssembly="false" />
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>SeedMcpServerDll</_Parameter1>
+      <_Parameter2>$(MSBuildThisFileDirectory)..\..\SeedMcpServer\bin\$(Configuration)\net10.0\SeedMcpServer.dll</_Parameter2>
+    </AssemblyAttribute>
   </ItemGroup>
 
 </Project>

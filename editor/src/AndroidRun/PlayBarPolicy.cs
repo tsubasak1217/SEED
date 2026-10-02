@@ -15,6 +15,8 @@
 //       実行先は変えられない（PC の実行中に Android の実行を始めさせない）
 //    3. どちらも動いていないとき:
 //       実行先が PC → 従来の PC の表示（状態ごとの表。ApplyUiState にあったものをここへ移した）
+//       実行先が PC（端末の模擬）→ PC と同じ表示・動き。実行ボタンと実行先セレクタのツールチップに
+//       「模擬: Pixel 6a 半分（540×1200・×1.3125）」を足す（PC の実行中も。実行先は変えられないので選んだ端末のまま）
 //       実行先が Android → 実行ボタン＝「その端末で実行」（端末が選べない状態・PC のランタイムの起動中は理由付きで無効）
 //
 //  WPF に依存しない（editor/tests/AndroidRunUiTests からリンクされる）。
@@ -23,6 +25,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using SEEDEditor.DevicePresets;
 using SEEDEditor.Runtime;
 
 namespace SEEDEditor.AndroidRun;
@@ -201,7 +204,10 @@ public static class PlayBarPolicy
 
     /// <summary>実行先セレクタのツールチップ（変えられるとき）。</summary>
     public const string TargetSelectorToolTip =
-        "実行先（PC／Android（自動）／Android の実機・エミュレータ）。一覧を開くと adb で端末を探し直します。";
+        "実行先（PC／PC（端末の模擬）／Android（自動）／Android の実機・エミュレータ）。一覧を開くと adb で端末を探し直します。";
+
+    /// <summary>ツールチップへ端末の模擬の注記を足すときの区切り（改行）。</summary>
+    private const string NoteSeparator = "\n";
 
     /// <summary>Android の実行中の実行先セレクタのツールチップ。</summary>
     private const string TargetLockedByAndroidToolTip = "Android で実行中は実行先を変えられません（停止してから）。";
@@ -283,8 +289,28 @@ public static class PlayBarPolicy
     {
         if (input.Android.IsActive) return ForAndroidActive(input.Android);
         var pc = PcTable[input.PcState];
-        if (IsPcRunning(input.PcState)) return ForPc(pc, TargetLockedByPcToolTip, selectorEnabled: false);
-        return input.Target.IsAndroid ? ForAndroidTarget(input, pc) : ForPc(pc, TargetSelectorToolTip, selectorEnabled: true);
+        if (IsPcRunning(input.PcState)) return WithSimulationNote(ForPc(pc, TargetLockedByPcToolTip, selectorEnabled: false), input.Target);
+        return input.Target.IsAndroid
+            ? ForAndroidTarget(input, pc)
+            : WithSimulationNote(ForPc(pc, TargetSelectorToolTip, selectorEnabled: true), input.Target);
+    }
+
+    /// <summary>
+    /// 実行先が PC（端末の模擬）なら、実行ボタンと実行先セレクタのツールチップへ「模擬: 端末（大きさ・倍率）」を足す
+    /// （ほかの行はそのまま返す。PC の表示は変えない）。
+    /// </summary>
+    /// <param name="view">PC の表示。</param>
+    /// <param name="target">選んでいる実行先。</param>
+    /// <returns>見た目と動き。</returns>
+    private static PlayBarView WithSimulationNote(PlayBarView view, RunTargetEntry target)
+    {
+        if (!target.IsPcSimulated || target.DevicePreset is not { } preset) return view;
+        var note = DevicePresetFormat.SimulationNote(preset);
+        return view with
+        {
+            PlayToolTip = view.PlayToolTip + NoteSeparator + note,
+            TargetSelectorToolTip = view.TargetSelectorToolTip + NoteSeparator + note,
+        };
     }
 
     /// <summary>PC の実行中か（Play の起動中・実行中・一時停止中）。この間は Android の実行を始めさせない。</summary>

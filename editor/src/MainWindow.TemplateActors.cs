@@ -7,6 +7,8 @@
 //  窓はエディタの主窓・ヒエラルキー・ランタイムを直接知らないので、
 //  必要なこと（アセットの場所・追加先の引き直し・送信・プロジェクトパネルの読み直し）を
 //  TemplateActorPickerContext に詰めて渡す。正典は docs/template_library.md §9。
+//  AI ツール（MCP の seed_template_actor）も同じ詰め物（CreateTemplateActorContext）と同じ手順
+//  （TemplateActorAddFlow）を通る（MainWindow.AiHost.Tools.cs）。
 // ============================================================
 
 using SEEDEditor.Templates;
@@ -34,17 +36,25 @@ public partial class MainWindow
             return;
         }
 
-        var context = new TemplateActorPickerContext
-        {
-            LibraryRoot    = libraryRoot,
-            AssetsRoot     = () => AssetsPath,
-            RefreshTarget  = t => PanelHierarchy.TryRefreshTemplateActorTarget(t),
-            ReadOnlyReason = () => PanelHierarchy.IsReadOnlyView ? TemplateActorReadOnlyReason : null,
-            SendToRuntime  = command => _runtimeManager?.SendToRuntime(command),
-            // 依存ファイルはアセットルートの下へコピーされるので、ツリーを作り直して見せる
-            FilesCopied    = _ => PanelProject.SetAssetsPath(AssetsPath),
-            Log            = EditorLog.Write,
-        };
-        TemplateActorPickerWindow.ShowFor(this, context, target);
+        TemplateActorPickerWindow.ShowFor(this, CreateTemplateActorContext(libraryRoot), target);
     }
+
+    /// <summary>
+    /// テンプレートアクタの追加に要る外部の機能一式を作る（窓と AI ツール seed_template_actor の共通。
+    /// MainWindow.AiHost.Tools.cs も同じものを使い、送信だけを応答の待ち合わせで包む）。
+    /// </summary>
+    /// <param name="libraryRoot">テンプレートライブラリ（templates/）の絶対パス。</param>
+    /// <param name="sendToRuntime">ランタイムへの送信（省略時はそのまま送る）。</param>
+    /// <returns>外部の機能一式。</returns>
+    private TemplateActorPickerContext CreateTemplateActorContext(string libraryRoot, Action<string>? sendToRuntime = null) => new()
+    {
+        LibraryRoot    = libraryRoot,
+        AssetsRoot     = () => AssetsPath,
+        RefreshTarget  = t => PanelHierarchy.TryRefreshTemplateActorTarget(t),
+        ReadOnlyReason = () => PanelHierarchy.IsReadOnlyView ? TemplateActorReadOnlyReason : null,
+        SendToRuntime  = sendToRuntime ?? (command => _runtimeManager?.SendToRuntime(command)),
+        // 依存ファイルはアセットルートの下へコピーされるので、ツリーを作り直して見せる
+        FilesCopied    = _ => PanelProject.SetAssetsPath(AssetsPath),
+        Log            = EditorLog.Write,
+    };
 }

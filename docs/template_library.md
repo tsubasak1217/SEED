@@ -445,6 +445,10 @@ dotnet run --project editor/tests/TemplateImportTests -- \
   プロジェクトの中に `.actor` を作らないため。
 - Ctrl+Z で追加を取り消せる（1 操作）。**コピーした依存ファイルは Undo では消えない**（プロジェクトのファイルなので）。
 - 閲覧専用の表示中（Android の一時停止の写し）は追加しない（エディタが止め、ランタイムも写しの表示中は捨てる）。
+- 1〜5 の手順は `TemplateActorAddFlow`（2026-10-02 に窓から切り出した）にあり、窓と **MCP の `seed_template_actor`** が同じ手順を通る。
+  MCP では `action:"list"` でカタログの一覧（観測系）、`action:"add"` で `path`（一覧の path）を `parent`（DFS ID か名前パス。省略でルート）の子へ追加する
+  （変更系。Edit 中のみ。読み取り専用の対話エディタでは既定で拒否）。追加は送った後の `SCENE_MODIFIED`（入った）/ `LOAD_ERROR`（断られた）を待って結果を返す
+  （docs/editor_mcp.md §4）。
 
 ### 9.6 置き場所の規則
 
@@ -523,13 +527,15 @@ SEED の `.actor` は、入れ子のインスタンスの中身（子の木と�
 | `editor/src/Templates/Actors/TemplateActorInstaller.cs` | 追加の準備（読む → まっさら → コピー → 一時ファイル） |
 | `editor/src/Templates/Actors/TemplateActorTarget.cs` | 追加先と入れてよいかの規則 |
 | `editor/src/Templates/Actors/TemplateActorIpc.cs` | `ADD_TEMPLATE_ACTOR` の組み立て |
+| `editor/src/Templates/Actors/TemplateActorAddFlow.cs` | 追加の一連の手順（編集できるか → 引き直し → 規則 → 準備 → 送る直前の引き直し → 送信）。窓と MCP の共通 |
 | `editor/src/Templates/Actors/TemplateActorPickerWindow.xaml(.cs)` | 窓 |
+| `editor/src/AI/Tools/EditorCommandExecutor.TemplateActors.cs`・`editor/src/MainWindow.AiHost.Tools.cs` | MCP の `seed_template_actor`（一覧・追加と結果の待ち合わせ） |
 | `editor/src/Templates/Actors/TemplateActorListItem.cs`・`TemplateActorCategoryItem.cs`・`TemplateActorThumbnails.cs`・`TemplateActorPickerContext.cs` | 窓の表示モデル・サムネイルの読み込み・外へ頼むこと |
 | `editor/src/Panels/HierarchyPanel.TemplateActors.cs` | 右クリックの項目・追加先の作成と引き直し |
 | `editor/src/MainWindow.TemplateActors.cs`（と `MainWindow.Viewport.cs` のシーンビューの右クリック） | 窓を開く |
 | `runtime/src/engine/core/app_base/ipc.rs`（`IpcCommand::AddTemplateActor`） | ワイヤ形式 |
 | `runtime/src/engine/core/app_base/app/template_actor_ops.rs` | ランタイムの受け口（置き場所の規則・Undo・選択） |
-| `editor/tests/TemplateImportTests/TemplateActorTests.cs`・`TemplateActorFixture.cs` | 単体テスト（同梱のカタログがすべて解決できることも確かめる） |
+| `editor/tests/TemplateImportTests/TemplateActorTests.cs`・`TemplateActorFixture.cs`・`TemplateActorAddFlowTests.cs` | 単体テスト（同梱のカタログがすべて解決できること・追加の手順の分岐も確かめる） |
 | `editor/tests/TemplateActorPickerPreviewProbe/` | 窓の実物の XAML を表示せずに組み立てて PNG に描き、状態（検索・カテゴリ・押せない理由・空の案内・見本の画像）を表明する。`dotnet run --project editor/tests/TemplateActorPickerPreviewProbe -- --out <出力先>`（エディタは起動しない。06 の仮の見本の画像は出力先の仮のライブラリにだけ描く。01 は同梱の見本の画像が全件にあることを表明する） |
 | `editor/tools/SeedTemplateThumbnails/` | 見本の画像の生成の道具（§9.10） |
 | `templates/ui/scripts/ThumbnailStage.cs` | 見本の画像を撮る舞台のスクリプト（見本の操作・撮ってよい合図。§9.10） |

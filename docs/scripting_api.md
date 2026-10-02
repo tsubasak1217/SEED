@@ -1257,6 +1257,69 @@ public class IconPool : SEEDScript
 
 > **重要 — プーリングの要点**: 使い終わったアイコンは `Destroy` せず、透明化（`Sprite.Color` のアルファを 0 にする）や画面外への退避で「隠す」だけにします。`Instantiate` / `Destroy` はどちらもフレーム末尾の遅延適用で、毎フレーム作り直すとアクター構築（ファイル読み込み・ECS 挿入）のコストがそのまま積み上がるためです。2D アイコンの親は **Canvas を持つアクター**（または 2D アクター）である必要があります。
 
+### 動的ノード（子の列挙・兄弟の順番・空のアクタ・コンポーネントの追加と削除。2026-10-03）
+
+スクリプトから UI の木を組み立てる API。`Instantiate` / `SetParent` と同じ**フレーム末尾に遅延適用**するモデルで、読みはその場の木を返します。
+
+```csharp
+// ── 子の列挙と兄弟の順番（読みはその場の木。フォルダは透過＝FindChild・レイアウトと同じ）──
+int n               = go.ChildCount;          // int（論理の子の数）
+GameObject first    = go.GetChild(0);         // 範囲外は IsValid=false
+GameObject[] kids   = go.Children;            // その時点の写し（木の順＝CanvasStack 等が並べる順）
+int i               = go.SiblingIndex;        // int（論理の兄弟の中の順番。分からなければ -1）
+go.SetSiblingIndex(2);                        // 取り出した後の兄弟の 2 番目の直前へ（フレーム末尾。数以上なら末尾・負なら先頭）
+go.SetAsFirstSibling();                       // 先頭へ（フレーム末尾）
+go.SetAsLastSibling();                        // 末尾へ（フレーム末尾）
+
+// ── 空のアクタを作る（ルートは即座に予約・構築と親への取り付けはフレーム末尾）──
+GameObject row   = GameObject.Create("Row", list);     // 2D / 3D は親から推定（2D の親・Canvas を持つ 3D の親の下は 2D、それ以外と親なしは 3D）
+GameObject node  = GameObject.Create2D("Badge", row);  // 2D（CanvasTransform。親相対・pivot 0・anchor 0・大きさ 0）
+GameObject probe = GameObject.Create3D("Probe");       // 3D（Transform。原点）。親を省略するとシーンのルート
+
+// ── コンポーネントの追加と削除 ──
+Sprite? bg   = row.AddComponent<Sprite>();       // 既定値で足してハンドルを返す（その場で作るので同じフレームに値を書ける。足せない種別は null）
+Text? label  = row.AddComponent<Text>();
+bool removed = row.RemoveComponent<Sprite>();    // index 番目（既定 0。GetComponent<T>(index) と同じ数え方）を外す
+bool added   = row.AddScript<RowView>();         // スクリプトを足す（フレーム末尾にインスタンスを作り、次のフレームに OnStart）
+```
+
+```csharp
+// 例: 一覧の行をコードで組み立てる（同じフレームにすべて書ける）
+var list = GameObject.Create2D("List", gameObject);
+if (list.AddComponent<CanvasStack>() is { } stack) stack.Spacing = 8f;
+foreach (var item in items)
+{
+    var row = GameObject.Create(item.Id, list);                 // List が 2D なので 2D
+    if (row.GetComponent<CanvasTransform>() is { } ct) ct.Size = new Vector2(0f, 48f);   // 高さの指定（CanvasLayoutItem.PreferredSize）
+    if (row.AddComponent<Sprite>() is { } sp) { sp.Size = new Vector2(320f, 48f); sp.Color = Color.White; }
+    if (row.AddComponent<Text>() is { } tx) tx.Content = item.Title;
+}
+// 並べ替え（次のフレーム以降。Children / SiblingIndex で読める）
+list.GetChild(2).SetAsFirstSibling();
+```
+
+| 操作 | その場（同じフレーム） | フレーム末尾 | 次のフレームから |
+| --- | --- | --- | --- |
+| `Create` / `Create2D` / `Create3D` | ルートを予約。`Transform` / `CanvasTransform` の値・`Name`・`Visible`・`AddComponent`・`SetParent`・`SetSiblingIndex` を当てられる（発行した順に効く）| アクタの構築・親の末尾の子へ取り付け・`HIERARCHY` | 親の `ChildCount` / `Children` / 自分の `SiblingIndex` / `Parent` / `LayoutSize` が読める |
+| `AddComponent<T>()` | コンポーネントを World へ入れて**ハンドルを返す**（値を書ける）。`GetComponent<T>()` / `HasComponent` も返す | スロットの目録へ登録（描画・レイアウト・インスペクタに載る） | — |
+| `RemoveComponent<T>(index)` | `GetComponent<T>()` / `HasComponent` から**消える** | エディタの「コンポーネント削除」と同じ後始末（コンポーネントの除去・despawn・目録から外す） | — |
+| `AddScript<T>()` | 受けたかだけ（インスタンスはまだ無い） | スクリプトのスロットを足し、通常の構築経路で CLR のインスタンスを作る | `OnStart`（`gameObject` は足した先のアクタ） |
+| `SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling` | 受けたかだけ | 論理の兄弟の順番を変える（レイアウトは毎フレームの描画で木の順から測り直す） | `Children` / `SiblingIndex` に反映 |
+| `ChildCount` / `GetChild` / `Children` / `SiblingIndex` | その場の木（フレームの始めの木）を読む | — | — |
+
+| `AddComponent<T>()` で足せる種別（既定値はエディタの「コンポーネント追加」と同じ） |
+| --- |
+| `Sprite`・`SkinnedSprite`・`Text`・`CanvasClip`・`CanvasStack`・`CanvasWrap`・`CanvasGrid`・`CanvasLayoutItem`・`CanvasSafeArea`・`CanvasGesture`・`CanvasScroll`・`AudioSource`・`AudioDictionary`・`Animator`・`ParticleEmitter`・`LineRenderer` |
+| 足せない（null が返る）: `Transform`・`CanvasTransform`（アクタが最初から持つ）・`Model`・`Skybox`（GPU の資源・ファイルが要る）・`Camera`・`InputMap`・`WaterVolume`・`WaterLink`・`ControlPointPath`（エディタで設定する） |
+
+> **重要**: 子は**論理の子**です。フォルダノード（ヒエラルキーの整理用）はそれ自身を数えず、中の子をその位置へ展開します（`FindChild` の「フォルダは階層に存在しないものとして扱う」と同じ。CanvasStack 等のレイアウトもフォルダを透過して並べます）。フォルダの `SiblingIndex` は -1 で、フォルダ自身は並べ替えられません（`[Script] SetSiblingIndex 拒否`）。`SetSiblingIndex(i)` は「自分を取り出した後の論理の兄弟の i 番目の直前」へ入り、その兄弟がフォルダの中に居ればフォルダの中へ入ります（論理の親は変わらない。2D のフォルダは単位変換なので見た目の位置も変わらない）。ルートの兄弟は同じシーンのルートです。フォルダを使わない木（スクリプトで組み立てる木）では、論理の子＝直接の子で `GetChild(i).SiblingIndex == i` です。
+
+> **重要**: 読み（`ChildCount` / `GetChild` / `Children` / `SiblingIndex` / `Parent`）は**フレームの始めの木**です。同じフレームに発行した `Create` / `Instantiate` / `SetParent` / `SetSiblingIndex` / `Destroy` はまだ反映されていません（`OnStart` で作った子は、同じフレームの `Update` でも `ChildCount` に入りません）。並べ替え・取り付けはどれも発行した順にフレーム末尾で当たるので、同じフレームに「作る → 足す → 並べ替える」と書けばその順に効きます。
+
+> **重要**: `Create` で作ったアクタ・`AddComponent` で足したコンポーネントは、`Instantiate` と同じく**スクリプトが生成したもの**として扱われます（プレハブの Play 中の当て直しで消されず、書き戻しでファイルへ書かれない）。Undo は積まず、Play を止めると消えます（Play の世界は停止で Play 前の写しへ戻る）。OnDestroy の中からは使えません（無視される）。
+
+> **重要**: `AddScript<T>()` のインスタンスは**次のフレーム**にできます（同じフレームに値は渡せない）。足したスクリプトの `OnStart` で `gameObject`（足した先）・親・名前から自分で読んでください。型が見つからないときはフレーム末尾に `[Script] AddScript 失敗` が出ます。
+
 ### Transform（3D 位置・回転・スケール）
 
 ```csharp
@@ -1320,6 +1383,10 @@ if (gameObject.GetComponent<CanvasTransform>() is { } ct)   // CanvasTransform?�
     ct.HasLayout           // bool（前のフレームの描画のレイアウトの表にこのノードがあったか。false なら下の 2 つは Zero）
     ct.LayoutSize          // Vector2（レイアウトが決めたこのノードの大きさ。このノードのキャンバスの単位＝Sprite.Width/Height と同じ。dp のキャンバスなら dp）
     ct.LayoutRect          // Rect（その矩形の画面の上の外接矩形。画素・左上原点・Y 下向き＝ScreenPosition・Screen.SafeArea・Input.MousePos と同じ。dp は ÷ Screen.DpScale）
+
+    // ── 指定の大きさ（get/set。2026-10-03・動的ノード API）──
+    ct.Size                // Vector2（このノードの大きさの指定。実体は CanvasLayoutItem.PreferredSize。0 の軸は指定なし）
+                           //   get: CanvasLayoutItem が無ければ Zero。set: 無ければその場で足して（AddComponent と同じ既定値）書く
 }
 
 // 例: コンテナ（CanvasStack の Stretch・flex・親に合わせる）に伸ばされたノードの、描かれる大きさで描き直す
@@ -1333,6 +1400,8 @@ if (gameObject.GetComponent<CanvasTransform>() is { } node && node.HasLayout)
 > `Position` は**親 Canvas 相対**の座標ですが、`ScreenPosition` はアンカー・スケールモード・親チェーンをすべて反映した**画面上の絶対位置**（ピボット点）を返します。SEED の 3D `Transform.Position` は元々ワールド絶対座標で、書き込み時に子孫へ差分が伝播します（上記「親子の追従」参照）。
 
 > **重要**: `HasLayout` / `LayoutSize` / `LayoutRect` は **1 フレーム遅れ**です。レイアウトの表はスクリプトのフェーズの後（描画）で作るので、`Update` などで読む値は**前のフレームの描画**の値です（`CanvasScroll.ViewportSize` と同じ）。このフレームに `Position`・レイアウトの部品を書き換えても、結果が読めるのは次のフレームからです（レイアウトが大きさを決めていない軸の `LayoutSize` だけは、読んだ時点の `Sprite.Width` / `Height`・Text の枠そのもの）。`HasLayout` が false になるのは、まだ描画していないとき（Play の最初のフレーム・シーンを読み込んで最初の描画の前・このフレームに `Instantiate` したノード）と、表に無いノード（3D ワールドキャンバスや 3D アクターの下・フォルダ）です。非表示・非アクティブのノードも表にあるので true です。読むのは Play（エディタの Play・SEED.exe）のゲームの画面の表だけです。
+
+> **重要**: `ct.Size` と `CanvasLayoutItem.PreferredSize` は**同じ欄**です（CanvasTransform に大きさの欄は無く、レイアウトがノードの大きさを決める材料のうち、コンテナが伸ばした大きさの次に強いのが PreferredSize）。大きさだけを決めるなら `ct.Size`、伸ばす重み（Flex）・上下限・揃えの上書き・親に合わせる（FillWidth）も決めるなら `CanvasLayoutItem` を使います（混ぜてよい）。効くのは**レイアウトが測るノード**（CanvasStack・Wrap・Grid の子・親に合わせる子・コンテナ自身の箱）で、並べる矩形（場所取り）が変わります。**Sprite を持つノードの描く大きさと `LayoutSize` は Sprite の大きさのまま**です（伸ばされた軸だけ変わる。2026-10-03 の通し確認: 50×20 の Sprite の行に `Size = (120, 40)` → 縦の CanvasStack では次の行が 40 + 間隔の位置に来て、`LayoutSize` は 50,20）。コンテナの下に無い自由なノードの大きさは変わりません。
 
 > **重要**: `LayoutSize` の決め方（軸ごと）: CanvasComponent を持つノードは**キャンバス領域**（コンテナ・親に合わせる・安全領域・中身に合わせる・dp のルートを反映）。持たないノードは、レイアウトが大きさを決めた軸（コンテナが伸ばした・セルいっぱい・親に合わせた）ならその大きさ、それ以外は Sprite の大きさ → Text の枠 → レイアウトが割り当てた矩形 → 0 です。Sprite を持つノードでは **`LayoutSize` ＝ 描かれるスプライトの大きさ**（キャンバスの単位）で、`LayoutRect` は描かれるスプライトの 4 隅（自分の回転・Scale・pivot を含む。回転していれば外接矩形）と一致します。コンテナに伸ばされても `Sprite.Width` / `Height` は元の値のままなので、描く大きさには `LayoutSize` を使ってください。
 
@@ -2345,7 +2414,9 @@ public class FishingLine : SEEDScript
 | （アクター自身） | `gameObject.Visible` | アクターと全子孫の**描画だけ**を止める表示フラグ。スクリプト・物理は動き続ける |
 | （アクター自身） | `gameObject.Name` | アクター名（`Find` / `FindChild` の照合キー）。動的生成物へ一意な名前を付ける用途。既存アクターの改名は参照が追従しない |
 | `Transform` | `gameObject.GetComponent<Transform>()` / `transform` | 3D 位置・回転・スケール |
-| `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー・前のフレームのレイアウトの結果（HasLayout・LayoutSize・LayoutRect。読み取り専用） |
+| `CanvasTransform` | `gameObject.GetComponent<CanvasTransform>()` | 2D キャンバス上の位置・回転・スケール・ピボット・アンカー・前のフレームのレイアウトの結果（HasLayout・LayoutSize・LayoutRect。読み取り専用）・指定の大きさ（Size＝CanvasLayoutItem.PreferredSize） |
+| （アクター自身） | `gameObject.ChildCount` / `GetChild(i)` / `Children` / `SiblingIndex` | 論理の子（フォルダは透過）の列挙と兄弟の順番。`SetSiblingIndex` / `SetAsFirstSibling` / `SetAsLastSibling` で並べ替え（フレーム末尾） |
+| （アクター自身） | `GameObject.Create` / `Create2D` / `Create3D`・`AddComponent<T>()` / `RemoveComponent<T>()` / `AddScript<T>()` | 空のアクタを作る・コンポーネントとスクリプトの追加と削除（動的ノード API） |
 | `Model` | `gameObject.GetComponent<Model>()` | 3D モデルの表示切替（`Visible`）・レイトレ除外（`RayTracingExcluded`）・描画オフセット（位置・回転・スケール）。描画のみで物理・追従には影響しない |
 | `Sprite` | `gameObject.GetComponent<Sprite>()` | テクスチャパス・色・サイズ・レイヤー・ポインタ判定対象（RaycastTarget）・形と塗り（角丸・楕円・弧・縁・グラデーション・9 スライス・影。W2-4） |
 | `SkinnedSprite` | `gameObject.GetComponent<SkinnedSprite>()` | メッシュパス（.sprite_mesh）・テクスチャパス・色・レイヤー・ポインタ判定対象。ボーンは子アクターの CanvasTransform で動かす |
@@ -3713,6 +3784,7 @@ PlatformDiagnostics.SimulateLifecycle(AppLifecyclePhase.Paused);   // 前面・�
 - `OpenSettings` は開かずにログだけです（変えるなら上の口で）。`App.OpenUrl` を開かないのは従来どおり `SEED_PLATFORM_SIM_NO_OPEN=1`。
 - エディタの **Play を止める・始めると、実行中の変更は捨てられ起動時の設定へ戻ります**（ほかの模擬の状態と同じ）。IPC の `PLATFORM_SIM` は Play 中だけ受け付けます（`not_playing`）。
 - IPC の理由: `not_playing`（Play 中でない）・`not_simulated`（模擬でない）・`unknown_verb`・`bad_arguments`（引数の数の違い）・`invalid_argument`（種類・状態の名前の誤り、v2 の予約の種類）。
+- AI（MCP）からは `seed_platform_sim(verb, args)` で同じ IPC を送り、応答を待って返答の JSON を受け取れる（docs/editor_mcp.md §4・§5.6 の A）。
 
 ### 端末の明暗（`App.UiMode`・`platform.ui_mode_changed`。W2-9）
 
