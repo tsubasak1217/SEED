@@ -56,6 +56,30 @@
 
 - [ ] **「画像比率に設定」は TGA / WebP で寸法を取れない** — 2026-09-12。WPF の `BitmapDecoder` に該当コーデックが無い環境では元画像の寸法が読めず、ボタンを押しても何も起きない（ツールチップとログには理由を出す）。テクスチャの参照ダイアログは `.tga` / `.webp` も選べるので、必要になったら簡易ヘッダパーサ（TGA は先頭 18 バイト、WebP は VP8/VP8L/VP8X ヘッダ）を足す。関連: `editor/src/Panels/Inspector/ImageSizeCache.cs`、docs/inspector_features.md §1-4。
 
+## 2 回目のレビューの未対応（ランタイム側）— 2026-10-03 の夜間作業の引継ぎ（正典: docs/reviews/2026-10-03_code_review.md の冒頭の表）
+
+次に着手する順（重い順）。番号はレビューの項目番号。どれも**未着手**で、再現テスト（純粋関数か、画面外の SEED.exe を IPC で動かす確認）を先に書いてから直す。
+
+- [ ] **【高】#1〜#4 書き戻し（`PREFAB_WRITE_BACK`）の根本の直し** — 今は既定無効（`editor_preferences.json` の `prefab_write_back_enabled`。4cac1dbf）で回避しているだけ。
+  直し方の方針: (a) インスタンスの `to_data` をそのまま書かず、**元の版（`prefab_live_patch/base_cache.rs`）との差分だけを今のファイルへ当てて書く**（`merge.rs` の 3 方向の合成を使う）、
+  (b) 元の版が分からない（2 方向で当て直した・版ずれ）インスタンスは断る、(c) `PREFAB_WRITE_BACK:{dfs},{仮想パス}` にしてランタイムで `prefab_source` の一致を確かめる、
+  (d) `AddComponent` / `AddScript` で足したスロットに実行時だけの印を付けて書かない、(e) ScreenStack が枠（スクリプト生成）へ移したファイル由来のノード
+  （置いてある根・`Push(GameObject)` の中身）を刈らない。直ったら既定を有効へ戻し、`docs/editor_prefab.md` §8 の注記と確認ダイアログの文を戻す。
+- [ ] **【中】#18 ルートでの `SetAsFirstSibling` / `SetSiblingIndex` が地形のチャンクフォルダの中へ入り、Play を止めても残ってシーンに保存される** —
+  起きればシーンのファイルが壊れる。`runtime/src/engine/core/scripting/node_tree.rs` の `logical_roots` / `insert_before`（種別を見ずにフォルダの中へ入る）。
+- [ ] **【中】#9 Delete → Ctrl+Z で、戻ったアクタではなく次のアクタが選ばれる**（edccecec の退行。`app/undo_selection.rs`）。
+- [ ] **【中】#8 自動の再展開・当て直しの後、ランタイムの選択（`selected_actor_dfs_ids`）が古い番号のまま残り、ギズモと COPY が別のアクタに当たる**。
+- [ ] **【中】#10 同じ名前の兄弟がある木では、改名・並べ替え・付け替えの Undo で別の同じ名前のアクタへ選択が移る**（名前の道筋での引き直しの限界。安定 ID が要る）。
+- [ ] **【中】#11 2D のキャンバスへ部品を足すと `SELECTED` がヒエラルキーより先に届き、インスペクタが別のアクタを出す**。
+- [ ] **【中】#17 Play 中の当て直しでノードを消す・作り直すと、その下のスクリプトの生成物（ScreenStack の画面・リストの行）も消える**（`prefab_live_patch/apply.rs`）。
+- [ ] **【中】#19 物理の ID が Play 開始時の DFS 番号のままなので、`Create(親)`・`SetSiblingIndex`・当て直しで木の形が変わると物理のイベントが別のアクタへ届く**。
+- [ ] **【中】#5 の残り**: 外部変更で「版のずれたインスタンスだけ再展開」する仕組み（今は Edit ではバナーだけ。5ee3dc78）。VCS の取得・インポートを抑止で包む。
+- [ ] **【低】#27〜#30・#34〜#37、#31〜#33 の残り** — レビューの本文を参照（当て直しの細部・書き戻しの失敗の扱い・監視と停止後の反映の隙間・動的ノード API の細部・
+  収録/コメント判定/最近の一覧・一括アップグレードの待ち・MCP ツール・docs と実装の食い違い）。
+- [ ] **夜間に入った機能の Play・実機での確かめ** — 2026-10-02 夜〜10-03 に入った機能（索引: 下の各節と `docs/wakeorpay_migration_notes.md` §0.1）は、単体テスト・ビルド・
+  画面外の SEED.exe の IPC 確認までで、エディタの GUI・Play の目視・Pixel 6a では一度も動かしていない。特に: `UiNavigator` の枠の位置とパッド、アトラスのページ追加の 1 フレームの
+  転送（モバイル）、`SEED.Binding` の実部品との結び付け、文字列表パネルのセル編集、端末プリセットの実起動、プレハブの当て直し（外部変更 → Play 中に反映）。
+
 ## 2 回目のコードレビュー（docs/reviews/2026-10-03_code_review.md）のエディタ側の直し — lane2（L2-9）
 
 - #26 収録: `.cs` のコメントにだけある末尾 `/` のフォルダ参照（`/// 原画は <c>assets://art/</c> に置く`）でフォルダが丸ごと pak・テンプレートのインポートへ入る → 2026-10-03 に済（lane2）。修正前（95723ec7 より前）と同じく何もしない（`AssetCollector.Resolve` の ⓪・`AssetPathUtil.EndsWithSeparator`。`CommentReferenceTests`。docs/packaging.md §2）。
